@@ -100,7 +100,7 @@ func main {
     }
     printf("total %d\n", total);
 
-    var names: Map<Vec<str>> = Map::new();
+    var names: Map<str, Vec<str>> = Map::new();
     names.insert("even", Vec::new());
     names.insert("odd", Vec::new());
     var n = 0;

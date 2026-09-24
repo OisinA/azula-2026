@@ -34,7 +34,7 @@ func main {
     var text = "The quick brown fox jumps over the lazy dog. The dog sleeps; the fox runs. A quick fox!";
     var all = words(text);
 
-    var counts: Map<int> = Map::new();
+    var counts: Map<str, int> = Map::new();
     var i = 0;
     while i < all.length() {
         var word = all.get(i);

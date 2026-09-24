@@ -1,0 +1,111 @@
+// The standard interfaces, and their implementations for the built-in types.
+//
+// Types implementing Eq and Ord can be compared with `==`, `!=`, `<`, `<=`,
+// `>` and `>=`, which call `equals` and `compare`. Values of types
+// implementing Show can be interpolated into strings.
+
+interface Eq {
+    func equals(other: Self): bool;
+}
+
+// `compare` returns a negative number, zero or a positive number when `self`
+// is less than, equal to or greater than `other`
+interface Ord {
+    func compare(other: Self): int;
+}
+
+// Equal values must have equal hashes
+interface Hash {
+    func hash(): int;
+}
+
+interface Show {
+    func to_str(): str;
+}
+
+extend int is Eq, Ord, Hash, Show {
+    func equals(other: int): bool {
+        return self == other;
+    }
+
+    func compare(other: int): int {
+        if self < other {
+            return -1;
+        }
+        if self > other {
+            return 1;
+        }
+        return 0;
+    }
+
+    func hash(): int {
+        // Mix the bits so nearby numbers spread out
+        var h = self * -7046029254386353131;
+        return (h ^ (h >> 32)) & 0x7fffffffffffffff;
+    }
+
+    func to_str(): str {
+        return str_from_int(self);
+    }
+}
+
+extend str is Eq, Ord, Hash, Show {
+    func equals(other: str): bool {
+        return self == other;
+    }
+
+    func compare(other: str): int {
+        return str_compare(self, other);
+    }
+
+    func hash(): int {
+        var h = 5381;
+        var i = 0;
+        while self[i] != 0 {
+            h = ((h << 5) + h) ^ (self[i] as int);
+            i += 1;
+        }
+        return h & 0x7fffffffffffffff;
+    }
+
+    func to_str(): str {
+        return self;
+    }
+}
+
+extend bool is Eq, Hash, Show {
+    func equals(other: bool): bool {
+        return self == other;
+    }
+
+    func hash(): int {
+        if self {
+            return 1;
+        }
+        return 0;
+    }
+
+    func to_str(): str {
+        return str_from_bool(self);
+    }
+}
+
+extend float is Eq, Ord, Show {
+    func equals(other: float): bool {
+        return self == other;
+    }
+
+    func compare(other: float): int {
+        if self < other {
+            return -1;
+        }
+        if self > other {
+            return 1;
+        }
+        return 0;
+    }
+
+    func to_str(): str {
+        return str_from_float(self);
+    }
+}

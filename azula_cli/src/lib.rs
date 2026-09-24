@@ -89,6 +89,7 @@ const STDLIB: &[(&str, &str)] = &[
     ("stdlib/string.azl", include_str!("../../stdlib/string.azl")),
     ("stdlib/vec.azl", include_str!("../../stdlib/vec.azl")),
     ("stdlib/map.azl", include_str!("../../stdlib/map.azl")),
+    ("stdlib/interfaces.azl", include_str!("../../stdlib/interfaces.azl")),
 ];
 
 /// The combined program source, plus a record of which file and line every

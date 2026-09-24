@@ -104,7 +104,7 @@ func find_stdlib(options: Options): str {
 }
 
 // Add `path` and (recursively) the files it imports
-func add_source_file(src: &Source, path: str, seen: &Map<bool>) {
+func add_source_file(src: &Source, path: str, seen: &Map<str, bool>) {
     var real: str = malloc(4096 * sizeof(u8));
     if realpath(path, real) == null {
         fatal(concat("can't read ", path));
@@ -139,12 +139,13 @@ func main(argc: i32, argv: &str) {
     var stdlib = find_stdlib(options);
 
     var src = new_source();
-    var seen: Map<bool> = Map::new();
+    var seen: Map<str, bool> = Map::new();
     add_source_file(src, join_path(stdlib, "libc.azl"), &seen);
     add_source_file(src, join_path(stdlib, "option.azl"), &seen);
     add_source_file(src, join_path(stdlib, "string.azl"), &seen);
     add_source_file(src, join_path(stdlib, "vec.azl"), &seen);
     add_source_file(src, join_path(stdlib, "map.azl"), &seen);
+    add_source_file(src, join_path(stdlib, "interfaces.azl"), &seen);
     add_source_file(src, join_path(stdlib, "gc.azl"), &seen);
     add_source_file(src, join_path(stdlib, "arena.azl"), &seen);
     add_source_file(src, options.file, &seen);

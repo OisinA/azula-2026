@@ -1,0 +1,7 @@
+// error: `Point` doesn't implement `Show`: it has no method `to_str`
+struct Point is Show {
+    x: int;
+}
+
+func main() {
+}

@@ -69,8 +69,16 @@ pub enum Statement<'a> {
     },
     Import(String, Span),
     /// A generic definition: a Function, Struct, Enum or Impl parameterised
-    /// over the listed type parameters.
-    Generic(Vec<&'a str>, Rc<Statement<'a>>),
+    /// over the listed type parameters, with bounds (`T is Show` as ("T", "Show")).
+    Generic(Vec<&'a str>, Vec<(&'a str, &'a str)>, Rc<Statement<'a>>),
+    /// `interface Name { methods }`: each method, and whether it has a default body
+    Interface {
+        name: &'a str,
+        methods: Vec<(Statement<'a>, bool)>,
+        span: Span,
+    },
+    /// `Type is A, B`: the type implements these interfaces
+    Conforms(AzulaType<'a>, Vec<&'a str>, Span),
 }
 
 #[derive(Debug, PartialEq, Clone)]

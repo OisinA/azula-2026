@@ -23,6 +23,10 @@ struct Parser {
     src: &Source;
     // A `>>` closed two lists of type arguments; the outer `>` is already consumed
     pending_gt: bool;
+    // Bounds (`T is Show`) of the type parameters just parsed
+    bounds: Vec<Bound>;
+    // Whether the function just parsed had a body (interface methods may not)
+    last_had_body: bool;
 
     func peek(): Token {
         return self.tokens.get(self.index);
@@ -75,11 +79,16 @@ struct Parser {
     func parse_item(program: &Program) {
         var tok = self.peek();
         match tok.kind {
-            Tok::KwFunc => { program.funcs.push(self.parse_func()); },
+            Tok::KwFunc => {
+                var f = self.parse_func();
+                self.record_bounds(program, f.name);
+                program.funcs.push(f);
+            },
+            Tok::KwInterface => { program.interfaces.push(self.parse_interface()); },
             Tok::KwExtern => { program.funcs.push(self.parse_extern()); },
             Tok::KwStruct => { program.structs.push(self.parse_struct(program)); },
             Tok::KwEnum => { program.enums.push(self.parse_enum(program)); },
-            Tok::KwExtend => { program.impls.push(self.parse_extend()); },
+            Tok::KwExtend => { program.impls.push(self.parse_extend(program)); },
             Tok::KwImpl => {
                 self.src.fail(tok.pos, "`impl` blocks are gone: put methods in the type's body, or use `extend`");
             },
@@ -126,7 +135,16 @@ struct Parser {
             return params;
         }
         while !self.accept(Tok::Gt) {
-            params.push(self.expect_ident("type parameter"));
+            var param = self.expect_ident("type parameter");
+            params.push(param);
+            // `T is A + B`
+            if self.at(Tok::Ident) && self.peek().text == "is" {
+                self.advance();
+                self.bounds.push(Bound { param: param, iface: self.expect_ident("interface name") });
+                while self.accept(Tok::Plus) {
+                    self.bounds.push(Bound { param: param, iface: self.expect_ident("interface name") });
+                }
+            }
             if !self.at(Tok::Gt) {
                 self.expect(Tok::Comma, "`,` or `>`");
             }
@@ -134,7 +152,71 @@ struct Parser {
         return params;
     }
 
+    // Keep the bounds just parsed as those of generic `name`
+    func record_bounds(program: &Program, name: str) {
+        if self.bounds.len > 0 {
+            program.bounds.insert(name, self.bounds);
+            self.bounds = Vec::new();
+        }
+    }
+
+    // An optional `is A, B` list of interfaces a type implements
+    func parse_is_list(): Vec<str> {
+        var interfaces: Vec<str> = Vec::new();
+        if !self.at(Tok::Ident) || self.peek().text != "is" {
+            return interfaces;
+        }
+        self.advance();
+        interfaces.push(self.expect_ident("interface name"));
+        while self.accept(Tok::Comma) {
+            interfaces.push(self.expect_ident("interface name"));
+        }
+        return interfaces;
+    }
+
+    // Record that the type `name<type_params>` implements `interfaces`
+    func add_conformance(program: &Program, name: str, type_params: Vec<str>, interfaces: Vec<str>, pos: int) {
+        if interfaces.len == 0 {
+            return;
+        }
+        var target = Type::Named(name);
+        if type_params.len > 0 {
+            var args: Vec<Type> = Vec::new();
+            var i = 0;
+            while i < type_params.len {
+                args.push(Type::Named(type_params.get(i)));
+                i += 1;
+            }
+            target = Type::Generic(name, args);
+        }
+        program.conformances.push(new Conformance { target: target, interfaces: interfaces, pos: pos });
+    }
+
+    // `interface Name { func m(args): R; func d(): R { default body } }`.
+    // Methods without a body always take `self`.
+    func parse_interface(): &InterfaceDecl {
+        var pos = self.advance().pos;
+        var name = self.expect_ident("interface name");
+        var methods: Vec<&FuncDecl> = Vec::new();
+        var has_body: Vec<bool> = Vec::new();
+        self.expect(Tok::LBrace, "`{`");
+        while !self.accept(Tok::RBrace) {
+            if !self.at(Tok::KwFunc) {
+                self.src.fail(self.peek().pos, "expected a method");
+            }
+            var f = self.parse_method_or_signature(true);
+            methods.push(f);
+            has_body.push(self.last_had_body);
+        }
+        return new InterfaceDecl { name: name, methods: methods, has_body: has_body, pos: pos };
+    }
+
     func parse_func(): &FuncDecl {
+        return self.parse_func_or_signature(false);
+    }
+
+    // A function; with `allow_signature`, `func name(args): R;` without a body too
+    func parse_func_or_signature(allow_signature: bool): &FuncDecl {
         var pos = self.advance().pos;
         var name = self.expect_ident("function name");
         var type_params = self.parse_type_params();
@@ -153,8 +235,14 @@ struct Parser {
         if self.accept(Tok::Colon) {
             ret = self.parse_type();
         }
-        self.expect(Tok::LBrace, "`{`");
-        var body = self.parse_block_body();
+        var body: Vec<&Stmt> = Vec::new();
+        self.last_had_body = true;
+        if allow_signature && self.accept(Tok::Semi) {
+            self.last_had_body = false;
+        } else {
+            self.expect(Tok::LBrace, "`{`");
+            body = self.parse_block_body();
+        }
         return new FuncDecl {
             name: name,
             type_params: type_params,
@@ -205,6 +293,8 @@ struct Parser {
         var pos = self.advance().pos;
         var name = self.expect_ident("struct name");
         var type_params = self.parse_type_params();
+        self.record_bounds(program, name);
+        var interfaces = self.parse_is_list();
         var fields: Vec<Param> = Vec::new();
         var methods: Vec<&FuncDecl> = Vec::new();
         self.expect(Tok::LBrace, "`{`");
@@ -219,13 +309,22 @@ struct Parser {
             self.expect(Tok::Semi, "`;`");
         }
         Parser::add_methods(program, name, type_params, methods, pos);
+        Parser::add_conformance(program, name, type_params, interfaces, pos);
         return new StructDecl { name: name, type_params: type_params, fields: fields, pos: pos };
     }
 
     // A function in a type's body. It's a method, receiving `self`, if its body uses `self`.
     func parse_method(): &FuncDecl {
-        var f = self.parse_func();
-        if stmts_mention_self(f.body) {
+        return self.parse_method_or_signature(false);
+    }
+
+    // A method, or (with `allow_signature`) an interface method signature,
+    // which always takes `self`
+    func parse_method_or_signature(allow_signature: bool): &FuncDecl {
+        var f = self.parse_func_or_signature(allow_signature);
+        // Bounds on a method's own type parameters aren't checked
+        self.bounds = Vec::new();
+        if !self.last_had_body || stmts_mention_self(f.body) {
             var params: Vec<Param> = Vec::new();
             params.push(Param { name: "self", typ: Type::Named("__self") });
             var i = 0;
@@ -261,6 +360,8 @@ struct Parser {
         var pos = self.advance().pos;
         var name = self.expect_ident("enum name");
         var type_params = self.parse_type_params();
+        self.record_bounds(program, name);
+        var interfaces = self.parse_is_list();
         var variants: Vec<Variant> = Vec::new();
         var methods: Vec<&FuncDecl> = Vec::new();
         self.expect(Tok::LBrace, "`{`");
@@ -283,11 +384,12 @@ struct Parser {
             self.expect(Tok::Semi, "`;`");
         }
         Parser::add_methods(program, name, type_params, methods, pos);
+        Parser::add_conformance(program, name, type_params, interfaces, pos);
         return new EnumDecl { name: name, type_params: type_params, variants: variants, pos: pos };
     }
 
     // `extend Type { methods }`
-    func parse_extend(): &ImplDecl {
+    func parse_extend(program: &Program): &ImplDecl {
         var pos = self.advance().pos;
         var type_params: Vec<str> = Vec::new();
         var target = self.parse_type();
@@ -304,6 +406,11 @@ struct Parser {
                 }
             },
             _ => {},
+        }
+        // `extend Type is A, B { ... }`
+        var interfaces = self.parse_is_list();
+        if interfaces.len > 0 {
+            program.conformances.push(new Conformance { target: target, interfaces: interfaces, pos: pos });
         }
         var methods: Vec<&FuncDecl> = Vec::new();
         self.expect(Tok::LBrace, "`{`");
@@ -576,7 +683,7 @@ struct Parser {
                     parts.push(new_expr(ExprKind::StrLit(text), base + literal_start));
                 }
                 var close = skip_interpolation(self.src, self.src.text.to_str(), base + i) - 1;
-                var sub = Parser { tokens: lex_range(self.src, base + i + 2, close), index: 0, src: self.src, pending_gt: false };
+                var sub = Parser { tokens: lex_range(self.src, base + i + 2, close), index: 0, src: self.src, pending_gt: false, bounds: Vec::new(), last_had_body: true };
                 parts.push(sub.parse_expr(PREC_LOWEST, true));
                 if !sub.at(Tok::Eof) {
                     self.src.fail(sub.peek().pos, "expected `}` to end the interpolated expression");
@@ -934,11 +1041,14 @@ func new_program(): &Program {
         impls: Vec::new(),
         globals: Vec::new(),
         aliases: Vec::new(),
+        interfaces: Vec::new(),
+        conformances: Vec::new(),
+        bounds: Map::new(),
     };
 }
 
 func parse_program(src: &Source, tokens: Vec<Token>): &Program {
-    var p = Parser { tokens: tokens, index: 0, src: src, pending_gt: false };
+    var p = Parser { tokens: tokens, index: 0, src: src, pending_gt: false, bounds: Vec::new(), last_had_body: true };
     var program = new_program();
     while !p.at(Tok::Eof) {
         p.parse_item(program);

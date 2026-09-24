@@ -42,6 +42,12 @@ struct Instance {
     args: Vec<Type>;
 }
 
+// A type's claim to implement an interface
+struct Claim {
+    iface: str;
+    pos: int;
+}
+
 // A method of a generic type, with the names the impl gave the type's parameters
 struct GenericMethod {
     params: Vec<str>;
@@ -50,18 +56,23 @@ struct GenericMethod {
 
 struct Checker {
     src: &Source;
-    structs: Map<&StructInfo>;
-    enums: Map<&EnumInfo>;
+    structs: Map<str, &StructInfo>;
+    enums: Map<str, &EnumInfo>;
     // Signatures by symbol: functions by name, methods as `Type.method`
-    funcs: Map<&FuncSig>;
-    generic_structs: Map<&StructDecl>;
-    generic_enums: Map<&EnumDecl>;
-    generic_funcs: Map<&FuncDecl>;
-    generic_methods: Map<Vec<GenericMethod>>;
-    instances: Map<Instance>;
-    instantiated: Map<bool>;
-    aliases: Map<Type>;
-    globals: Map<Type>;
+    funcs: Map<str, &FuncSig>;
+    generic_structs: Map<str, &StructDecl>;
+    generic_enums: Map<str, &EnumDecl>;
+    generic_funcs: Map<str, &FuncDecl>;
+    generic_methods: Map<str, Vec<GenericMethod>>;
+    instances: Map<str, Instance>;
+    instantiated: Map<str, bool>;
+    aliases: Map<str, Type>;
+    globals: Map<str, Type>;
+    interfaces: Map<str, &InterfaceDecl>;
+    // The interfaces each type (or generic type) implements
+    claims: Map<str, Vec<Claim>>;
+    // Bounds on the type parameters of generic functions and types
+    bounds: Map<str, Vec<Bound>>;
 
     // Results, in a deterministic order
     out_structs: Vec<&StructInfo>;
@@ -72,13 +83,13 @@ struct Checker {
     pending: Vec<&FuncDecl>;
 
     // State for the function being checked
-    scopes: Vec<Map<VarInfo>>;
+    scopes: Vec<Map<str, VarInfo>>;
     var_counter: int;
     current_return: Type;
     loop_depth: int;
     // Names closures in the function may capture: mutable variables with
     // these names live in heap cells
-    captured: Map<bool>;
+    captured: Map<str, bool>;
     // For naming the functions closures are lifted into
     closure_count: int;
     // Whether the program includes the garbage collector (stdlib/gc.azl)
@@ -131,6 +142,7 @@ struct Checker {
     // -----------------------------------------------------------------------
 
     func check_program(program: &Program) {
+        self.collect_interfaces(program);
         Checker::resolve_receivers(program);
 
         // Pass 0: names of everything declared, so order doesn't matter
@@ -140,7 +152,7 @@ struct Checker {
             self.aliases.insert(a.name, a.typ);
             i += 1;
         }
-        var type_names: Map<bool> = Map::new();
+        var type_names: Map<str, bool> = Map::new();
         i = 0;
         while i < program.structs.len {
             var s = program.structs.get(i);
@@ -212,7 +224,7 @@ struct Checker {
                 },
                 _ => {
                     // Generic methods of a plain type are instantiated when called
-                    var name = named_of(imp.target);
+                    var name = type_key(imp.target);
                     var methods = self.generic_methods.get(name).unwrap_or(Vec::new());
                     var j = 0;
                     while j < imp.methods.len {
@@ -274,6 +286,22 @@ struct Checker {
         }
         self.has_gc = self.funcs.contains("gc_malloc");
 
+        // Check that types implement the interfaces they claim to (generic
+        // types are checked as they are instantiated)
+        i = 0;
+        while i < program.conformances.len {
+            var claim = program.conformances.get(i);
+            var key = type_key(claim.target);
+            if !self.generic_structs.contains(key) && !self.generic_enums.contains(key) {
+                var j = 0;
+                while j < claim.interfaces.len {
+                    self.verify_conformance(key, self.resolve_type(claim.target, claim.pos), claim.interfaces.get(j), claim.pos);
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+
         // Pass 2: function bodies
         i = 0;
         while i < program.funcs.len {
@@ -308,10 +336,188 @@ struct Checker {
         }
     }
 
+    // Record interfaces and which types implement them, and give types the
+    // default methods of their interfaces they don't define themselves
+    func collect_interfaces(program: &Program) {
+        self.bounds = program.bounds;
+        var i = 0;
+        while i < program.interfaces.len {
+            var decl = program.interfaces.get(i);
+            if self.interfaces.contains(decl.name) {
+                self.fail(decl.pos, concat3("`", decl.name, "` is defined more than once"));
+            }
+            self.interfaces.insert(decl.name, decl);
+            i += 1;
+        }
+        var owners = self.bounds.key_list();
+        i = 0;
+        while i < owners.len {
+            var list = self.bounds.get(owners.get(i)).unwrap();
+            var j = 0;
+            while j < list.len {
+                if !self.interfaces.contains(list.get(j).iface) {
+                    fatal(concat3("unknown interface `", list.get(j).iface, concat3("` in the bounds of `", owners.get(i), "`")));
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+        i = 0;
+        while i < program.conformances.len {
+            var claim = program.conformances.get(i);
+            var key = type_key(claim.target);
+            var j = 0;
+            while j < claim.interfaces.len {
+                var name = claim.interfaces.get(j);
+                if !self.interfaces.contains(name) {
+                    self.fail(claim.pos, concat3("unknown interface `", name, "`"));
+                }
+                var iface = self.interfaces.get(name).unwrap();
+                var list = self.claims.get(key).unwrap_or(Vec::new());
+                list.push(Claim { iface: name, pos: claim.pos });
+                self.claims.insert(key, list);
+                // Default methods the type doesn't define
+                var k = 0;
+                while k < iface.methods.len {
+                    var m = iface.methods.get(k);
+                    if iface.has_body.get(k) && !type_defines(program, key, m.name) {
+                        var copier = Copier { params: Vec::new(), args: Vec::new() };
+                        var copy = copier.copy_func(m, m.name);
+                        var methods: Vec<&FuncDecl> = Vec::new();
+                        methods.push(copy);
+                        var type_params: Vec<str> = Vec::new();
+                        match claim.target {
+                            Type::Generic(_, args) => {
+                                var a = 0;
+                                while a < args.len {
+                                    type_params.push(named_of(args.get(a)));
+                                    a += 1;
+                                }
+                            },
+                            _ => {},
+                        }
+                        program.impls.push(new ImplDecl { target: claim.target, type_params: type_params, methods: methods, pos: claim.pos });
+                    }
+                    // Methods implementing interface methods that take `self`
+                    // take it too, even if they don't use it
+                    if m.params.len > 0 && m.params.get(0).name == "self" {
+                        add_self_param(program, key, m.name);
+                    }
+                    k += 1;
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+    }
+
+    // Check that `type_name` has the methods of interface `name`, with matching signatures
+    func verify_conformance(type_name: str, self_type: Type, name: str, pos: int) {
+        var iface = self.interfaces.get(name).unwrap();
+        var receiver = self_type;
+        if self.structs.contains(type_name) {
+            receiver = Type::Ptr(self_type);
+        }
+        var params: Vec<str> = Vec::new();
+        params.push("Self");
+        params.push("__self");
+        var args: Vec<Type> = Vec::new();
+        args.push(self_type);
+        args.push(receiver);
+        var i = 0;
+        while i < iface.methods.len {
+            var m = iface.methods.get(i);
+            var found = self.funcs.get(concat3(type_name, ".", m.name));
+            if found.is_none() {
+                self.fail(pos, concat3("`", mangle(self_type), concat3("` doesn't implement `", name, concat3("`: it has no method `", m.name, "`"))));
+            }
+            var sig = found.unwrap();
+            var takes_self = m.params.len > 0 && m.params.get(0).name == "self";
+            var what = concat3("`", mangle(self_type), concat3(".", m.name, "` "));
+            if takes_self && !sig.is_method {
+                self.fail(pos, concat3(what, "doesn't use `self`, but interface `", concat(name, "` needs it to be a method")));
+            }
+            if !takes_self && sig.is_method {
+                self.fail(pos, concat3(what, "uses `self`, but interface `", concat(name, "` needs it to be static")));
+            }
+            var expected: Vec<Type> = Vec::new();
+            var j = 0;
+            if takes_self {
+                j = 1;
+            }
+            while j < m.params.len {
+                expected.push(self.resolve_type(subst_type(m.params.get(j).typ, params, args), pos));
+                j += 1;
+            }
+            var expected_ret = self.resolve_type(subst_type(m.ret, params, args), pos);
+            var same = type_eq(expected_ret, sig.ret);
+            var skip = 0;
+            if takes_self {
+                skip = 1;
+            }
+            if sig.params.len - skip != expected.len {
+                same = false;
+            } else {
+                j = 0;
+                while j < expected.len {
+                    if !type_eq(expected.get(j), sig.params.get(j + skip)) {
+                        same = false;
+                    }
+                    j += 1;
+                }
+            }
+            if !same {
+                self.fail(pos, concat3(what, "doesn't match interface `", concat3(name, "`, which expects ", mangle(Type::Func(expected, expected_ret)))));
+            }
+            i += 1;
+        }
+    }
+
+    // Does `t` implement interface `name`?
+    func implements(t: Type, name: str): bool {
+        var key = type_key(t);
+        if self.claims_include(key, name) {
+            return true;
+        }
+        return match self.instances.get(key) {
+            Option::Some(inst) => self.claims_include(inst.generic, name),
+            Option::None => false,
+        };
+    }
+
+    func claims_include(key: str, name: str): bool {
+        var list = self.claims.get(key).unwrap_or(Vec::new());
+        var i = 0;
+        while i < list.len {
+            if list.get(i).iface == name {
+                return true;
+            }
+            i += 1;
+        }
+        return false;
+    }
+
+    // Check the bounds generic `name` puts on its type parameters `params` against `args`
+    func check_bounds(name: str, params: Vec<str>, args: Vec<Type>, pos: int) {
+        var list = self.bounds.get(name).unwrap_or(Vec::new());
+        var i = 0;
+        while i < list.len {
+            var b = list.get(i);
+            var j = 0;
+            while j < params.len && j < args.len {
+                if params.get(j) == b.param && !self.implements(args.get(j), b.iface) {
+                    self.fail(pos, concat3("`", mangle(args.get(j)), concat3("` doesn't implement `", b.iface, concat3("`, which `", name, concat3("` requires of ", b.param, "")))));
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+    }
+
     // Give methods their receiver type and resolve `Self`: in a type's methods,
     // `self` is a reference (`&T`) for structs and a value for other types
     func resolve_receivers(program: &Program) {
-        var structs: Map<bool> = Map::new();
+        var structs: Map<str, bool> = Map::new();
         var i = 0;
         while i < program.structs.len {
             structs.insert(program.structs.get(i).name, true);
@@ -380,7 +586,7 @@ struct Checker {
         return out;
     }
 
-    func check_unique(names: &Map<bool>, name: str, pos: int) {
+    func check_unique(names: &Map<str, bool>, name: str, pos: int) {
         if names.contains(name) {
             self.fail(pos, concat3("`", name, "` is defined more than once"));
         }
@@ -550,6 +756,7 @@ struct Checker {
             self.fail(pos, concat3("wrong number of type arguments for `", name, "`"));
         }
         self.instances.insert(inst, Instance { generic: name, args: args });
+        self.check_bounds(name, params, args, pos);
 
         match self.generic_structs.get(name) {
             Option::Some(decl) => {
@@ -617,6 +824,13 @@ struct Checker {
                 is_extern: false,
                 is_method: m.decl.params.len > 0 && m.decl.params.get(0).name == "self",
             });
+            i += 1;
+        }
+        // Generic types implementing interfaces are checked per instance
+        var claims = self.claims.get(name).unwrap_or(Vec::new());
+        i = 0;
+        while i < claims.len {
+            self.verify_conformance(inst, Type::Named(inst), claims.get(i).iface, claims.get(i).pos);
             i += 1;
         }
         return Type::Named(inst);
@@ -737,6 +951,7 @@ struct Checker {
         if decl.type_params.len != args.len {
             self.fail(pos, concat3("wrong number of type arguments for `", name, "`"));
         }
+        self.check_bounds(name, decl.type_params, args, pos);
         var copier = Copier { params: decl.type_params, args: args };
         var copy = copier.copy_func(decl, symbol);
         self.declare_func(copy, symbol);
@@ -745,7 +960,7 @@ struct Checker {
     }
 
     // Match a generic `pattern` type against a `concrete` one, binding type parameters
-    func unify(pattern: Type, concrete: Type, params: Vec<str>, bindings: &Map<Type>) {
+    func unify(pattern: Type, concrete: Type, params: Vec<str>, bindings: &Map<str, Type>) {
         match pattern {
             Type::Named(name) => {
                 if contains_str(params, name) && !bindings.contains(name) && !is_infer(concrete) {
@@ -838,7 +1053,7 @@ struct Checker {
     // Closures whose parameter types aren't given can't be typed on their own.
     // Once the type parameters their parameters use are bound, check a copy of
     // each to learn its return type, and bind what that tells us.
-    func bind_from_closures(params: Vec<str>, patterns: Vec<Type>, args: Vec<&Expr>, bindings: &Map<Type>) {
+    func bind_from_closures(params: Vec<str>, patterns: Vec<Type>, args: Vec<&Expr>, bindings: &Map<str, Type>) {
         var i = 0;
         while i < patterns.len && i < args.len {
             var arg = args.get(i);
@@ -895,8 +1110,8 @@ struct Checker {
     }
 
     // Bind type parameters by matching `patterns` against the types of `args`
-    func bind_params(params: Vec<str>, patterns: Vec<Type>, args: Vec<&Expr>): Map<Type> {
-        var bindings: Map<Type> = Map::new();
+    func bind_params(params: Vec<str>, patterns: Vec<Type>, args: Vec<&Expr>): Map<str, Type> {
+        var bindings: Map<str, Type> = Map::new();
         var i = 0;
         while i < patterns.len && i < args.len {
             self.unify(patterns.get(i), self.peek_type(args.get(i)), params, &bindings);
@@ -1846,6 +2061,33 @@ struct Checker {
             rt = self.check_expr(r, lt);
         }
 
+        // `==` and `<` on types implementing Eq and Ord call their methods
+        var plain_enum = self.enum_named(named_of(lt)) != null && !self.enum_named(named_of(lt)).boxed;
+        if type_eq(lt, rt) && named_of(lt) != "" && !plain_enum {
+            var eq = (op == BinOp::Eq || op == BinOp::Ne) && self.implements(lt, "Eq");
+            var ord = (op == BinOp::Lt || op == BinOp::Le || op == BinOp::Gt || op == BinOp::Ge) && self.implements(lt, "Ord");
+            if eq || ord {
+                var method = "equals";
+                if ord {
+                    method = "compare";
+                }
+                var method_args: Vec<&Expr> = Vec::new();
+                method_args.push(r);
+                var call = new_expr(ExprKind::Call(new_expr(ExprKind::Field(l, method), e.pos), method_args), e.pos);
+                self.check_expr(call, Type::Infer);
+                if op == BinOp::Eq {
+                    e.kind = call.kind;
+                } else if op == BinOp::Ne {
+                    e.kind = ExprKind::Unary(UnOp::Not, call);
+                } else {
+                    var zero = new_expr(ExprKind::IntLit(0), e.pos);
+                    zero.typ = Type::Int;
+                    e.kind = ExprKind::Binary(op, call, zero);
+                }
+                return Type::Bool;
+            }
+        }
+
         // Operators on strings compare and join contents, via stdlib helpers
         if type_eq(lt, Type::Str) && type_eq(rt, Type::Str) && !is_null_expr(l) && !is_null_expr(r) {
             if op == BinOp::Add || op == BinOp::Eq || op == BinOp::Ne || op == BinOp::Lt || op == BinOp::Le || op == BinOp::Gt || op == BinOp::Ge {
@@ -2022,7 +2264,8 @@ struct Checker {
                 receiver_is_ptr = true;
                 type_name = named_of(inner);
             },
-            _ => {},
+            // Methods on built-in types, such as `extend int { ... }`
+            _ => { type_name = type_key(t); },
         }
         self.instantiate_method(type_name, method);
         var symbol = concat3(type_name, ".", method);
@@ -2409,7 +2652,7 @@ struct Checker {
 
         var result = Type::Infer;
         var has_wildcard = false;
-        var covered: Map<bool> = Map::new();
+        var covered: Map<str, bool> = Map::new();
         var i = 0;
         while i < arms.len {
             var arm = arms.get(i);
@@ -2748,6 +2991,9 @@ func new_checker(src: &Source): &Checker {
         instantiated: Map::new(),
         aliases: Map::new(),
         globals: Map::new(),
+        interfaces: Map::new(),
+        claims: Map::new(),
+        bounds: Map::new(),
         out_structs: Vec::new(),
         out_enums: Vec::new(),
         out_funcs: Vec::new(),
@@ -2869,11 +3115,11 @@ func any_mentions_params(types: Vec<Type>, params: Vec<str>): bool {
 struct NameWalk {
     // Identifiers used, in order of first use
     used: Vec<str>;
-    used_set: Map<bool>;
+    used_set: Map<str, bool>;
     // Names declared (variables, loop variables, pattern bindings, parameters)
-    declared: Map<bool>;
+    declared: Map<str, bool>;
     // Names closures use without declaring them
-    closure_free: Map<bool>;
+    closure_free: Map<str, bool>;
 
     func use_name(name: str) {
         if !self.used_set.contains(name) {
@@ -3072,10 +3318,64 @@ func closure_free_names(params: Vec<Param>, body: Vec<&Stmt>): Vec<str> {
 
 // Names the closures in `body` use from outside them: variables with these
 // names may be captured
-func captured_names(body: Vec<&Stmt>): Map<bool> {
+func captured_names(body: Vec<&Stmt>): Map<str, bool> {
     var walk = new_name_walk();
     walk.stmts(body);
     return walk.closure_free;
+}
+
+// The name a type's methods and interfaces are recorded under
+func type_key(t: Type): str {
+    return match t {
+        Type::Named(name) => name,
+        Type::Generic(name, _) => name,
+        _ => mangle(t),
+    };
+}
+
+// Make type `key`'s method `name` take `self` if it doesn't already
+func add_self_param(program: &Program, key: str, name: str) {
+    var i = 0;
+    while i < program.impls.len {
+        var imp = program.impls.get(i);
+        if type_key(imp.target) == key {
+            var j = 0;
+            while j < imp.methods.len {
+                var f = imp.methods.get(j);
+                if f.name == name && (f.params.len == 0 || f.params.get(0).name != "self") {
+                    var params: Vec<Param> = Vec::new();
+                    params.push(Param { name: "self", typ: Type::Named("__self") });
+                    var k = 0;
+                    while k < f.params.len {
+                        params.push(f.params.get(k));
+                        k += 1;
+                    }
+                    f.params = params;
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
+// Does `program` give the type `key` a method called `name`?
+func type_defines(program: &Program, key: str, name: str): bool {
+    var i = 0;
+    while i < program.impls.len {
+        var imp = program.impls.get(i);
+        if type_key(imp.target) == key {
+            var j = 0;
+            while j < imp.methods.len {
+                if imp.methods.get(j).name == name {
+                    return true;
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    return false;
 }
 
 // `path` followed by `index`

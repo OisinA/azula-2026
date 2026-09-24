@@ -62,7 +62,7 @@ directory holding the compiler.
 - [x] Multi-file projects (`import "file.azl"`)
 - [x] Enums with payloads and pattern matching
 - [x] Generics
-- [x] Beginnings of a standard library (`Option<T>`, `Vec<T>`, `Map<V>`, `StringBuilder`)
+- [x] Beginnings of a standard library (`Option<T>`, `Vec<T>`, `Map<K, V>`, `StringBuilder`, and the `Eq`, `Ord`, `Hash` and `Show` interfaces)
 - [x] Self-hosting compiler
 
 ## A tour of the language
@@ -127,7 +127,7 @@ func main {
 
     var names: Vec<str> = Vec::new();
     names.push("azula");
-    var ages: Map<int> = Map::new();
+    var ages: Map<str, int> = Map::new();
     ages.insert("azula", 7);
     match ages.get("azula") {
         Option::Some(age) => { printf("%s is %d\n", names.get(0), age); },
@@ -173,6 +173,14 @@ Other things to know:
   variables by reference, so the closure and the enclosing code see each other's
   changes. Named functions can be used as values too (`numbers.map(double)`), and
   `Vec` has `each`, `map`, `filter`, `fold`, `any` and `all` (`Option` has `map`).
+- Interfaces: `interface Show { func to_str(): str; }` declares methods a type can
+  implement; methods with bodies are defaults. Types say which interfaces they implement
+  with `struct Point is Show, Eq { ... }` (or `extend Type is Show { ... }` elsewhere,
+  including for built-in types). Type parameters can require interfaces:
+  `func largest<T is Ord>(items: Vec<T>): T`. `==`/`!=` on types that are `Eq` call
+  `equals`, and `<` and friends on types that are `Ord` call `compare`. The standard
+  interfaces `Eq`, `Ord`, `Hash` and `Show` are implemented for `int`, `str`, `bool` and
+  `float`, and `Map<K, V>` takes any `K` that is `Hash + Eq`.
 - `match` works on enums and integers (including character literals); arms can be
   blocks, and a `match` can be used as a statement or an expression.
 - Methods are declared in a type's body and receive `self` implicitly (a reference for

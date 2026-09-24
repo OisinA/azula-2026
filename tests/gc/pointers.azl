@@ -67,7 +67,7 @@ func main {
     }
 
     // A map with struct values that point to heap data
-    var named: Map<&Node> = Map::new();
+    var named: Map<str, &Node> = Map::new();
     i = 0;
     while i < 200 {
         var sb = StringBuilder::new();

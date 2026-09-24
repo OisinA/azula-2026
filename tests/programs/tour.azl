@@ -54,7 +54,7 @@ func main {
 
     var names: Vec<str> = Vec::new();
     names.push("azula");
-    var ages: Map<int> = Map::new();
+    var ages: Map<str, int> = Map::new();
     ages.insert("azula", 7);
     match ages.get("azula") {
         Option::Some(age) => { printf("%s is %d\n", names.get(0), age); },

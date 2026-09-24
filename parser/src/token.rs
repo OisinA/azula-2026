@@ -78,6 +78,7 @@ pub enum TokenKind<'a> {
     Type,     // type
     SizeOf,   // sizeof
     Extend,   // extend
+    Interface, // interface
     In,       // in
 
     Import, // import

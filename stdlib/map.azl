@@ -1,29 +1,32 @@
-// A hash map from strings to values, using open addressing. Keys are not
-// copied, so they must stay alive as long as the map does.
-struct Map<V> {
-    keys: &str;
+// A hash map using open addressing with linear probing. Keys can be any type
+// implementing Hash and Eq (such as int and str). Keys are not copied, so
+// strings used as keys must stay alive as long as the map does.
+struct Map<K is Hash + Eq, V> {
+    keys: &K;
     values: &V;
+    used: &bool;
     cap: int;
     count: int;
 
-    func new(): Map<V> {
-        return Map::<V>::with_capacity(16);
+    func new(): Map<K, V> {
+        return Map::<K, V>::with_capacity(16);
     }
 
-    func with_capacity(cap: int): Map<V> {
+    func with_capacity(cap: int): Map<K, V> {
         return Map {
-            keys: calloc(cap, sizeof(str)),
+            keys: malloc(cap * sizeof(K)),
             values: malloc(cap * sizeof(V)),
+            used: calloc(cap, sizeof(bool)),
             cap: cap,
             count: 0,
         };
     }
 
     // The slot holding `key`, or the empty slot where it would go
-    func slot(key: str): int {
-        var index = map_hash(key) % self.cap;
-        while self.keys[index] != null {
-            if strcmp(self.keys[index], key) == 0 {
+    func slot(key: K): int {
+        var index = key.hash() % self.cap;
+        while self.used[index] {
+            if self.keys[index] == key {
                 return index;
             }
             index = (index + 1) % self.cap;
@@ -31,44 +34,79 @@ struct Map<V> {
         return index;
     }
 
-    func insert(key: str, value: V) {
+    func insert(key: K, value: V) {
         if (self.count + 1) * 2 > self.cap {
             self.grow();
         }
         var index = self.slot(key);
-        if self.keys[index] == null {
+        if !self.used[index] {
             self.keys[index] = key;
+            self.used[index] = true;
             self.count += 1;
         }
         self.values[index] = value;
     }
 
     func grow() {
-        var bigger = Map::<V>::with_capacity(self.cap * 2);
+        var bigger = Map::<K, V>::with_capacity(self.cap * 2);
         var i = 0;
         while i < self.cap {
-            if self.keys[i] != null {
+            if self.used[i] {
                 bigger.insert(self.keys[i], self.values[i]);
             }
             i += 1;
         }
         free(self.keys);
         free(self.values);
+        free(self.used);
         self.keys = bigger.keys;
         self.values = bigger.values;
+        self.used = bigger.used;
         self.cap = bigger.cap;
     }
 
-    func get(key: str): Option<V> {
+    func get(key: K): Option<V> {
         var index = self.slot(key);
-        if self.keys[index] == null {
+        if !self.used[index] {
             return Option::None;
         }
         return Option::Some(self.values[index]);
     }
 
-    func contains(key: str): bool {
-        return self.keys[self.slot(key)] != null;
+    func contains(key: K): bool {
+        return self.used[self.slot(key)];
+    }
+
+    // Remove `key`, returning whether it was there
+    func remove(key: K): bool {
+        var hole = self.slot(key);
+        if !self.used[hole] {
+            return false;
+        }
+        self.used[hole] = false;
+        self.count -= 1;
+        // Move later entries of the probe sequence back into the hole
+        var next = (hole + 1) % self.cap;
+        while self.used[next] {
+            var home = self.keys[next].hash() % self.cap;
+            // Can the entry at `next` move to `hole`? Only if its home slot
+            // isn't cyclically within (hole, next]
+            var stays = false;
+            if hole <= next {
+                stays = home > hole && home <= next;
+            } else {
+                stays = home > hole || home <= next;
+            }
+            if !stays {
+                self.keys[hole] = self.keys[next];
+                self.values[hole] = self.values[next];
+                self.used[hole] = true;
+                self.used[next] = false;
+                hole = next;
+            }
+            next = (next + 1) % self.cap;
+        }
+        return true;
     }
 
     func length(): int {
@@ -76,11 +114,11 @@ struct Map<V> {
     }
 
     // All keys, in no particular order
-    func key_list(): Vec<str> {
-        var keys: Vec<str> = Vec::new();
+    func key_list(): Vec<K> {
+        var keys: Vec<K> = Vec::new();
         var i = 0;
         while i < self.cap {
-            if self.keys[i] != null {
+            if self.used[i] {
                 keys.push(self.keys[i]);
             }
             i += 1;
@@ -88,14 +126,3 @@ struct Map<V> {
         return keys;
     }
 }
-
-func map_hash(key: str): int {
-    var h = 5381;
-    var i = 0;
-    while key[i] != 0 {
-        h = ((h << 5) + h) ^ (key[i] as int);
-        i += 1;
-    }
-    return h & 0x7fffffffffffffff;
-}
-

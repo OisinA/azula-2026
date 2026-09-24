@@ -1,0 +1,11 @@
+// error: `Point.equals` doesn't match interface `Eq`, which expects func(Point):bool
+struct Point is Eq {
+    x: int;
+
+    func equals(other: int): bool {
+        return self.x == other;
+    }
+}
+
+func main() {
+}

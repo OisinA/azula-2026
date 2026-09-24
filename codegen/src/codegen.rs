@@ -116,7 +116,7 @@ impl<'a> Codegen<'a> {
                     for func in funcs {
                         if let Statement::Function { name, args, .. } = func {
                             self.signatures.insert(
-                                format!("{}_{}", struct_impl.to_string(), name),
+                                format!("{}.{}", struct_impl.to_string(), name),
                                 args.into_iter().map(|(t, _)| t).collect(),
                             );
                         }
@@ -257,7 +257,7 @@ impl<'a> Codegen<'a> {
                             }
                         }
 
-                        let gen_name = format!("{}_{}", struct_impl.to_string(), name);
+                        let gen_name = format!("{}.{}", struct_impl.to_string(), name);
 
                         self.module.add_function(gen_name, function)
                     }
@@ -635,7 +635,7 @@ impl<'a> Codegen<'a> {
                     // Check if the method's first parameter is a pointer (mutating self)
                     let receiver_type = left.typed.to_string();
                     let method_name = if let Expression::Identifier(m) = &right.expression { m.clone() } else { String::new() };
-                    let mangled = format!("{}_{}", receiver_type, method_name);
+                    let mangled = format!("{}.{}", receiver_type, method_name);
                     let self_is_ptr = self.signatures.get(&mangled)
                         .and_then(|args| args.first())
                         .map(|t| matches!(t, AzulaType::Pointer(_)))
@@ -1362,7 +1362,7 @@ impl<'a> Codegen<'a> {
                     unreachable!()
                 };
 
-                format!("{}_{}", namespace, func)
+                format!("{}.{}", namespace, func)
             }
             Expression::StructAccess(left, right) => {
                 let namespace = left.deref().clone().typed.to_string();
@@ -1373,7 +1373,7 @@ impl<'a> Codegen<'a> {
                     unreachable!()
                 };
 
-                format!("{}_{}", namespace, func)
+                format!("{}.{}", namespace, func)
             }
             _ => unreachable!("{:?}", func.expression),
         }

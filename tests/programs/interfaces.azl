@@ -1,0 +1,154 @@
+// Interfaces: declared methods, default methods, conformance with `is`,
+// bounds on type parameters, operators via Eq and Ord, and Map<K, V>.
+
+interface Describe {
+    func name(): str;
+
+    // A default method, used by types that don't define their own
+    func describe(): str {
+        return "this is " + self.name();
+    }
+}
+
+struct Point is Eq, Ord, Hash, Show, Describe {
+    x: int;
+    y: int;
+
+    func equals(other: Point): bool {
+        return self.x == other.x && self.y == other.y;
+    }
+
+    // Ordered by distance from the origin (Manhattan)
+    func compare(other: Point): int {
+        return (self.x.abs() + self.y.abs()).compare(other.x.abs() + other.y.abs());
+    }
+
+    func hash(): int {
+        return (self.x * 31 + self.y).hash();
+    }
+
+    func to_str(): str {
+        return "(${self.x}, ${self.y})";
+    }
+
+    func name(): str {
+        return "point ${self}";
+    }
+}
+
+enum Shape is Describe {
+    Circle(int);
+    Square(int);
+
+    func name(): str {
+        return match self {
+            Shape::Circle(r) => "circle of radius ${r}",
+            Shape::Square(s) => "square of side ${s}",
+        };
+    }
+
+    // Overrides the default
+    func describe(): str {
+        return "a shape: " + self.name();
+    }
+}
+
+struct Pair<T> is Show {
+    first: T;
+    second: T;
+
+    func to_str(): str {
+        return "pair";
+    }
+}
+
+// Methods on built-in types
+extend int {
+    func abs(): int {
+        if self < 0 {
+            return -self;
+        }
+        return self;
+    }
+}
+
+func largest<T is Ord>(items: Vec<T>): T {
+    var best = items.get(0);
+    for item in items {
+        if item > best {
+            best = item;
+        }
+    }
+    return best;
+}
+
+func show_all<T is Show>(items: Vec<T>): str {
+    var out = "";
+    for item in items {
+        if out != "" {
+            out += ", ";
+        }
+        out += item.to_str();
+    }
+    return "[" + out + "]";
+}
+
+func count_distinct<T is Hash + Eq>(items: Vec<T>): int {
+    var seen: Map<T, bool> = Map::new();
+    for item in items {
+        seen.insert(item, true);
+    }
+    return seen.length();
+}
+
+func main() {
+    var a = Point { x: 1, y: 2 };
+    var b = Point { x: 1, y: 2 };
+    var c = Point { x: -4, y: 1 };
+    printf("%d %d %d %d\n", a == b, a != c, a < c, c >= a);
+    printf("%s / %s\n", a.describe(), Shape::Circle(2).describe());
+    printf("%s\n", Shape::Square(3).name());
+
+    var points: Vec<Point> = Vec::new();
+    points.push(a);
+    points.push(c);
+    points.push(b);
+    printf("largest %s, distinct %d\n", "${largest(points)}", count_distinct(points));
+    printf("%s\n", show_all(points));
+
+    var numbers: Vec<int> = Vec::new();
+    for n in [5, -9, 3, 5, 3] {
+        numbers.push(n);
+    }
+    printf("largest %d, distinct %d, %s\n", largest(numbers), count_distinct(numbers), show_all(numbers));
+    var p = Pair { first: 1, second: 2 };
+    printf("%s %d\n", p.to_str(), "x".compare("y") < 0);
+
+    // Maps with int, str and struct keys
+    var squares: Map<int, int> = Map::new();
+    for i in 0..100 {
+        squares.insert(i, i * i);
+    }
+    printf("%d %d %d\n", squares.length(), squares.get(12).unwrap(), squares.contains(100));
+    for i in 0..100 {
+        if i % 3 != 0 {
+            squares.remove(i);
+        }
+    }
+    var total = 0;
+    for k in squares.key_list() {
+        total += squares.get(k).unwrap();
+    }
+    printf("%d left, sum %d, has 9: %d, has 10: %d\n", squares.length(), total, squares.contains(9), squares.contains(10));
+
+    var ages: Map<str, int> = Map::new();
+    ages.insert("ada", 36);
+    ages.insert("alan", 41);
+    ages.insert("ada", 37);
+    printf("%d %d %d\n", ages.length(), ages.get("ada").unwrap(), ages.get("grace").unwrap_or(-1));
+
+    var names: Map<Point, str> = Map::new();
+    names.insert(a, "a");
+    names.insert(c, "c");
+    printf("%s %s\n", names.get(Point { x: 1, y: 2 }).unwrap(), names.get(Point { x: 0, y: 0 }).unwrap_or("none"));
+}

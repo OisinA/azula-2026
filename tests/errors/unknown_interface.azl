@@ -1,0 +1,7 @@
+// error: unknown interface `Printable`
+struct Point is Printable {
+    x: int;
+}
+
+func main() {
+}

@@ -20,7 +20,7 @@ func main {
     h.nums.push(7);
     printf("%d %s %d\n", h.items.length(), h.items.get(1), h.nums.get(0));
 
-    var m: Map<int> = Map::new();
+    var m: Map<str, int> = Map::new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("one", 11);
@@ -38,7 +38,7 @@ func main {
     }
     printf("%d %d %d %d\n", m.length(), m.get("key500").unwrap(), m.contains("key999"), m.contains("nope"));
 
-    var symbols: Map<Symbol> = Map::new();
+    var symbols: Map<str, Symbol> = Map::new();
     symbols.insert("x", Symbol { name: "x", depth: 2 });
     match symbols.get("x") {
         Option::Some(sym) => { printf("symbol %s at depth %d\n", sym.name, sym.depth); },

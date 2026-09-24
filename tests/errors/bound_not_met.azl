@@ -1,0 +1,11 @@
+// error: `bool` doesn't implement `Ord`, which `largest` requires of T
+func largest<T is Ord>(a: T, b: T): T {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+func main() {
+    largest(true, false);
+}

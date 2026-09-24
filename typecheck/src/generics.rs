@@ -90,13 +90,13 @@ pub fn subst_stmt<'a>(stmt: &Statement<'a>, map: &Substitution<'a>) -> Statement
         Statement::Destructure(mutable, names, value, span) => {
             Statement::Destructure(*mutable, names.clone(), subst_expr(value, map), span.clone())
         }
-        Statement::Generic(params, inner) => {
+        Statement::Generic(params, bounds, inner) => {
             // The definition's own parameters shadow the outer ones
             let mut inner_map = map.clone();
             for p in params {
                 inner_map.remove(*p);
             }
-            Statement::Generic(params.clone(), Rc::new(subst_stmt(inner, &inner_map)))
+            Statement::Generic(params.clone(), bounds.clone(), Rc::new(subst_stmt(inner, &inner_map)))
         }
         Statement::CompoundAssign(target, op, value, span) => {
             Statement::CompoundAssign(subst_expr(target, map), op.clone(), subst_expr(value, map), span.clone())

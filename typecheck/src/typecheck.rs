@@ -31,6 +31,12 @@ pub struct Typechecker<'a> {
     /// Generic methods, keyed by the (generic) type they belong to: the type's
     /// parameters (as named in the impl), the method's parameters, and the method
     generic_methods: HashMap<String, Vec<(Vec<String>, Vec<String>, Statement<'a>)>>,
+    /// Bounds on the type parameters of generic functions and types
+    generic_bounds: HashMap<String, Vec<(String, String)>>,
+    /// Interfaces: their methods, and whether each has a default body
+    interfaces: HashMap<String, Vec<(Statement<'a>, bool)>>,
+    /// The interfaces each type (or generic type) implements, with where that was declared
+    conformances: HashMap<String, Vec<(String, Span)>>,
     /// Instantiated generic types: instance name (`Vec<int>`) -> (generic, arguments)
     instances: HashMap<String, (String, Vec<AzulaType<'a>>)>,
     /// Instantiated generic functions and methods (by mangled name)
@@ -46,6 +52,8 @@ pub struct Typechecker<'a> {
     current_return: AzulaType<'a>,
     /// For naming temporaries
     temp_counter: usize,
+    /// The call or literal being checked, for errors found while instantiating generics
+    last_span: Span,
     /// Names that closures in the function being checked may capture: mutable
     /// variables with these names are kept in heap cells
     captured: HashSet<String>,
@@ -135,6 +143,9 @@ impl<'a> Typechecker<'a> {
             generic_impls: HashMap::new(),
             generic_funcs: HashMap::new(),
             generic_methods: HashMap::new(),
+            generic_bounds: HashMap::new(),
+            interfaces: HashMap::new(),
+            conformances: HashMap::new(),
             instances: HashMap::new(),
             instantiated_functions: HashSet::new(),
             pending: vec![],
@@ -142,6 +153,7 @@ impl<'a> Typechecker<'a> {
             expected: None,
             current_return: AzulaType::Void,
             temp_counter: 0,
+            last_span: dummy_span(),
             captured: HashSet::new(),
             closure_counter: 0,
             function_values: HashSet::new(),
@@ -151,7 +163,7 @@ impl<'a> Typechecker<'a> {
 
     pub fn typecheck(&mut self) -> Result<Statement<'a>, String> {
         let stmts = match self.ast.clone() {
-            Statement::Root(stmts) => resolve_receivers(stmts),
+            Statement::Root(stmts) => resolve_receivers(self.collect_interfaces(stmts)),
             _ => return Err("Not a root node".to_string()),
         };
 
@@ -161,7 +173,7 @@ impl<'a> Typechecker<'a> {
             let defined_name = match stmt {
                 Statement::Struct { name, span, .. } | Statement::Enum { name, span, .. } => Some((format!("type {}", name), span.clone())),
                 Statement::Function { name, span, .. } => Some((format!("func {}", name), span.clone())),
-                Statement::Generic(_, inner) => match inner.as_ref() {
+                Statement::Generic(_, _, inner) => match inner.as_ref() {
                     Statement::Struct { name, span, .. } | Statement::Enum { name, span, .. } => Some((format!("type {}", name), span.clone())),
                     Statement::Function { name, span, .. } => Some((format!("func {}", name), span.clone())),
                     _ => None,
@@ -174,7 +186,24 @@ impl<'a> Typechecker<'a> {
                 }
             }
             match stmt {
-                Statement::Generic(params, inner) => self.register_generic(params, inner),
+                Statement::Generic(params, bounds, inner) => {
+                    self.register_generic(params, inner);
+                    let name = match inner.as_ref() {
+                        Statement::Function { name, .. } | Statement::Struct { name, .. } | Statement::Enum { name, .. } => Some(name),
+                        _ => None,
+                    };
+                    if let Some(name) = name {
+                        for (_, interface) in bounds {
+                            if !self.interfaces.contains_key(*interface) {
+                                self.error(format!("Unknown interface `{}`", interface), &dummy_span());
+                            }
+                        }
+                        self.generic_bounds.insert(
+                            name.to_string(),
+                            bounds.iter().map(|(p, i)| (p.to_string(), i.to_string())).collect(),
+                        );
+                    }
+                }
                 Statement::TypeAlias { name, typ, .. } => {
                     self.type_aliases.insert(name.to_string(), typ.clone());
                 }
@@ -242,7 +271,7 @@ impl<'a> Typechecker<'a> {
                                 plain.push(func);
                             }
                             // Generic methods are instantiated when called
-                            Statement::Generic(params, inner) => {
+                            Statement::Generic(params, _, inner) => {
                                 let params = params.iter().map(|p| p.to_string()).collect();
                                 self.generic_methods.entry(struct_name.clone()).or_default().push((
                                     vec![],
@@ -262,6 +291,23 @@ impl<'a> Typechecker<'a> {
                 },
                 other => root.push(other),
             }
+        }
+
+        // Check that types implement the interfaces they claim to (generic
+        // types are checked as they are instantiated)
+        let mut claims: Vec<(String, String, Span)> = vec![];
+        for (type_name, interfaces) in &self.conformances {
+            if self.generic_structs.contains_key(type_name) || self.generic_enums.contains_key(type_name) {
+                continue;
+            }
+            for (interface, span) in interfaces {
+                claims.push((type_name.clone(), interface.clone(), span.clone()));
+            }
+        }
+        claims.sort_by(|a, b| a.2.start.cmp(&b.2.start));
+        for (type_name, interface, span) in claims {
+            let self_type: AzulaType<'a> = AzulaType::from(leak(type_name.clone()));
+            self.verify_conformance(&type_name, self_type, &interface, &span);
         }
 
         // Pass 2: check function bodies
@@ -333,7 +379,7 @@ impl<'a> Typechecker<'a> {
                 if let AzulaType::Generic(name, args) = struct_impl {
                     let impl_params: Vec<String> = args.iter().map(|a| a.to_string()).collect();
                     for func in funcs {
-                        if let Statement::Generic(params, inner) = func {
+                        if let Statement::Generic(params, _, inner) = func {
                             let params = params.iter().map(|p| p.to_string()).collect();
                             self.generic_methods.entry(name.clone()).or_default().push((
                                 impl_params.clone(),
@@ -685,6 +731,221 @@ impl<'a> Typechecker<'a> {
         unreachable!()
     }
 
+    /// Record interfaces and which types implement them, and give types the
+    /// default methods of their interfaces they don't define themselves.
+    /// Returns the program without interface declarations.
+    fn collect_interfaces(&mut self, stmts: Vec<Statement<'a>>) -> Vec<Statement<'a>> {
+        for stmt in &stmts {
+            if let Statement::Interface { name, methods, span } = stmt {
+                if self.interfaces.insert(name.to_string(), methods.clone()).is_some() {
+                    self.error(format!("`{}` is defined more than once", name), span);
+                }
+            }
+        }
+        // The methods each type defines
+        let mut defined: HashMap<String, HashSet<String>> = HashMap::new();
+        for stmt in &stmts {
+            let imp = match stmt {
+                Statement::Generic(_, _, inner) => inner.as_ref(),
+                other => other,
+            };
+            if let Statement::Impl { struct_impl, funcs, .. } = imp {
+                let entry = defined.entry(type_key(struct_impl)).or_default();
+                for f in funcs {
+                    let f = match f {
+                        Statement::Generic(_, _, inner) => inner.as_ref(),
+                        other => other,
+                    };
+                    if let Statement::Function { name, .. } = f {
+                        entry.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        let mut out = vec![];
+        let mut defaults = vec![];
+        for stmt in stmts {
+            match stmt {
+                Statement::Interface { .. } => {}
+                Statement::Conforms(target, interfaces, span) => {
+                    let key = type_key(&target);
+                    for interface in interfaces {
+                        self.conformances.entry(key.clone()).or_default().push((interface.to_string(), span.clone()));
+                        let methods = match self.interfaces.get(interface) {
+                            Some(m) => m.clone(),
+                            None => {
+                                self.error(format!("Unknown interface `{}`", interface), &span);
+                                continue;
+                            }
+                        };
+                        for (method, has_body) in methods {
+                            let name = match &method {
+                                Statement::Function { name, .. } => name.to_string(),
+                                _ => continue,
+                            };
+                            if !has_body || defined.get(&key).map(|d| d.contains(&name)).unwrap_or(false) {
+                                continue;
+                            }
+                            defined.entry(key.clone()).or_default().insert(name);
+                            let imp = Statement::Impl {
+                                struct_impl: target.clone(),
+                                trait_impl: None,
+                                funcs: vec![method],
+                                span: span.clone(),
+                            };
+                            defaults.push(match &target {
+                                AzulaType::Generic(_, args) => Statement::Generic(
+                                    args.iter().map(|a| leak(a.to_string())).collect(),
+                                    vec![],
+                                    Rc::new(imp),
+                                ),
+                                _ => imp,
+                            });
+                        }
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+        out.extend(defaults);
+
+        // Methods implementing interface methods that take `self` take it too,
+        // even if they don't use it
+        let mut needs_self: HashMap<String, HashSet<String>> = HashMap::new();
+        for (key, claims) in &self.conformances {
+            for (interface, _) in claims {
+                for (method, _) in self.interfaces.get(interface).cloned().unwrap_or_default() {
+                    if let Statement::Function { name, args, .. } = method {
+                        if args.first().map(|(_, n)| *n == "self").unwrap_or(false) {
+                            needs_self.entry(key.clone()).or_default().insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        let add_self = |imp: Statement<'a>| -> Statement<'a> {
+            if let Statement::Impl { struct_impl, trait_impl, funcs, span } = imp {
+                let wanted = needs_self.get(&type_key(&struct_impl));
+                let funcs = funcs
+                    .into_iter()
+                    .map(|f| match f {
+                        Statement::Function { name, mut args, returns, body, span }
+                            if wanted.map(|w| w.contains(name)).unwrap_or(false)
+                                && args.first().map(|(_, n)| *n != "self").unwrap_or(true) =>
+                        {
+                            args.insert(0, (AzulaType::Named("__self".to_string()), "self"));
+                            Statement::Function { name, args, returns, body, span }
+                        }
+                        other => other,
+                    })
+                    .collect();
+                Statement::Impl { struct_impl, trait_impl, funcs, span }
+            } else {
+                imp
+            }
+        };
+        out.into_iter()
+            .map(|stmt| match stmt {
+                Statement::Impl { .. } => add_self(stmt),
+                Statement::Generic(params, bounds, inner) if matches!(inner.as_ref(), Statement::Impl { .. }) => {
+                    Statement::Generic(params, bounds, Rc::new(add_self(inner.as_ref().clone())))
+                }
+                other => other,
+            })
+            .collect()
+    }
+
+    /// Check that `type_name` has the methods of `interface`, with matching signatures
+    fn verify_conformance(&mut self, type_name: &str, self_type: AzulaType<'a>, interface: &str, span: &Span) {
+        let methods = match self.interfaces.get(interface) {
+            Some(m) => m.clone(),
+            None => return,
+        };
+        let receiver = if self.structs.contains_key(type_name) {
+            AzulaType::Pointer(Rc::new(self_type.clone()))
+        } else {
+            self_type.clone()
+        };
+        let mut map = Substitution::new();
+        map.insert("Self".to_string(), self_type.clone());
+        map.insert("__self".to_string(), receiver);
+        for (method, _) in methods {
+            if let Statement::Function { name, args, returns, .. } = method {
+                let found = self.namespaces.get(type_name).and_then(|n| n.funcs.get(name)).cloned();
+                let found = match found {
+                    Some(f) => f,
+                    None => {
+                        self.error(
+                            format!("`{}` doesn't implement `{}`: it has no method `{}`", self_type.mangle(), interface, name),
+                            span,
+                        );
+                        continue;
+                    }
+                };
+                let expected_args: Vec<AzulaType<'a>> =
+                    args.iter().map(|(t, _)| self.resolve_type(subst_type(t, &map))).collect();
+                let expected_return = self.resolve_type(subst_type(&returns, &map));
+                let actual_args: Vec<AzulaType<'a>> = found.args.iter().map(|(t, _)| t.clone()).collect();
+                let takes_self = |a: &[(AzulaType<'a>, &str)]| a.first().map(|(_, n)| *n == "self").unwrap_or(false);
+                let self_matches = takes_self(&args) == found.args.first().map(|(_, n)| n == "self").unwrap_or(false);
+                let skip = if takes_self(&args) { 1 } else { 0 };
+                if !self_matches {
+                    let problem = if takes_self(&args) { "doesn't use `self`" } else { "uses `self`" };
+                    let wanted = if takes_self(&args) { "a method" } else { "static" };
+                    self.error(
+                        format!("`{}.{}` {}, but interface `{}` needs it to be {}", self_type.mangle(), name, problem, interface, wanted),
+                        span,
+                    );
+                    continue;
+                }
+                if !self_matches || expected_args[skip.min(expected_args.len())..] != actual_args[skip.min(actual_args.len())..] || expected_return != found.returns {
+                    let signature = AzulaType::Function(expected_args[skip.min(expected_args.len())..].to_vec(), Rc::new(expected_return));
+                    self.error(
+                        format!(
+                            "`{}.{}` doesn't match interface `{}`, which expects {}",
+                            self_type.mangle(),
+                            name,
+                            interface,
+                            signature.mangle()
+                        ),
+                        span,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether `typ` implements `interface`
+    fn implements(&self, typ: &AzulaType<'a>, interface: &str) -> bool {
+        let key = type_key(typ);
+        let has = |key: &str| {
+            self.conformances.get(key).map(|c| c.iter().any(|(i, _)| i == interface)).unwrap_or(false)
+        };
+        has(&key) || self.instances.get(&key).map(|(generic, _)| has(generic)).unwrap_or(false)
+    }
+
+    /// Check the bounds generic `name` puts on its type parameters `params` against `args`
+    fn check_bounds(&mut self, name: &str, params: &[String], args: &[AzulaType<'a>]) {
+        let bounds = self.generic_bounds.get(name).cloned().unwrap_or_default();
+        for (param, interface) in bounds {
+            if let Some(index) = params.iter().position(|p| *p == param) {
+                if index < args.len() && !self.implements(&args[index], &interface) {
+                    let span = self.last_span.clone();
+                    self.error(
+                        format!(
+                            "`{}` doesn't implement `{}`, which `{}` requires of {}",
+                            args[index].mangle(),
+                            interface,
+                            name,
+                            param
+                        ),
+                        &span,
+                    );
+                }
+            }
+        }
+    }
+
     /// Instantiate the generic type `name<args>` (if not done already), returning the instance type.
     fn instantiate_type(&mut self, name: &str, args: Vec<AzulaType<'a>>) -> AzulaType<'a> {
         let instance = AzulaType::Generic(name.to_string(), args.clone()).mangle();
@@ -710,6 +971,7 @@ impl<'a> Typechecker<'a> {
         }
 
         self.instances.insert(instance.clone(), (name.to_string(), args.clone()));
+        self.check_bounds(name, &params, &args);
         let map: Substitution<'a> = params.iter().cloned().zip(args.iter().cloned()).collect();
         let instance_name = leak(instance.clone());
 
@@ -747,6 +1009,11 @@ impl<'a> Typechecker<'a> {
         }
         self.namespaces.insert(instance.clone(), Namespace { name: instance.clone(), funcs });
 
+        // Generic types implementing interfaces are checked per instance
+        for (interface, span) in self.conformances.get(name).cloned().unwrap_or_default() {
+            self.verify_conformance(&instance, AzulaType::Named(instance.clone()), &interface, &span);
+        }
+
         AzulaType::Named(instance)
     }
 
@@ -780,6 +1047,7 @@ impl<'a> Typechecker<'a> {
         }
         self.instantiated_functions.insert(instance.clone());
         let (params, func) = self.generic_funcs.get(name).cloned().unwrap();
+        self.check_bounds(name, &params, &args);
         let map: Substitution<'a> = params.iter().cloned().zip(args.iter().cloned()).collect();
         if let Statement::Function { args: fargs, returns, body, span, .. } = subst_stmt(&func, &map) {
             let instance_name = leak(instance.clone());
@@ -2402,6 +2670,7 @@ impl<'a> Typechecker<'a> {
             return self.typecheck_closure_call(callee, args, span, env);
         }
 
+        self.last_span = span.clone();
         let function = self.concretize_callee(function, &args, env, &expected)?;
 
         // Enum variant construction: `Enum::Variant(values...)`
@@ -3061,6 +3330,52 @@ impl<'a> Typechecker<'a> {
             let (mut left, mut left_typ) = self.typecheck_expression(left.deref().clone(), env)?;
             let (mut right, mut right_typ) = self.typecheck_expression(right.deref().clone(), env)?;
 
+            // `==` and `<` on types implementing Eq and Ord call their methods
+            let is_plain_enum = matches!(&left_typ, AzulaType::Named(n) if self.enums.contains_key(n.as_str()) && !self.enum_payloads.contains_key(n.as_str()));
+            if left_typ == right_typ && matches!(left_typ, AzulaType::Named(_)) && !is_plain_enum {
+                let span = expr.span.clone();
+                let method_call = |method: &str| ExpressionNode {
+                    expression: Expression::FunctionCall {
+                        function: Rc::new(ExpressionNode {
+                            expression: Expression::StructAccess(
+                                Rc::new(original_left.clone()),
+                                Rc::new(ExpressionNode {
+                                    expression: Expression::Identifier(method.to_string()),
+                                    typed: AzulaType::Infer,
+                                    span: span.clone(),
+                                }),
+                            ),
+                            typed: AzulaType::Infer,
+                            span: span.clone(),
+                        }),
+                        args: vec![original_right.clone()],
+                    },
+                    typed: AzulaType::Infer,
+                    span: span.clone(),
+                };
+                match operator {
+                    Operator::Eq | Operator::Neq if self.implements(&left_typ, "Eq") => {
+                        let (call, _) = self.typecheck_expression(method_call("equals"), env)?;
+                        if *operator == Operator::Eq {
+                            return Ok((call, AzulaType::Bool));
+                        }
+                        let node = ExpressionNode { expression: Expression::Not(Rc::new(call)), typed: AzulaType::Bool, span };
+                        return Ok((node, AzulaType::Bool));
+                    }
+                    Operator::Lt | Operator::Lte | Operator::Gt | Operator::Gte if self.implements(&left_typ, "Ord") => {
+                        let (call, _) = self.typecheck_expression(method_call("compare"), env)?;
+                        let zero = ExpressionNode { expression: Expression::Integer(0), typed: AzulaType::Int, span: span.clone() };
+                        let node = ExpressionNode {
+                            expression: Expression::Infix(Rc::new(call), operator.clone(), Rc::new(zero)),
+                            typed: AzulaType::Bool,
+                            span,
+                        };
+                        return Ok((node, AzulaType::Bool));
+                    }
+                    _ => {}
+                }
+            }
+
             // Operators on strings compare and join contents, via stdlib helpers
             let is_null = |e: &ExpressionNode<'a>| matches!(e.expression, Expression::Null);
             if left_typ == AzulaType::Str && right_typ == AzulaType::Str && !is_null(&left) && !is_null(&right) {
@@ -3419,7 +3734,7 @@ fn resolve_receivers<'a>(stmts: Vec<Statement<'a>>) -> Vec<Statement<'a>> {
             Statement::Struct { name, .. } => {
                 structs.insert(name.to_string());
             }
-            Statement::Generic(_, inner) => {
+            Statement::Generic(_, _, inner) => {
                 if let Statement::Struct { name, .. } = inner.as_ref() {
                     structs.insert(name.to_string());
                 }
@@ -3455,12 +3770,20 @@ fn resolve_receivers<'a>(stmts: Vec<Statement<'a>>) -> Vec<Statement<'a>> {
         .into_iter()
         .map(|stmt| match &stmt {
             Statement::Impl { .. } => resolve_impl(&stmt),
-            Statement::Generic(params, inner) if matches!(inner.as_ref(), Statement::Impl { .. }) => {
-                Statement::Generic(params.clone(), Rc::new(resolve_impl(inner)))
+            Statement::Generic(params, bounds, inner) if matches!(inner.as_ref(), Statement::Impl { .. }) => {
+                Statement::Generic(params.clone(), bounds.clone(), Rc::new(resolve_impl(inner)))
             }
             _ => stmt,
         })
         .collect()
+}
+
+/// The name a type's methods and interfaces are recorded under
+fn type_key(typ: &AzulaType) -> String {
+    match typ {
+        AzulaType::Named(n) | AzulaType::Generic(n, _) => n.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// Whether `typ` refers to any of the type parameters `params`

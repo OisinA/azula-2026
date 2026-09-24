@@ -230,6 +230,27 @@ struct AliasDecl {
     pos: int;
 }
 
+// `interface Name { methods }`: methods without a body have `has_body` false
+struct InterfaceDecl {
+    name: str;
+    methods: Vec<&FuncDecl>;
+    has_body: Vec<bool>;
+    pos: int;
+}
+
+// `Type is A, B`
+struct Conformance {
+    target: Type;
+    interfaces: Vec<str>;
+    pos: int;
+}
+
+// `T is Show` on a type parameter
+struct Bound {
+    param: str;
+    iface: str;
+}
+
 struct Program {
     funcs: Vec<&FuncDecl>;
     structs: Vec<&StructDecl>;
@@ -237,6 +258,10 @@ struct Program {
     impls: Vec<&ImplDecl>;
     globals: Vec<&GlobalDecl>;
     aliases: Vec<&AliasDecl>;
+    interfaces: Vec<&InterfaceDecl>;
+    conformances: Vec<&Conformance>;
+    // Bounds on the type parameters of generic functions and types, by name
+    bounds: Map<str, Vec<Bound>>;
 }
 
 func new_expr(kind: ExprKind, pos: int): &Expr {
@@ -346,7 +371,7 @@ func mangle_into(t: Type, sb: &StringBuilder) {
     }
 }
 
-// A unique readable name for a type: `int`, `&Node`, `Vec<Map<str>>`
+// A unique readable name for a type: `int`, `&Node`, `Vec<Map<str,int>>`
 func mangle(t: Type): str {
     var sb = StringBuilder::new();
     mangle_into(t, &sb);
