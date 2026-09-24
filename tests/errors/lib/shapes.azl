@@ -1,0 +1,12 @@
+// A module imported by the module error tests
+pub struct Square {
+    side: int;
+}
+
+pub func area(s: Square): int {
+    return s.side * s.side;
+}
+
+func secret(): int {
+    return 42;
+}

@@ -72,7 +72,7 @@ func base_name(path: str): str {
 }
 
 func join_path(dir: str, file: str): str {
-    if file[0] == '/' {
+    if file[0] == '/' || dir == "." {
         return file;
     }
     return concat3(dir, "/", file);
@@ -125,9 +125,9 @@ struct Source {
         self.text.append_char('\n');
     }
 
-    // Add a file line by line; `import "..."` lines are handed to `on_import`
-    // by returning them in `imports` and blanked out.
-    func add_file(file: str, contents: str, imports: &Vec<str>) {
+    // Add a file line by line; `import "..."` lines are blanked out (the
+    // loader in main.azl has already followed them)
+    func add_file(file: str, contents: str) {
         var start = 0;
         var number = 1;
         var i = 0;
@@ -135,9 +135,7 @@ struct Source {
             var c = contents[i];
             if c == '\n' || c == 0 {
                 var line = substring(contents, start, i - start);
-                var import_path = import_target(line);
-                if import_path != null {
-                    imports.push(import_path);
+                if parse_import_line(line).is_some() {
                     self.add_line("", file, number);
                 } else {
                     self.add_line(line, file, number);
@@ -204,34 +202,6 @@ func new_source(): &Source {
         line_files: Vec::new(),
         line_numbers: Vec::new(),
     };
-}
-
-// If `line` is `import "path"` (ignoring surrounding spaces), return the path.
-func import_target(line: str): str {
-    var i = 0;
-    while line[i] == ' ' || line[i] == '\t' {
-        i += 1;
-    }
-    if strncmp(ptr_add(line, i), "import \"", 8) != 0 {
-        return null;
-    }
-    var start = i + 8;
-    var end = start;
-    while line[end] != '"' {
-        if line[end] == 0 {
-            return null;
-        }
-        end += 1;
-    }
-    // Only whitespace may follow the path
-    var rest = end + 1;
-    while line[rest] == ' ' || line[rest] == '\t' || line[rest] == '\r' {
-        rest += 1;
-    }
-    if line[rest] != 0 {
-        return null;
-    }
-    return substring(line, start, end - start);
 }
 
 func fatal(message: str): ! {

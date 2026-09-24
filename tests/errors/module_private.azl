@@ -1,0 +1,6 @@
+// error: `secret` is private to lib/shapes.azl (declare it `pub`)
+import "lib/shapes.azl" as shapes
+
+func main() {
+    println(shapes::secret());
+}

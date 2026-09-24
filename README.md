@@ -59,7 +59,7 @@ directory holding the compiler.
 - [x] Loops
 - [x] Structures
 - [x] Methods
-- [x] Multi-file projects (`import "file.azl"`)
+- [x] Multi-file projects and modules (`import "file.azl" as name`)
 - [x] Enums with payloads and pattern matching
 - [x] Generics
 - [x] Beginnings of a standard library (`Option<T>`, `Result<T, E>`, `Vec<T>`, `Map<K, V>`, `StringBuilder`, and the `Eq`, `Ord`, `Hash` and `Show` interfaces)
@@ -224,6 +224,12 @@ Other things to know:
   called as `Type::name()` instead. `extend Type { ... }` adds methods to a type from
   elsewhere.
 - Struct fields and enum variants end with `;`, and `new Type { ... }` allocates on the heap.
+- Modules: `import "geometry.azl" as geo` loads a file as a module; its items are used as
+  `geo::Rect`, `geo::square(3)` and so on, and don't clash with names in other files.
+  A module's top-level items are private unless declared `pub` (`pub func`, `pub struct`,
+  ...). A plain `import "file.azl"` puts the file's items in the shared namespace, as
+  the standard library's are. Paths are relative to the importing file; see
+  [`examples/modules`](examples/modules).
 - `extern func name(types): type;` (optionally `extern varargs func`) declares C functions;
   `stdlib/libc.azl` declares the common ones.
 - Memory: see below.

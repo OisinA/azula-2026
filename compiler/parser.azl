@@ -77,6 +77,12 @@ struct Parser {
     // -----------------------------------------------------------------------
 
     func parse_item(program: &Program) {
+        // `pub` marks an item visible outside its module (see modules.azl);
+        // by now the loader has used it, so it's skipped
+        var first = self.peek();
+        if first.kind == Tok::Ident && first.text == "pub" && is_item_keyword(self.peek_at(1).kind) {
+            self.advance();
+        }
         var tok = self.peek();
         match tok.kind {
             Tok::KwFunc => {
@@ -1133,6 +1139,13 @@ func new_program(): &Program {
         interfaces: Vec::new(),
         conformances: Vec::new(),
         bounds: Map::new(),
+    };
+}
+
+func is_item_keyword(kind: Tok): bool {
+    return match kind {
+        Tok::KwFunc | Tok::KwStruct | Tok::KwEnum | Tok::KwInterface | Tok::KwType | Tok::KwConst | Tok::KwExtern => true,
+        _ => false,
     };
 }
 

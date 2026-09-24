@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     process::{exit, Command},
@@ -9,6 +9,9 @@ use azula_codegen::prelude::{Backend, Codegen, OptimizationLevel};
 use azula_codegen_llvm::prelude::LLVMCodegen;
 use azula_parser::prelude::{Lexer, Parser};
 use azula_typecheck::prelude::Typechecker;
+
+mod modules;
+use modules::{collect_items, import_line, rewrite, ModuleInfo};
 // use azula_vm::VM;
 use clap::{StructOpt, Subcommand};
 
@@ -126,13 +129,18 @@ impl Source {
 }
 
 /// Recursively read `path` and all its `import "..."` dependencies into
-/// `source`. `seen` prevents duplicate inclusion.
-fn resolve_imports(path: &Path, seen: &mut HashSet<PathBuf>, source: &mut Source) {
+/// `source` (dependencies first). `seen` prevents duplicate inclusion. A file
+/// imported `as name` is a module: see modules.rs.
+fn resolve_imports(
+    path: &Path,
+    alias: Option<&str>,
+    seen: &mut HashMap<PathBuf, ModuleInfo>,
+    source: &mut Source,
+) -> ModuleInfo {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if seen.contains(&canonical) {
-        return;
+    if let Some(info) = seen.get(&canonical) {
+        return info.clone();
     }
-    seen.insert(canonical.clone());
 
     let src = fs::read_to_string(path).unwrap_or_else(|_| {
         eprintln!("Could not read file: {}", path.display());
@@ -141,19 +149,44 @@ fn resolve_imports(path: &Path, seen: &mut HashSet<PathBuf>, source: &mut Source
 
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let file = path.display().to_string();
+    let (items, public) = collect_items(&src);
+    let info = ModuleInfo {
+        prefix: alias.map(|a| format!("{}__", a)).unwrap_or_default(),
+        items,
+        public,
+        file: file.clone(),
+    };
+    seen.insert(canonical, info.clone());
 
-    for (index, line) in src.lines().enumerate() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("import \"") {
-            if let Some(import_path) = rest.strip_suffix('"') {
-                resolve_imports(&dir.join(import_path), seen, source);
-                // Keep the line count of this file intact.
-                source.push_line("", &file, index + 1);
-                continue;
+    // Dependencies first, noting the names modules are imported as
+    let mut aliases = HashMap::new();
+    for line in src.lines() {
+        if let Some((import_path, name)) = import_line(line) {
+            let module = resolve_imports(&dir.join(import_path), name.as_deref(), seen, source);
+            if let Some(name) = name {
+                aliases.insert(name, module);
             }
         }
-        source.push_line(line, &file, index + 1);
     }
+
+    let own = if info.prefix.is_empty() { None } else { Some(&info) };
+    let text = match rewrite(&src, own, &aliases) {
+        Ok(text) => text,
+        Err((offset, message)) => {
+            let line = src[..offset].matches('\n').count() + 1;
+            eprintln!("error: {}:{}: {}", file, line, message);
+            exit(1);
+        }
+    };
+    for (index, line) in text.lines().enumerate() {
+        // Import lines are blanked, keeping the line count of this file intact
+        if import_line(line).is_some() {
+            source.push_line("", &file, index + 1);
+        } else {
+            source.push_line(line, &file, index + 1);
+        }
+    }
+    info
 }
 
 fn build(
@@ -168,9 +201,9 @@ fn build(
     for (file, contents) in STDLIB {
         source.push_file(file, contents);
     }
-    let mut seen = HashSet::new();
+    let mut seen = HashMap::new();
     for f in files {
-        resolve_imports(Path::new(f), &mut seen, &mut source);
+        resolve_imports(Path::new(f), None, &mut seen, &mut source);
     }
 
     let input = source.text.clone();

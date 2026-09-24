@@ -1,14 +1,20 @@
-// This file uses Rect too; importing geometry.azl again is harmless.
-import "geometry.azl"
+// Modules can import other modules; each file is only included once.
+import "geometry.azl" as geo
 
-func report(shapes: Vec<Rect>) {
+pub func report(shapes: Vec<geo::Rect>) {
     var total = 0;
-    var i = 0;
-    while i < shapes.length() {
-        var r = shapes.get(i);
-        printf("%dx%d: area %d, perimeter %d\n", r.width, r.height, r.area(), r.perimeter());
+    for r in shapes {
+        println("${r.width}x${r.height}: area ${r.area()}, perimeter ${r.perimeter()}");
         total += r.area();
-        i += 1;
     }
-    printf("total area %d\n", total);
+    println("total area ${total}");
+}
+
+// This file's own `twice` doesn't clash with geometry.azl's private one
+func twice(n: int): int {
+    return n + n;
+}
+
+pub func doubled_total(shapes: Vec<geo::Rect>): int {
+    return twice(shapes.iter().map(func(r) => r.area()).fold(0, func(a, b) => a + b));
 }

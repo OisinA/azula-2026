@@ -1,4 +1,6 @@
-struct Rect {
+// A module: items are private to this file unless declared `pub`.
+
+pub struct Rect {
     width: int;
     height: int;
 
@@ -7,10 +9,15 @@ struct Rect {
     }
 
     func perimeter(): int {
-        return 2 * (self.width + self.height);
+        return twice(self.width + self.height);
     }
 }
 
-func square(side: int): Rect {
+pub func square(side: int): Rect {
     return Rect { width: side, height: side };
+}
+
+// Private: only this file can use it (and its name can't clash with others)
+func twice(n: int): int {
+    return 2 * n;
 }

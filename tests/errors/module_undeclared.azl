@@ -1,0 +1,6 @@
+// error: `volume` isn't declared in lib/shapes.azl
+import "lib/shapes.azl" as shapes
+
+func main() {
+    println(shapes::volume(shapes::Square { side: 2 }));
+}

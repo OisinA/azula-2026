@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Check that each program in tests/errors fails to compile with the error
-# given in its first line (`// error: <expected text>`).
+# given in its first line (`// error: <expected text>`). Tests can import
+# modules from tests/errors/lib.
 #
 #   tests/run_errors.sh [path/to/azula]    (defaults to build/azula)
 set -u
@@ -8,6 +9,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPILER="$(realpath "${1:-$ROOT/build/azula}")"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+cp -r "$ROOT/tests/errors/lib" "$WORK/lib"
 
 pass=0
 fail=0

@@ -1,13 +1,15 @@
-// A program split across several files. `import` paths are relative to
-// the importing file, and each file is only included once.
+// A program split across several files. `import "file.azl" as name` makes
+// a module: its `pub` items are reached as `name::item`. Paths are relative
+// to the importing file.
 
-import "geometry.azl"
-import "report.azl"
+import "geometry.azl" as geo
+import "report.azl" as report
 
 func main {
-    var shapes: Vec<Rect> = Vec::new();
-    shapes.push(Rect { width: 3, height: 4 });
-    shapes.push(Rect { width: 10, height: 2 });
-    shapes.push(square(5));
-    report(shapes);
+    var shapes: Vec<geo::Rect> = Vec::new();
+    shapes.push(geo::Rect { width: 3, height: 4 });
+    shapes.push(geo::Rect { width: 10, height: 2 });
+    shapes.push(geo::square(5));
+    report::report(shapes);
+    println("doubled: ${report::doubled_total(shapes)}");
 }

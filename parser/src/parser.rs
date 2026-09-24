@@ -68,6 +68,23 @@ impl<'a> Parser<'a> {
         }
         let token = token.unwrap().clone();
 
+        // `pub` before a declaration (visibility is handled when modules are loaded)
+        if token.kind == TokenKind::Identifier("pub") {
+            let mut look = self.lexer.clone();
+            look.next();
+            let declaration = look.peek().map(|t| {
+                matches!(
+                    t.kind,
+                    TokenKind::Function | TokenKind::Struct | TokenKind::Enum | TokenKind::Interface
+                        | TokenKind::Type | TokenKind::Const | TokenKind::Extern
+                )
+            });
+            if declaration == Some(true) {
+                self.lexer.next();
+                return self.parse_statement();
+            }
+        }
+
         // `func(` starts a closure expression rather than a declaration
         let is_closure = token.kind == TokenKind::Function && {
             let mut look = self.lexer.clone();
