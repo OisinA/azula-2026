@@ -19,3 +19,6 @@
 !examples/**/*.azl
 !compiler/**/*.azl
 .DS_STORE/build/
+
+# The ray tracer example's default output
+raytracer.png

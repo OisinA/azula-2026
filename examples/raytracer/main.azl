@@ -1,0 +1,116 @@
+// A ray tracer: renders spheres of glass, metal and matte paint on a
+// checkered floor, with soft shadows, reflections, refraction, depth of field
+// and anti-aliasing, and saves the picture as a PNG.
+//
+//   azula run --release examples/raytracer/main.azl [WIDTH] [SAMPLES] [FILE]
+//
+// (defaults: 320 pixels wide, 8 samples per pixel, raytracer.png). For a
+// good-looking picture try 800 and 64.
+import "vec3.azl" as v
+import "scene.azl" as scene
+import "png.azl" as png
+
+const MAX_BOUNCES: int = 12;
+
+struct Camera {
+    origin: v::Vec3;
+    corner: v::Vec3;
+    horizontal: v::Vec3;
+    vertical: v::Vec3;
+    u: v::Vec3;
+    w: v::Vec3;
+    v: v::Vec3;
+    lens_radius: float;
+
+    // A camera at `from` looking at `to`, with a vertical field of view of
+    // `fov` degrees. Things `focus` away are sharp; a wider `aperture`
+    // blurs everything else more.
+    static func new(from: v::Vec3, to: v::Vec3, fov: float, aspect: float, aperture: float, focus: float): Camera {
+        var height = 2.0 * (fov * PI / 360.0).tan();
+        var width = aspect * height;
+        var w = from.sub(to).unit();
+        var u = v::vec3(0.0, 1.0, 0.0).cross(w).unit();
+        var up = w.cross(u);
+        var horizontal = u.scale(focus * width);
+        var vertical = up.scale(focus * height);
+        var corner = from.sub(horizontal.scale(0.5)).sub(vertical.scale(0.5)).sub(w.scale(focus));
+        return Camera {
+            origin: from, corner: corner, horizontal: horizontal, vertical: vertical,
+            u: u, w: w, v: up, lens_radius: aperture / 2.0,
+        };
+    }
+
+    // The ray through point (s, t) of the picture, each from 0 to 1
+    func ray(s: float, t: float, rng: &v::Rng): scene::Ray {
+        var lens = rng.in_unit_disc().scale(self.lens_radius);
+        var offset = self.u.scale(lens.x).add(self.v.scale(lens.y));
+        var target = self.corner.add(self.horizontal.scale(s)).add(self.vertical.scale(t));
+        return scene::Ray { origin: self.origin.add(offset), dir: target.sub(self.origin).sub(offset) };
+    }
+}
+
+// The colour of the light arriving along `ray`
+func trace(ray: scene::Ray, world: scene::Scene, rng: &v::Rng, bounces: int): v::Vec3 {
+    if bounces <= 0 {
+        return v::vec3(0.0, 0.0, 0.0);
+    }
+    match world.hit(ray, 0.001, 1000000.0) {
+        Option::Some(hit) => {
+            return match scene::scatter(ray, hit, rng) {
+                Option::Some(bounce) => bounce.attenuation.mul(trace(bounce.ray, world, rng, bounces - 1)),
+                Option::None => v::vec3(0.0, 0.0, 0.0),
+            };
+        }
+        Option::None => {}
+    }
+    // The sky: a gradient from white at the horizon to blue overhead
+    var t = 0.5 * (ray.dir.unit().y + 1.0);
+    return v::vec3(1.0, 1.0, 1.0).scale(1.0 - t).add(v::vec3(0.5, 0.7, 1.0).scale(t));
+}
+
+// A colour component (0-1, linear) as a byte, gamma-corrected
+func to_byte(value: float): int {
+    var corrected = value.max(0.0).sqrt().min(0.999);
+    return (256.0 * corrected).to_int();
+}
+
+func main() {
+    var arguments = args();
+    var width = if arguments.len > 1 { arguments.get(1).parse_int().unwrap_or(320) } else { 320 };
+    var samples = if arguments.len > 2 { arguments.get(2).parse_int().unwrap_or(8) } else { 8 };
+    var path = if arguments.len > 3 { arguments.get(3) } else { "raytracer.png" };
+    var height = width * 9 / 16;
+
+    var rng = v::Rng { state: 2024 };
+    var world = scene::build_scene(&rng);
+    var camera = Camera::new(
+        v::vec3(13.0, 2.0, 3.0), v::vec3(0.0, 0.0, 0.0),
+        20.0, width.to_float() / height.to_float(), 0.1, 10.0,
+    );
+    println("rendering ${world.spheres.len} spheres at ${width}x${height}, ${samples} samples per pixel");
+
+    var image = png::Image::new(width, height);
+    for row in 0..height {
+        var j = height - 1 - row;
+        for i in 0..width {
+            var colour = v::vec3(0.0, 0.0, 0.0);
+            for _ in 0..samples {
+                var s = (i.to_float() + rng.next()) / (width - 1).to_float();
+                var t = (j.to_float() + rng.next()) / (height - 1).to_float();
+                colour = colour.add(trace(camera.ray(s, t, &rng), world, &rng, MAX_BOUNCES));
+            }
+            colour = colour.scale(1.0 / samples.to_float());
+            image.push(to_byte(colour.x), to_byte(colour.y), to_byte(colour.z));
+        }
+    }
+
+    // A fingerprint of the picture, so different builds can be compared
+    var checksum = image.pixels.fold(0, func(sum, byte) => (sum * 31 + byte) % 1000000007);
+    match image.save(path) {
+        Result::Ok(size) => println("wrote ${path} (${size} bytes, checksum ${checksum})"),
+        Result::Err(message) => {
+            println(message);
+            exit(1);
+        }
+    }
+}

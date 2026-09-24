@@ -1,0 +1,142 @@
+// Writing PNG images, from scratch: a PNG file is a signature followed by
+// chunks (each with a CRC-32 checksum), and the pixels are zlib data. This
+// stores them uncompressed, which every PNG reader understands.
+
+pub struct Image {
+    width: int;
+    height: int;
+    // Red, green and blue bytes for each pixel, row by row from the top
+    pixels: Vec<u8>;
+
+    static func new(width: int, height: int): Image {
+        var pixels: Vec<u8> = Vec::with_capacity(width * height * 3);
+        return Image { width: width, height: height, pixels: pixels };
+    }
+
+    func push(r: int, g: int, b: int) {
+        self.pixels.push(r as u8);
+        self.pixels.push(g as u8);
+        self.pixels.push(b as u8);
+    }
+
+    // The encoded PNG file
+    func encode(): Vec<u8> {
+        var out: Vec<u8> = Vec::new();
+        for byte in [137, 80, 78, 71, 13, 10, 26, 10] {
+            out.push(byte as u8);
+        }
+
+        var header: Vec<u8> = Vec::new();
+        push_u32(&header, self.width);
+        push_u32(&header, self.height);
+        // 8 bits per channel, RGB, deflate, no filtering, not interlaced
+        for byte in [8, 2, 0, 0, 0] {
+            header.push(byte as u8);
+        }
+        write_chunk(&out, "IHDR", header);
+
+        // Each row starts with a filter type byte (0: none)
+        var raw: Vec<u8> = Vec::with_capacity((self.width * 3 + 1) * self.height);
+        var row_bytes = self.width * 3;
+        for y in 0..self.height {
+            raw.push(0 as u8);
+            for i in 0..row_bytes {
+                raw.push(self.pixels.get(y * row_bytes + i));
+            }
+        }
+        write_chunk(&out, "IDAT", zlib_stored(raw));
+        write_chunk(&out, "IEND", Vec::new());
+        return out;
+    }
+
+    // Save to `path`, giving the file's size
+    func save(path: str): Result<int, str> {
+        var bytes = self.encode();
+        var file = fopen(path, "wb");
+        if file == null {
+            return Result::Err("can't write ${path}");
+        }
+        var written = fwrite(bytes.data as str, 1, bytes.len, file);
+        fclose(file);
+        if written != bytes.len {
+            return Result::Err("couldn't write all of ${path}");
+        }
+        return Result::Ok(bytes.len);
+    }
+}
+
+// A big-endian 32-bit number
+func push_u32(out: &Vec<u8>, value: int) {
+    out.push(((value >> 24) & 255) as u8);
+    out.push(((value >> 16) & 255) as u8);
+    out.push(((value >> 8) & 255) as u8);
+    out.push((value & 255) as u8);
+}
+
+// A chunk: its length, type and data, then a CRC of the type and data
+func write_chunk(out: &Vec<u8>, kind: str, data: Vec<u8>) {
+    push_u32(out, data.len);
+    var checked: Vec<u8> = Vec::new();
+    for c in kind.chars() {
+        checked.push(c as u8);
+    }
+    checked.push_all(data);
+    out.push_all(checked);
+    push_u32(out, crc32(checked));
+}
+
+// zlib data holding `data` in "stored" (uncompressed) deflate blocks of up
+// to 65535 bytes, followed by an Adler-32 checksum
+func zlib_stored(data: Vec<u8>): Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(data.len + data.len / 65535 * 5 + 16);
+    // Deflate with a 32K window, no preset dictionary, fastest (0x78 0x01)
+    out.push(120 as u8);
+    out.push(1 as u8);
+    var start = 0;
+    while start < data.len || start == 0 {
+        var size = (data.len - start).min(65535);
+        var last = start + size == data.len;
+        out.push(if last { 1 as u8 } else { 0 as u8 });
+        // The block's length and its complement, little-endian
+        out.push((size & 255) as u8);
+        out.push((size >> 8) as u8);
+        out.push(((size ^ 65535) & 255) as u8);
+        out.push(((size ^ 65535) >> 8) as u8);
+        for i in start..start + size {
+            out.push(data.get(i));
+        }
+        start += size;
+        if last {
+            break;
+        }
+    }
+    push_u32(&out, adler32(data));
+    return out;
+}
+
+func adler32(data: Vec<u8>): int {
+    var a = 1;
+    var b = 0;
+    for byte in data {
+        a = (a + byte) % 65521;
+        b = (b + a) % 65521;
+    }
+    return b * 65536 + a;
+}
+
+// The CRC-32 used by PNG (and zip, and Ethernet)
+func crc32(data: Vec<u8>): int {
+    var table: Vec<int> = Vec::with_capacity(256);
+    for n in 0..256 {
+        var c = n;
+        for _ in 0..8 {
+            c = if c & 1 == 1 { 3988292384 ^ (c >> 1) } else { c >> 1 };
+        }
+        table.push(c);
+    }
+    var crc = 4294967295;
+    for byte in data {
+        crc = table.get((crc ^ byte) & 255) ^ (crc >> 8);
+    }
+    return crc ^ 4294967295;
+}

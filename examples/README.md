@@ -19,6 +19,11 @@ server is started, sent some requests with curl and stopped).
 | [calculator.azl](calculator.azl) | A tokenizer, recursive-descent parser and evaluator; reads its expression from the command line |
 | [brainfuck.azl](brainfuck.azl) | An interpreter for Brainfuck |
 | [modules/main.azl](modules/main.azl) | Splitting a program into modules with `import ... as` and `pub` |
+| [raytracer/main.azl](raytracer/main.azl) | A ray tracer: glass, metal and matte spheres with reflections, refraction, soft shadows and depth of field, saved by a PNG encoder written from scratch (CRC-32, Adler-32, zlib). `azula build --release raytracer/main.azl -o rt && ./rt 640 48` renders the picture below |
 | [http_server/main.azl](http_server/main.azl) | A small web server using `std/net.azl`: routing, headers, POST bodies and a visit counter (`azula run http_server/main.azl [PORT]`) |
+
+![Spheres of glass, gold, blue paint and many small colours on a checkered floor](raytracer/render.png)
+
+*Rendered by [raytracer/main.azl](raytracer/main.azl) (640x360, 48 samples per pixel, 30 seconds).*
 
 For a much bigger example, the compiler itself is written in Azula: see [`compiler/`](../compiler).

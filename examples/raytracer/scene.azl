@@ -1,0 +1,172 @@
+// What's in the world: spheres made of different materials, and how light
+// bounces off them
+import "vec3.azl" as v
+
+pub struct Ray {
+    origin: v::Vec3;
+    dir: v::Vec3;
+
+    func at(t: float): v::Vec3 {
+        return self.origin.add(self.dir.scale(t));
+    }
+}
+
+pub enum Material {
+    // A rough surface that scatters light in all directions
+    Matte(v::Vec3);
+    // A shiny surface: its colour, and how blurry its reflections are (0-1)
+    Metal(v::Vec3, float);
+    // Clear glass with the given refractive index
+    Glass(float);
+    // A matte checkerboard of two colours, with squares of the given size
+    Checker(v::Vec3, v::Vec3, float);
+}
+
+pub struct Sphere {
+    center: v::Vec3;
+    radius: float;
+    material: Material;
+}
+
+// Where a ray hits something
+pub struct Hit {
+    t: float;
+    point: v::Vec3;
+    // Pointing against the ray
+    normal: v::Vec3;
+    // Whether the ray hit the outside of the surface
+    front: bool;
+    material: Material;
+}
+
+pub struct Scene {
+    spheres: Vec<Sphere>;
+
+    // The nearest thing `ray` hits between distances `t_min` and `t_max`
+    func hit(ray: Ray, t_min: float, t_max: float): Option<Hit> {
+        var nearest: Option<Hit> = Option::None;
+        var closest = t_max;
+        for sphere in self.spheres {
+            match hit_sphere(sphere, ray, t_min, closest) {
+                Option::Some(hit) => {
+                    closest = hit.t;
+                    nearest = Option::Some(hit);
+                }
+                Option::None => {}
+            }
+        }
+        return nearest;
+    }
+}
+
+func hit_sphere(sphere: Sphere, ray: Ray, t_min: float, t_max: float): Option<Hit> {
+    // Solve |origin + t dir - center|^2 = radius^2 for t
+    var oc = ray.origin.sub(sphere.center);
+    var a = ray.dir.length_squared();
+    var half_b = oc.dot(ray.dir);
+    var c = oc.length_squared() - sphere.radius * sphere.radius;
+    var discriminant = half_b * half_b - a * c;
+    if discriminant < 0.0 {
+        return Option::None;
+    }
+    var root = discriminant.sqrt();
+    var t = (-half_b - root) / a;
+    if t < t_min || t > t_max {
+        t = (-half_b + root) / a;
+        if t < t_min || t > t_max {
+            return Option::None;
+        }
+    }
+    var point = ray.at(t);
+    var outward = point.sub(sphere.center).scale(1.0 / sphere.radius);
+    var front = ray.dir.dot(outward) < 0.0;
+    var normal = if front { outward } else { outward.negate() };
+    return Option::Some(Hit { t: t, point: point, normal: normal, front: front, material: sphere.material });
+}
+
+// A ray leaving a surface, and how much it tints the light it carries
+pub struct Bounce {
+    ray: Ray;
+    attenuation: v::Vec3;
+}
+
+// How `ray` bounces off what it hit, if it does (absorbed light doesn't)
+pub func scatter(ray: Ray, hit: Hit, rng: &v::Rng): Option<Bounce> {
+    return match hit.material {
+        Material::Matte(albedo) => Option::Some(diffuse(hit, albedo, rng)),
+        Material::Checker(even, odd, size) => {
+            var sum = (hit.point.x / size).floor() + (hit.point.z / size).floor();
+            var parity = sum.to_int() % 2;
+            Option::Some(diffuse(hit, if parity == 0 { even } else { odd }, rng))
+        },
+        Material::Metal(albedo, fuzz) => {
+            var reflected = ray.dir.unit().reflect(hit.normal).add(rng.in_unit_sphere().scale(fuzz));
+            if reflected.dot(hit.normal) <= 0.0 {
+                return Option::None;
+            }
+            Option::Some(Bounce { ray: Ray { origin: hit.point, dir: reflected }, attenuation: albedo })
+        },
+        Material::Glass(index) => {
+            var ratio = if hit.front { 1.0 / index } else { index };
+            var dir = ray.dir.unit();
+            var cos_theta = dir.negate().dot(hit.normal).min(1.0);
+            var sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+            // Total internal reflection, or partial reflection (Schlick's
+            // approximation): otherwise the ray passes through
+            var out = if ratio * sin_theta > 1.0 || reflectance(cos_theta, ratio) > rng.next() {
+                dir.reflect(hit.normal)
+            } else {
+                dir.refract(hit.normal, ratio)
+            };
+            Option::Some(Bounce { ray: Ray { origin: hit.point, dir: out }, attenuation: v::vec3(1.0, 1.0, 1.0) })
+        },
+    };
+}
+
+func diffuse(hit: Hit, albedo: v::Vec3, rng: &v::Rng): Bounce {
+    var dir = hit.normal.add(rng.unit_vector());
+    if dir.near_zero() {
+        dir = hit.normal;
+    }
+    return Bounce { ray: Ray { origin: hit.point, dir: dir }, attenuation: albedo };
+}
+
+func reflectance(cosine: float, ratio: float): float {
+    var r0 = (1.0 - ratio) / (1.0 + ratio);
+    r0 = r0 * r0;
+    return r0 + (1.0 - r0) * (1.0 - cosine).pow(5.0);
+}
+
+// The scene: three large spheres (glass, matte and metal) on a checkered
+// floor, surrounded by small random ones
+pub func build_scene(rng: &v::Rng): Scene {
+    var spheres: Vec<Sphere> = Vec::new();
+    var floor = Material::Checker(v::rgb(52, 60, 74), v::rgb(220, 224, 230), 0.8);
+    spheres.push(Sphere { center: v::vec3(0.0, -1000.0, 0.0), radius: 1000.0, material: floor });
+
+    spheres.push(Sphere { center: v::vec3(0.0, 1.0, 0.0), radius: 1.0, material: Material::Glass(1.5) });
+    spheres.push(Sphere { center: v::vec3(-4.0, 1.0, 0.0), radius: 1.0, material: Material::Matte(v::rgb(38, 110, 190)) });
+    spheres.push(Sphere { center: v::vec3(4.0, 1.0, 0.0), radius: 1.0, material: Material::Metal(v::rgb(230, 180, 90), 0.0) });
+
+    for a in -6..6 {
+        for b in -4..4 {
+            var center = v::vec3(a.to_float() + 0.9 * rng.next(), 0.2, b.to_float() + 0.9 * rng.next());
+            // Keep clear of the big spheres
+            if center.sub(v::vec3(4.0, 0.2, 0.0)).length() < 1.2
+                || center.sub(v::vec3(0.0, 0.2, 0.0)).length() < 1.2
+                || center.sub(v::vec3(-4.0, 0.2, 0.0)).length() < 1.2 {
+                continue;
+            }
+            var choice = rng.next();
+            var material = if choice < 0.65 {
+                Material::Matte(v::vec3(rng.next() * rng.next(), rng.next() * rng.next(), rng.next() * rng.next()))
+            } else if choice < 0.9 {
+                Material::Metal(v::vec3(rng.between(0.5, 1.0), rng.between(0.5, 1.0), rng.between(0.5, 1.0)), rng.between(0.0, 0.4))
+            } else {
+                Material::Glass(1.5)
+            };
+            spheres.push(Sphere { center: center, radius: 0.2, material: material });
+        }
+    }
+    return Scene { spheres: spheres };
+}

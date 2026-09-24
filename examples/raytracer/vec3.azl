@@ -1,0 +1,125 @@
+// 3D vectors, used for points, directions and colours (r, g, b)
+
+pub struct Vec3 is Show {
+    x: float;
+    y: float;
+    z: float;
+
+    func add(other: Vec3): Vec3 {
+        return vec3(self.x + other.x, self.y + other.y, self.z + other.z);
+    }
+
+    func sub(other: Vec3): Vec3 {
+        return vec3(self.x - other.x, self.y - other.y, self.z - other.z);
+    }
+
+    // Component by component (for mixing colours)
+    func mul(other: Vec3): Vec3 {
+        return vec3(self.x * other.x, self.y * other.y, self.z * other.z);
+    }
+
+    func scale(t: float): Vec3 {
+        return vec3(self.x * t, self.y * t, self.z * t);
+    }
+
+    func negate(): Vec3 {
+        return vec3(-self.x, -self.y, -self.z);
+    }
+
+    func dot(other: Vec3): float {
+        return self.x * other.x + self.y * other.y + self.z * other.z;
+    }
+
+    func cross(other: Vec3): Vec3 {
+        return vec3(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x,
+        );
+    }
+
+    func length_squared(): float {
+        return self.x * self.x + self.y * self.y + self.z * self.z;
+    }
+
+    func length(): float {
+        return self.length_squared().sqrt();
+    }
+
+    func unit(): Vec3 {
+        return self.scale(1.0 / self.length());
+    }
+
+    // Mirror this direction about the surface normal `n`
+    func reflect(n: Vec3): Vec3 {
+        return self.sub(n.scale(2.0 * self.dot(n)));
+    }
+
+    // Bend this (unit) direction through a surface with normal `n`, where
+    // `ratio` is the ratio of the refractive indices (Snell's law)
+    func refract(n: Vec3, ratio: float): Vec3 {
+        var cos_theta = self.negate().dot(n).min(1.0);
+        var perpendicular = self.add(n.scale(cos_theta)).scale(ratio);
+        var parallel = n.scale(-(1.0 - perpendicular.length_squared()).abs().sqrt());
+        return perpendicular.add(parallel);
+    }
+
+    func near_zero(): bool {
+        var s = 0.00000001;
+        return self.x.abs() < s && self.y.abs() < s && self.z.abs() < s;
+    }
+
+    func to_str(): str {
+        return "(${self.x}, ${self.y}, ${self.z})";
+    }
+}
+
+pub func vec3(x: float, y: float, z: float): Vec3 {
+    return Vec3 { x: x, y: y, z: z };
+}
+
+// A colour from 0-255 components
+pub func rgb(r: int, g: int, b: int): Vec3 {
+    return vec3(r.to_float() / 255.0, g.to_float() / 255.0, b.to_float() / 255.0);
+}
+
+// A small, fast pseudo-random number generator (a linear congruential
+// generator), so every render of the scene comes out the same
+pub struct Rng {
+    state: int;
+
+    // A float in [0, 1)
+    func next(): float {
+        self.state = (self.state * 1103515245 + 12345) & 2147483647;
+        return (self.state >> 7).to_float() / 16777216.0;
+    }
+
+    // A float in [low, high)
+    func between(low: float, high: float): float {
+        return low + (high - low) * self.next();
+    }
+
+    // A random point inside the unit sphere
+    func in_unit_sphere(): Vec3 {
+        while true {
+            var p = vec3(self.between(-1.0, 1.0), self.between(-1.0, 1.0), self.between(-1.0, 1.0));
+            if p.length_squared() < 1.0 {
+                return p;
+            }
+        }
+    }
+
+    // A random point inside the unit disc (in the xy plane)
+    func in_unit_disc(): Vec3 {
+        while true {
+            var p = vec3(self.between(-1.0, 1.0), self.between(-1.0, 1.0), 0.0);
+            if p.length_squared() < 1.0 {
+                return p;
+            }
+        }
+    }
+
+    func unit_vector(): Vec3 {
+        return self.in_unit_sphere().unit();
+    }
+}

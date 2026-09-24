@@ -15,10 +15,18 @@ if ! command -v timeout > /dev/null; then
 fi
 cp -r "$ROOT/examples" "$WORK/examples"
 
+# Arguments for examples that take them (the ray tracer renders a small
+# picture: programs built by the Rust compiler never free memory)
+example_args() {
+    case "$1" in
+        raytracer/main.azl) echo "96 2 test.png" ;;
+    esac
+}
+
 pass=0
 fail=0
 cd "$WORK/examples"
-for src in *.azl modules/main.azl; do
+for src in *.azl modules/main.azl raytracer/main.azl; do
     name="${src%.azl}"
     if ! "$STAGE0" build "$src" > "$WORK/log" 2>&1 || ! mv "$name" "$WORK/a.out"; then
         echo "FAIL $src (Rust compiler)"; sed 's/^/    /' "$WORK/log" | head -10
@@ -28,10 +36,12 @@ for src in *.azl modules/main.azl; do
         echo "FAIL $src (self-hosted compiler)"; sed 's/^/    /' "$WORK/log" | head -10
         fail=$((fail + 1)); continue
     fi
-    if ! expected="$(timeout 30 "$WORK/a.out" 2>&1)"; then
+    # shellcheck disable=SC2046
+    if ! expected="$(timeout 30 "$WORK/a.out" $(example_args "$src") 2>&1)"; then
         echo "FAIL $src (Rust-compiled program failed)"; fail=$((fail + 1)); continue
     fi
-    actual="$(timeout 30 "$WORK/b.out" 2>&1)"
+    # shellcheck disable=SC2046
+    actual="$(timeout 30 "$WORK/b.out" $(example_args "$src") 2>&1)"
     if [ "$expected" != "$actual" ]; then
         echo "FAIL $src (outputs differ)"
         diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") | head -10 | sed 's/^/    /'
