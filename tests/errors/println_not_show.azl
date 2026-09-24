@@ -1,0 +1,8 @@
+// error: `Point` doesn't implement `Show`, which `println` requires of T
+struct Point {
+    x: int;
+}
+
+func main() {
+    println(Point { x: 1 });
+}

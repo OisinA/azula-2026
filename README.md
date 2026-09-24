@@ -181,6 +181,10 @@ Other things to know:
   `equals`, and `<` and friends on types that are `Ord` call `compare`. The standard
   interfaces `Eq`, `Ord`, `Hash` and `Show` are implemented for `int`, `str`, `bool` and
   `float`, and `Map<K, V>` takes any `K` that is `Hash + Eq`.
+- Printing: `print(x)` and `println(x)` take any value whose type is `Show` (strings,
+  numbers, bools, and your own types that implement `Show`), so `println("sum ${n}")`
+  and `println(n)` both work. `printf` is still available, and the compilers check its
+  format string against the arguments' types.
 - Errors: `Result<T, E>` holds `Result::Ok(value)` or `Result::Err(error)`. Inside a
   function returning a Result, `value?` gives the value of an Ok or returns the Err
   (the error types must match); inside a function returning an Option, `option?` gives

@@ -1147,6 +1147,27 @@ struct Checker {
             ExprKind::FloatLit(_) => Type::Float,
             ExprKind::BoolLit(_) => Type::Bool,
             ExprKind::StrLit(_) => Type::Str,
+            ExprKind::Interpolate(_) => Type::Str,
+            ExprKind::Binary(op, l, r) => {
+                if op == BinOp::Add || op == BinOp::Sub || op == BinOp::Mul || op == BinOp::Div || op == BinOp::Mod
+                    || op == BinOp::BitAnd || op == BinOp::BitOr || op == BinOp::BitXor || op == BinOp::Shl || op == BinOp::Shr {
+                    var lt = self.peek_type(l);
+                    if is_infer(lt) || is_int_literal(l) {
+                        var rt = self.peek_type(r);
+                        if !is_infer(rt) {
+                            return rt;
+                        }
+                    }
+                    return lt;
+                }
+                Type::Bool
+            },
+            ExprKind::Unary(op, x) => {
+                if op == UnOp::Not {
+                    return Type::Bool;
+                }
+                self.peek_type(x)
+            },
             ExprKind::Ident(name) => {
                 match self.lookup_var(name) {
                     Option::Some(v) => { return v.typ; },
@@ -2261,6 +2282,14 @@ struct Checker {
                 }
                 var sig = self.sig_for(symbol, concat3("unknown function `", name, "`"), callee.pos);
                 self.check_args(sig, args, 0, e.pos);
+                // Check literal printf-style format strings against the arguments
+                var format_index = format_argument(name);
+                if format_index >= 0 && format_index < args.len {
+                    match args.get(format_index).kind {
+                        ExprKind::StrLit(format) => { self.check_format(name, format, args, format_index + 1, e.pos); },
+                        _ => {},
+                    }
+                }
                 e.kind = ExprKind::CallFn(self.managed_allocator(sig.symbol, args), args);
                 return sig.ret;
             },
@@ -2369,6 +2398,89 @@ struct Checker {
         }
         e.kind = ExprKind::CallFn(symbol, all_args);
         return sig.ret;
+    }
+
+    // Check the conversions in a printf format string against the types of
+    // the arguments from `first` on
+    func check_format(function: str, format: str, args: Vec<&Expr>, first: int, pos: int) {
+        var next = first;
+        var i = 0;
+        while format[i] != 0 {
+            if format[i] != '%' {
+                i += 1;
+                continue;
+            }
+            var start = i;
+            i += 1;
+            if format[i] == '%' {
+                i += 1;
+                continue;
+            }
+            while format[i] == '-' || format[i] == '+' || format[i] == ' ' || format[i] == '#' || format[i] == '0' {
+                i += 1;
+            }
+            var stars = 0;
+            while is_digit(format[i] as int) || format[i] == '*' || format[i] == '.' {
+                if format[i] == '*' {
+                    stars += 1;
+                }
+                i += 1;
+            }
+            while format[i] == 'h' || format[i] == 'l' || format[i] == 'L' || format[i] == 'q' || format[i] == 'j' || format[i] == 'z' || format[i] == 't' {
+                i += 1;
+            }
+            if format[i] == 0 {
+                self.fail(pos, concat3("`", function, "` format ends in the middle of a conversion"));
+            }
+            var spec = substring(format, start, i - start + 1);
+            while stars > 0 {
+                self.format_arg(function, spec, args, next, 'd', pos);
+                next += 1;
+                stars -= 1;
+            }
+            self.format_arg(function, spec, args, next, format[i] as int, pos);
+            next += 1;
+            i += 1;
+        }
+        if next < args.len {
+            self.fail(pos, concat3("`", function, concat3("` format uses ", int_to_str(next - first), concat3(" arguments, but ", int_to_str(args.len - first), " were given"))));
+        }
+    }
+
+    // Check argument `index` against conversion `conv` of format `spec`
+    func format_arg(function: str, spec: str, args: Vec<&Expr>, index: int, conv: int, pos: int) {
+        if index >= args.len {
+            self.fail(pos, concat3("`", function, concat3("` format `", spec, "` needs more arguments than were given")));
+        }
+        var t = args.get(index).typ;
+        var wanted = "";
+        var ok = false;
+        if conv == 'd' || conv == 'i' || conv == 'u' || conv == 'x' || conv == 'X' || conv == 'o' || conv == 'c' {
+            wanted = "an integer";
+            ok = is_integer(t) || is_bool(t);
+        } else if conv == 'f' || conv == 'F' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G' || conv == 'a' || conv == 'A' {
+            wanted = "a float";
+            ok = is_float(t);
+        } else if conv == 's' {
+            wanted = "a str";
+            ok = type_eq(t, Type::Str);
+        } else if conv == 'p' {
+            wanted = "a pointer";
+            ok = match t {
+                Type::Str => true,
+                Type::Ptr(_) => true,
+                Type::Array(_, _) => true,
+                Type::Func(_, _) => true,
+                _ => false,
+            };
+        } else {
+            var sb = StringBuilder::new();
+            sb.append_char(conv);
+            self.fail(pos, concat3("`", function, concat3("` format has an unknown conversion `%", sb.to_str(), "`")));
+        }
+        if !ok {
+            self.fail(pos, concat3("`", function, concat3("` format `", spec, concat3("` expects ", wanted, concat3(", but argument ", int_to_str(index + 1), concat(" is ", mangle(t)))))));
+        }
     }
 
     // Is `name` a field of `t`'s struct holding a function?
@@ -3388,6 +3500,20 @@ func captured_names(body: Vec<&Stmt>): Map<str, bool> {
     var walk = new_name_walk();
     walk.stmts(body);
     return walk.closure_free;
+}
+
+// For printf-like C functions, the index of the format string argument (-1 otherwise)
+func format_argument(name: str): int {
+    if name == "printf" {
+        return 0;
+    }
+    if name == "sprintf" || name == "fprintf" || name == "dprintf" {
+        return 1;
+    }
+    if name == "snprintf" {
+        return 2;
+    }
+    return -1;
 }
 
 // An unchecked match arm

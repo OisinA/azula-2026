@@ -1,0 +1,11 @@
+// Printing. `print` and `println` take any value whose type is Show (str,
+// int, float, bool, and types that implement Show), so `println("sum ${n}")`
+// and `println(n)` both work.
+
+func print<T is Show>(value: T) {
+    printf("%s", value.to_str());
+}
+
+func println<T is Show>(value: T) {
+    printf("%s\n", value.to_str());
+}

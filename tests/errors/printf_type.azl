@@ -1,0 +1,4 @@
+// error: `printf` format `%s` expects a str, but argument 2 is int
+func main() {
+    printf("%s\n", 5);
+}

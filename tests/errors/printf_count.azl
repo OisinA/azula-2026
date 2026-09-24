@@ -1,0 +1,4 @@
+// error: `printf` format uses 1 arguments, but 2 were given
+func main() {
+    printf("%d\n", 1, 2);
+}

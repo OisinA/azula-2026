@@ -2801,6 +2801,17 @@ impl<'a> Typechecker<'a> {
             new_args.push(arg);
         }
 
+        // Check literal printf-style format strings against the arguments
+        if let Some(index) = format_argument(&func.name) {
+            if let Some(Expression::String(format)) = new_args.get(index).map(|a| &a.expression) {
+                let types: Vec<AzulaType<'a>> = new_args[index + 1..].iter().map(|a| a.typed.clone()).collect();
+                if let Some(message) = check_format(&func.name, format, &types, index + 1) {
+                    self.error(message, &span);
+                    return Err("bad format".to_string());
+                }
+            }
+        }
+
         let return_type = func.returns;
         Ok((
             ExpressionNode {
@@ -3806,6 +3817,98 @@ fn resolve_receivers<'a>(stmts: Vec<Statement<'a>>) -> Vec<Statement<'a>> {
             _ => stmt,
         })
         .collect()
+}
+
+/// For printf-like C functions, the index of the format string argument
+fn format_argument(name: &str) -> Option<usize> {
+    match name {
+        "printf" => Some(0),
+        "sprintf" | "fprintf" | "dprintf" => Some(1),
+        "snprintf" => Some(2),
+        _ => None,
+    }
+}
+
+/// Check the conversions in a printf format string against the types of the
+/// arguments that follow it; an error message if they don't fit
+fn check_format(function: &str, format: &str, args: &[AzulaType], first: usize) -> Option<String> {
+    let bytes = format.as_bytes();
+    let mut next = 0;
+    let mut i = 0;
+    let mut take = |spec: &str, wanted: &str, ok: &dyn Fn(&AzulaType) -> bool| -> Option<String> {
+        let result = match args.get(next) {
+            None => Some(format!("`{}` format `{}` needs more arguments than were given", function, spec)),
+            Some(t) if !ok(t) => Some(format!(
+                "`{}` format `{}` expects {}, but argument {} is {}",
+                function,
+                spec,
+                wanted,
+                first + next + 1,
+                t.mangle()
+            )),
+            _ => None,
+        };
+        next += 1;
+        result
+    };
+    let integer = |t: &AzulaType| is_integer_type(t) || *t == AzulaType::Bool;
+    let float = |t: &AzulaType| is_float_type(t);
+    let string = |t: &AzulaType| *t == AzulaType::Str;
+    let pointer = |t: &AzulaType| matches!(t, AzulaType::Str | AzulaType::Pointer(_) | AzulaType::Array(..) | AzulaType::Function(..));
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        if i < bytes.len() && bytes[i] == b'%' {
+            i += 1;
+            continue;
+        }
+        while i < bytes.len() && b"-+ #0".contains(&bytes[i]) {
+            i += 1;
+        }
+        let mut stars = 0;
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'*' || bytes[i] == b'.') {
+            if bytes[i] == b'*' {
+                stars += 1;
+            }
+            i += 1;
+        }
+        while i < bytes.len() && b"hlLqjzt".contains(&bytes[i]) {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return Some(format!("`{}` format ends in the middle of a conversion", function));
+        }
+        let spec = &format[start..=i];
+        for _ in 0..stars {
+            if let Some(e) = take(spec, "an integer (for `*`)", &integer) {
+                return Some(e);
+            }
+        }
+        let error = match bytes[i] {
+            b'd' | b'i' | b'u' | b'x' | b'X' | b'o' | b'c' => take(spec, "an integer", &integer),
+            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => take(spec, "a float", &float),
+            b's' => take(spec, "a str", &string),
+            b'p' => take(spec, "a pointer", &pointer),
+            other => Some(format!("`{}` format has an unknown conversion `%{}`", function, other as char)),
+        };
+        if error.is_some() {
+            return error;
+        }
+        i += 1;
+    }
+    if next < args.len() {
+        return Some(format!(
+            "`{}` format uses {} arguments, but {} were given",
+            function,
+            next,
+            args.len()
+        ));
+    }
+    None
 }
 
 /// The name a type's methods and interfaces are recorded under

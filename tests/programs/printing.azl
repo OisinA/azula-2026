@@ -1,0 +1,30 @@
+// print/println take any Show value; printf format strings are checked.
+
+struct Money is Show {
+    cents: int;
+
+    func to_str(): str {
+        var pence = self.cents % 100;
+        var padding = "";
+        if pence < 10 {
+            padding = "0";
+        }
+        return "£${self.cents / 100}.${padding}${pence}";
+    }
+}
+
+func main() {
+    println("hello");
+    println(42);
+    println(-7);
+    println(2.5);
+    println(false);
+    println(Money { cents: 1205 });
+    print("a");
+    print(1);
+    print(" ");
+    println("b ${3 * 4}");
+    var total = Money { cents: 99 };
+    println("total: ${total}");
+    printf("%d|%5d|%-3d|%s|%.2f|%c|%%|%x\n", 1, 22, 3, "four", 5.0, 'z', 255);
+}
