@@ -2362,7 +2362,7 @@ mod tests {
         assert!(matches!(struc, Statement::Struct { .. }));
 
         // Single attribute
-        let input = "struct Test { test: int }";
+        let input = "struct Test { test: int; }";
         let lexer: Lexer = input.into();
         let mut parser = Parser::new(input, lexer);
 
@@ -2379,7 +2379,7 @@ mod tests {
         }
 
         // Multiple attribute
-        let input = "struct Test { test: int, test1: &str, }";
+        let input = "struct Test { test: int; test1: &str; }";
         let lexer: Lexer = input.into();
         let mut parser = Parser::new(input, lexer);
 
@@ -2587,60 +2587,39 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_impl() {
-        // Basic
-        let input = "impl Test { }";
+    fn test_parse_extend() {
+        let input = "extend Test { func test { } func get(): int { return self.x; } }";
         let lexer: Lexer = input.into();
         let mut parser = Parser::new(input, lexer);
 
         let stmt = parser.parse_statement().unwrap();
-        assert_eq!(
-            stmt,
-            Statement::Impl {
-                struct_impl: AzulaType::Named("Test".to_string()),
-                trait_impl: None,
-                funcs: vec![],
-                span: Span { start: 0, end: 13 },
+        if let Statement::Impl { struct_impl, funcs, .. } = stmt {
+            assert_eq!(struct_impl, AzulaType::Named("Test".to_string()));
+            assert_eq!(funcs.len(), 2);
+            // Only the method that uses `self` receives it
+            match (&funcs[0], &funcs[1]) {
+                (Statement::Function { args: a, .. }, Statement::Function { args: b, .. }) => {
+                    assert!(a.is_empty());
+                    assert_eq!(b[0].1, "self");
+                }
+                _ => panic!("expected functions"),
             }
-        );
+        } else {
+            panic!("expected an impl");
+        }
+    }
 
-        // Implement trait
-        let input = "impl Display for Test { }";
+    #[test]
+    fn test_struct_methods() {
+        let input = "struct Test { x: int; func get(): int { return self.x; } }";
         let lexer: Lexer = input.into();
         let mut parser = Parser::new(input, lexer);
-
-        let stmt = parser.parse_statement().unwrap();
-        assert_eq!(
-            stmt,
-            Statement::Impl {
-                struct_impl: AzulaType::Named("Test".to_string()),
-                trait_impl: Some(AzulaType::Named("Display".to_string())),
-                funcs: vec![],
-                span: Span { start: 0, end: 25 },
-            }
-        );
-
-        // Functions
-        let input = "impl Test { func test { } }";
-        let lexer: Lexer = input.into();
-        let mut parser = Parser::new(input, lexer);
-
-        let stmt = parser.parse_statement().unwrap();
-        assert_eq!(
-            stmt,
-            Statement::Impl {
-                struct_impl: AzulaType::Named("Test".to_string()),
-                trait_impl: None,
-                funcs: vec![Statement::Function {
-                    name: "test",
-                    args: vec![],
-                    returns: AzulaType::Void,
-                    body: Rc::new(Statement::Block(vec![])),
-                    span: Span { start: 12, end: 25 },
-                }],
-                span: Span { start: 0, end: 27 },
-            }
-        );
+        if let Statement::Root(items) = parser.parse() {
+            assert!(matches!(items[0], Statement::Struct { .. }));
+            assert!(matches!(items[1], Statement::Impl { .. }));
+        } else {
+            panic!("expected a root");
+        }
     }
 
     #[test]
@@ -3279,7 +3258,7 @@ mod tests {
 
     #[test]
     fn test_parse_enum() {
-        let input = "enum Color { Red, Green, Blue, }";
+        let input = "enum Color { Red; Green; Blue; }";
         let lexer: Lexer = input.into();
         let mut parser = Parser::new(input, lexer);
 
