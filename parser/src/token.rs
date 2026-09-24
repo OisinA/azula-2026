@@ -4,6 +4,8 @@ pub struct Span {
     pub end: usize,
 }
 
+use azula_ast::prelude::Operator;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenKind<'a> {
     Identifier(&'a str),
@@ -47,6 +49,10 @@ pub enum TokenKind<'a> {
     Tilde,           // ~
     ShiftLeft,       // <<
     ShiftRight,      // >>
+    DotDot,          // ..
+    DotDotEqual,     // ..=
+    /// `+=`, `-=`, `<<=`, ...
+    CompoundAssign(Operator),
 
     Function, // func
     Return,   // return
@@ -72,6 +78,7 @@ pub enum TokenKind<'a> {
     Type,     // type
     SizeOf,   // sizeof
     Extend,   // extend
+    In,       // in
 
     Import, // import
 
@@ -91,7 +98,7 @@ impl<'a> TokenKind<'a> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Token<'a> {
     pub kind: TokenKind<'a>,
     pub span: Span,

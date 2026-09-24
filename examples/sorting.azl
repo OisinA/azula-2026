@@ -16,9 +16,9 @@ func quicksort<T>(v: &Vec<T>, low: int, high: int) {
     while j < high {
         if v.get(j) < pivot {
             swap_items(v, i, j);
-            i = i + 1;
+            i += 1;
         }
-        j = j + 1;
+        j += 1;
     }
     swap_items(v, i, high);
     quicksort(v, low, i - 1);
@@ -33,7 +33,7 @@ func print_ints(v: Vec<int>) {
     var i = 0;
     while i < v.length() {
         printf("%d ", v.get(i));
-        i = i + 1;
+        i += 1;
     }
     printf("\n");
 }
@@ -46,7 +46,7 @@ func main {
     while i < 15 {
         seed = (seed * 1103515245 + 12345) & 0x7fffffff;
         numbers.push(seed % 100);
-        i = i + 1;
+        i += 1;
     }
     printf("before: ");
     print_ints(numbers);
@@ -59,13 +59,13 @@ func main {
     i = 0;
     while word[i] != 0 {
         letters.push(word[i]);
-        i = i + 1;
+        i += 1;
     }
     sort(&letters);
     i = 0;
     while i < letters.length() {
         printf("%c", letters.get(i));
-        i = i + 1;
+        i += 1;
     }
     printf("\n");
 }

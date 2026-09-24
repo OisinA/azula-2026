@@ -25,7 +25,7 @@ struct Parser {
 
     func next(): Token {
         var tok = self.peek();
-        self.index = self.index + 1;
+        self.index += 1;
         return tok;
     }
 
@@ -100,7 +100,7 @@ func tokenize(text: str): Vec<Token> {
             var value = 0;
             while text[i] >= '0' && text[i] <= '9' {
                 value = value * 10 + (text[i] as int - '0');
-                i = i + 1;
+                i += 1;
             }
             tokens.push(Token::Number(value));
             continue;
@@ -115,7 +115,7 @@ func tokenize(text: str): Vec<Token> {
             printf("unexpected character '%c'\n", c);
             exit(1);
         }
-        i = i + 1;
+        i += 1;
     }
     tokens.push(Token::End);
     return tokens;

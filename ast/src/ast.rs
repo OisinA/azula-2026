@@ -33,6 +33,11 @@ pub enum Statement<'a> {
     Reassign(ExpressionNode<'a>, ExpressionNode<'a>, Span),
     While(ExpressionNode<'a>, Body<'a>, Span),
     For(Option<ExpressionNode<'a>>, Body<'a>, Span),
+    /// `for name in iterable { }`, or `for name in start..end` (the second
+    /// expression and whether the range includes its end)
+    ForIn(String, ExpressionNode<'a>, Option<ExpressionNode<'a>>, bool, Body<'a>, Span),
+    /// `target op= value`
+    CompoundAssign(ExpressionNode<'a>, Operator, ExpressionNode<'a>, Span),
     Break(Span),
     Continue(Span),
     Struct {
@@ -81,6 +86,8 @@ pub enum Expression<'a> {
     SizeOf(AzulaType<'a>),
     Negate(Rc<ExpressionNode<'a>>),
     Pointer(Rc<ExpressionNode<'a>>),
+    /// `*pointer`
+    Deref(Rc<ExpressionNode<'a>>),
     Array(Vec<ExpressionNode<'a>>),
     ArrayAccess(Rc<ExpressionNode<'a>>, Rc<ExpressionNode<'a>>),
     StructInitialisation(Rc<ExpressionNode<'a>>, Vec<(&'a str, ExpressionNode<'a>)>),

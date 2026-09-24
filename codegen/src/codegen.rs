@@ -288,6 +288,28 @@ impl<'a> Codegen<'a> {
                 func.jump(cont);
             }
             Statement::Reassign(..) => self.codegen_reassign(stmt, func),
+            Statement::CompoundAssign(target, op, value, _) => {
+                // Find the target once, then load, combine and store through it
+                let typ = target.typed.clone();
+                let ptr = self.codegen_address(target, func);
+                let zero = func.const_int(0);
+                let old = func.access_element(ptr.clone(), zero.clone(), typ.clone());
+                let rhs = self.codegen_expr(value, func, true);
+                let result = func.emit(|dest| match op {
+                    Operator::Add => Instruction::Add(old, rhs, dest),
+                    Operator::Sub => Instruction::Sub(old, rhs, dest),
+                    Operator::Mul => Instruction::Mul(old, rhs, dest),
+                    Operator::Div => Instruction::Div(old, rhs, dest),
+                    Operator::Mod => Instruction::Mod(old, rhs, dest),
+                    Operator::BitAnd => Instruction::BitAnd(old, rhs, dest),
+                    Operator::BitOr => Instruction::BitOr(old, rhs, dest),
+                    Operator::BitXor => Instruction::BitXor(old, rhs, dest),
+                    Operator::Shl => Instruction::Shl(old, rhs, dest),
+                    Operator::Shr => Instruction::Shr(old, rhs, dest),
+                    _ => unreachable!("compound assignment with {:?}", op),
+                });
+                func.store_element(ptr, zero, result, typ);
+            }
             Statement::Block(stmts) => {
                 self.scopes.push(HashMap::new());
                 for s in stmts {
@@ -317,6 +339,11 @@ impl<'a> Codegen<'a> {
                 Expression::Identifier(v) => {
                     let name = self.variable_name(&v, func);
                     func.store(name, value, var.typed.clone())
+                }
+                Expression::Deref(pointer) => {
+                    let ptr = self.codegen_expr(pointer.deref().clone(), func, true);
+                    let zero = func.const_int(0);
+                    func.store_element(ptr, zero, value, var.typed.clone());
                 }
                 Expression::ArrayAccess(array, index) => {
                     let elem_type = element_type(&array.typed);
@@ -649,6 +676,11 @@ impl<'a> Codegen<'a> {
                 func.sub(zero, val)
             }
             Expression::Pointer(expr) => self.codegen_address(expr.deref().clone(), func),
+            Expression::Deref(pointer) => {
+                let ptr = self.codegen_expr(pointer.deref().clone(), func, true);
+                let zero = func.const_int(0);
+                func.access_element(ptr, zero, expr.typed)
+            }
             Expression::Array(vals) => {
                 let elem_type = vals[0].typed.clone();
                 let array = func.create_array(elem_type.clone(), vals.len());
@@ -895,6 +927,7 @@ impl<'a> Codegen<'a> {
                 let index = self.codegen_expr(index.deref().clone(), func, true);
                 func.emit(|dest| Instruction::ElementPtr(array, index, dest, elem_type))
             }
+            Expression::Deref(pointer) => self.codegen_expr(pointer.deref().clone(), func, true),
             _ => {
                 let temp = format!("__tmp_{}", func.if_block_index);
                 func.if_block_index += 1;

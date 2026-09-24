@@ -1,0 +1,5 @@
+// error: can't iterate over int
+func main {
+    for x in 5 {
+    }
+}

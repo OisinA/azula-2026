@@ -29,11 +29,11 @@ struct Grid {
             var dx = -1;
             while dx <= 1 {
                 if (dx != 0 || dy != 0) && self.get(x + dx, y + dy) {
-                    count = count + 1;
+                    count += 1;
                 }
-                dx = dx + 1;
+                dx += 1;
             }
-            dy = dy + 1;
+            dy += 1;
         }
         return count;
     }
@@ -47,9 +47,9 @@ struct Grid {
                 var n = self.neighbours(x, y);
                 var alive = self.get(x, y);
                 next.set(x, y, n == 3 || (alive && n == 2));
-                x = x + 1;
+                x += 1;
             }
-            y = y + 1;
+            y += 1;
         }
         return next;
     }
@@ -64,10 +64,10 @@ struct Grid {
                 } else {
                     printf(".");
                 }
-                x = x + 1;
+                x += 1;
             }
             printf("\n");
-            y = y + 1;
+            y += 1;
         }
     }
 }
@@ -88,6 +88,6 @@ func main {
             grid.show();
         }
         grid = grid.step();
-        generation = generation + 1;
+        generation += 1;
     }
 }

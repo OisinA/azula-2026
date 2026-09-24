@@ -45,8 +45,8 @@ struct Arena {
             gc_add_root(chunk.start, ptr_add(chunk.start, chunk_size));
         }
         var memory = ptr_add(chunk.start, chunk.used);
-        chunk.used = chunk.used + n;
-        self.bytes = self.bytes + n;
+        chunk.used += n;
+        self.bytes += n;
         return memory;
     }
 

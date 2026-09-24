@@ -130,7 +130,7 @@ struct Checker {
         while i < program.aliases.len {
             var a = program.aliases.get(i);
             self.aliases.insert(a.name, a.typ);
-            i = i + 1;
+            i += 1;
         }
         var type_names: Map<bool> = Map::new();
         i = 0;
@@ -144,7 +144,7 @@ struct Checker {
                 self.structs.insert(s.name, info);
                 self.out_structs.push(info);
             }
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < program.enums.len {
@@ -164,13 +164,13 @@ struct Checker {
                     if v.payload.len > 0 {
                         boxed = true;
                     }
-                    j = j + 1;
+                    j += 1;
                 }
                 var info = new EnumInfo { name: e.name, variants: names, payloads: payloads, boxed: boxed };
                 self.enums.insert(e.name, info);
                 self.out_enums.push(info);
             }
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < program.funcs.len {
@@ -181,7 +181,7 @@ struct Checker {
                 }
                 self.generic_funcs.insert(f.name, f);
             }
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < program.impls.len {
@@ -192,19 +192,19 @@ struct Checker {
                     var j = 0;
                     while j < args.len {
                         params.push(named_of(args.get(j)));
-                        j = j + 1;
+                        j += 1;
                     }
                     var methods = self.generic_methods.get(name).unwrap_or(Vec::new());
                     j = 0;
                     while j < imp.methods.len {
                         methods.push(GenericMethod { params: params, decl: imp.methods.get(j) });
-                        j = j + 1;
+                        j += 1;
                     }
                     self.generic_methods.insert(name, methods);
                 },
                 _ => {},
             }
-            i = i + 1;
+            i += 1;
         }
 
         // Pass 1: resolve the types in declarations and record signatures
@@ -212,13 +212,13 @@ struct Checker {
         while i < self.out_structs.len {
             var info = self.out_structs.get(i);
             info.fields = self.resolve_params(info.fields, 0);
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < self.out_enums.len {
             var info = self.out_enums.get(i);
             info.payloads = self.resolve_payloads(info.payloads, 0);
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < program.funcs.len {
@@ -229,7 +229,7 @@ struct Checker {
                     self.extern_symbols.push(f.name);
                 }
             }
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < program.impls.len {
@@ -240,15 +240,15 @@ struct Checker {
                 while j < imp.methods.len {
                     var m = imp.methods.get(j);
                     self.declare_func(m, concat3(target, ".", m.name));
-                    j = j + 1;
+                    j += 1;
                 }
             }
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < program.globals.len {
             self.check_global(program.globals.get(i));
-            i = i + 1;
+            i += 1;
         }
         self.has_gc = self.funcs.contains("gc_malloc");
 
@@ -259,7 +259,7 @@ struct Checker {
             if f.type_params.len == 0 && !f.is_extern {
                 self.check_function(f);
             }
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < program.impls.len {
@@ -268,10 +268,10 @@ struct Checker {
                 var j = 0;
                 while j < imp.methods.len {
                     self.check_function(imp.methods.get(j));
-                    j = j + 1;
+                    j += 1;
                 }
             }
-            i = i + 1;
+            i += 1;
         }
 
         // Pass 3: generic instances requested along the way
@@ -291,7 +291,7 @@ struct Checker {
         var i = 0;
         while i < program.structs.len {
             structs.insert(program.structs.get(i).name, true);
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < program.impls.len {
@@ -321,10 +321,10 @@ struct Checker {
                 copy.is_extern = m.is_extern;
                 copy.is_varargs = m.is_varargs;
                 methods.push(copy);
-                j = j + 1;
+                j += 1;
             }
             imp.methods = methods;
-            i = i + 1;
+            i += 1;
         }
     }
 
@@ -334,7 +334,7 @@ struct Checker {
         while i < params.len {
             var p = params.get(i);
             out.push(Param { name: p.name, typ: self.resolve_type(p.typ, pos) });
-            i = i + 1;
+            i += 1;
         }
         return out;
     }
@@ -348,10 +348,10 @@ struct Checker {
             var j = 0;
             while j < payload.len {
                 resolved.push(self.resolve_type(payload.get(j), pos));
-                j = j + 1;
+                j += 1;
             }
             out.push(resolved);
-            i = i + 1;
+            i += 1;
         }
         return out;
     }
@@ -377,7 +377,7 @@ struct Checker {
         var i = 0;
         while i < f.params.len {
             params.push(f.params.get(i).typ);
-            i = i + 1;
+            i += 1;
         }
         self.funcs.insert(symbol, new FuncSig {
             symbol: symbol,
@@ -442,7 +442,7 @@ struct Checker {
                 var i = 0;
                 while i < args.len {
                     resolved.push(self.resolve_type(args.get(i), pos));
-                    i = i + 1;
+                    i += 1;
                 }
                 self.instantiate_type(name, resolved, pos)
             },
@@ -488,7 +488,7 @@ struct Checker {
                 while i < decl.fields.len {
                     var f = decl.fields.get(i);
                     fields.push(Param { name: f.name, typ: self.resolve_type(subst_type(f.typ, params, args), pos) });
-                    i = i + 1;
+                    i += 1;
                 }
                 info.fields = fields;
             },
@@ -507,13 +507,13 @@ struct Checker {
                     var j = 0;
                     while j < v.payload.len {
                         payload.push(self.resolve_type(subst_type(v.payload.get(j), params, args), pos));
-                        j = j + 1;
+                        j += 1;
                     }
                     if payload.len > 0 {
                         info.boxed = true;
                     }
                     info.payloads.push(payload);
-                    i = i + 1;
+                    i += 1;
                 }
             },
             Option::None => {},
@@ -528,7 +528,7 @@ struct Checker {
             var j = 0;
             while j < m.decl.params.len {
                 sig_params.push(self.resolve_type(subst_type(m.decl.params.get(j).typ, m.params, args), m.decl.pos));
-                j = j + 1;
+                j += 1;
             }
             var symbol = concat3(inst, ".", m.decl.name);
             self.funcs.insert(symbol, new FuncSig {
@@ -539,7 +539,7 @@ struct Checker {
                 is_extern: false,
                 is_method: m.decl.params.len > 0 && str_eq(m.decl.params.get(0).name, "self"),
             });
-            i = i + 1;
+            i += 1;
         }
         return Type::Named(inst);
     }
@@ -564,7 +564,7 @@ struct Checker {
                 self.pending.push(copier.copy_func(m.decl, symbol));
                 return;
             }
-            i = i + 1;
+            i += 1;
         }
     }
 
@@ -613,7 +613,7 @@ struct Checker {
                             var i = 0;
                             while i < pargs.len && i < inst.args.len {
                                 self.unify(pargs.get(i), inst.args.get(i), params, bindings);
-                                i = i + 1;
+                                i += 1;
                             }
                         }
                     },
@@ -646,7 +646,7 @@ struct Checker {
                     self.fail(pos, concat3("cannot infer type parameter ", params.get(i), concat3(" of `", name, "`; give it explicitly like Name::<Type>")));
                 },
             }
-            i = i + 1;
+            i += 1;
         }
         return result;
     }
@@ -657,7 +657,7 @@ struct Checker {
         var i = 0;
         while i < patterns.len && i < args.len {
             self.unify(patterns.get(i), self.peek_type(args.get(i)), params, &bindings);
-            i = i + 1;
+            i += 1;
         }
         return bindings;
     }
@@ -670,7 +670,7 @@ struct Checker {
         var i = 0;
         while i < decl.params.len {
             patterns.push(decl.params.get(i).typ);
-            i = i + 1;
+            i += 1;
         }
         var bindings = self.bind_params(decl.type_params, patterns, args);
         var targs: Vec<Type> = Vec::new();
@@ -681,7 +681,7 @@ struct Checker {
                 return Type::Infer;
             }
             targs.push(bound.unwrap());
-            i = i + 1;
+            i += 1;
         }
         return self.resolve_type(subst_type(decl.ret, decl.type_params, targs), pos);
     }
@@ -718,7 +718,7 @@ struct Checker {
                     if str_eq(info.fields.get(i).name, name) {
                         return info.fields.get(i).typ;
                     }
-                    i = i + 1;
+                    i += 1;
                 }
                 Type::Infer
             },
@@ -811,7 +811,7 @@ struct Checker {
                 var i = 0;
                 while i < targs.len {
                     resolved.push(self.resolve_type(targs.get(i), ns.pos));
-                    i = i + 1;
+                    i += 1;
                 }
                 named_of(self.instantiate_type(name, resolved, ns.pos))
             },
@@ -832,7 +832,7 @@ struct Checker {
                             if str_eq(decl.variants.get(i).name, member) {
                                 patterns = decl.variants.get(i).payload;
                             }
-                            i = i + 1;
+                            i += 1;
                         }
                     },
                     Option::None => {},
@@ -847,15 +847,15 @@ struct Checker {
                         var j = 0;
                         while j < params.len {
                             own.push(Type::Named(params.get(j)));
-                            j = j + 1;
+                            j += 1;
                         }
                         j = 0;
                         while j < m.decl.params.len {
                             patterns.push(subst_type(m.decl.params.get(j).typ, m.params, own));
-                            j = j + 1;
+                            j += 1;
                         }
                     }
-                    i = i + 1;
+                    i += 1;
                 }
                 var targs = self.infer_type_args(name, params, expected, patterns, args, ns.pos);
                 named_of(self.instantiate_type(name, targs, ns.pos))
@@ -880,7 +880,7 @@ struct Checker {
     }
 
     func declare_var(name: str, typ: Type, mutable: bool): str {
-        self.var_counter = self.var_counter + 1;
+        self.var_counter += 1;
         var ir = concat3(name, ".", int_to_str(self.var_counter));
         self.scopes.data[self.scopes.len - 1].insert(name, VarInfo { typ: typ, mutable: mutable, ir: ir });
         return ir;
@@ -893,7 +893,7 @@ struct Checker {
             if found.is_some() {
                 return found;
             }
-            i = i - 1;
+            i -= 1;
         }
         return Option::None;
     }
@@ -914,7 +914,7 @@ struct Checker {
         while i < f.params.len {
             var p = f.params.get(i);
             self.scopes.data[self.scopes.len - 1].insert(p.name, VarInfo { typ: p.typ, mutable: false, ir: concat("p.", p.name) });
-            i = i + 1;
+            i += 1;
         }
         self.check_block(f.body);
         if !is_void(f.ret) && !always_returns(f.body) {
@@ -928,7 +928,7 @@ struct Checker {
         var i = 0;
         while i < body.len {
             self.check_stmt(body.get(i));
-            i = i + 1;
+            i += 1;
         }
         self.pop_scope();
     }
@@ -1000,9 +1000,40 @@ struct Checker {
                     Option::Some(c) => { self.check_condition(c); },
                     Option::None => {},
                 }
-                self.loop_depth = self.loop_depth + 1;
+                self.loop_depth += 1;
                 self.check_block(body);
-                self.loop_depth = self.loop_depth - 1;
+                self.loop_depth -= 1;
+            },
+            StmtKind::ForIn(name, iterable, end, inclusive, body) => {
+                var block = self.desugar_for_in(s.pos, name, iterable, end, inclusive, body);
+                self.check_expr(block, Type::Infer);
+                s.kind = StmtKind::ExprStmt(block);
+            },
+            StmtKind::CompoundAssign(op, target, value) => {
+                match target.kind {
+                    ExprKind::Ident(name) => {
+                        match self.lookup_var(name) {
+                            Option::Some(info) => {
+                                if !info.mutable {
+                                    self.fail(target.pos, "cannot assign to a constant or parameter");
+                                }
+                            },
+                            Option::None => {},
+                        }
+                    },
+                    _ => {},
+                }
+                // Checked as `target op value`, which must fit back into the target
+                var combined = new_expr(ExprKind::Binary(op, target, value), s.pos);
+                var t = self.check_binary(combined, op, target, value, Type::Infer);
+                match target.kind {
+                    ExprKind::Local(_) => {},
+                    ExprKind::FieldAt(_, _) => {},
+                    ExprKind::Index(_, _) => {},
+                    ExprKind::Deref(_) => {},
+                    _ => { self.fail(target.pos, "cannot assign to this expression"); },
+                }
+                self.expect_assignable(target.typ, t, value);
             },
             StmtKind::Break => {
                 if self.loop_depth == 0 {
@@ -1015,6 +1046,88 @@ struct Checker {
                 }
             },
         }
+    }
+
+    // `for name in ...` becomes a loop over an index:
+    //
+    //   var $items = iterable; const $length = ...; var $index = 0;
+    //   while $index < $length { var name = $items.get($index); $index += 1; body }
+    //
+    // (the index advances before the body, so `continue` works). Ranges count
+    // from start to end directly.
+    func desugar_for_in(pos: int, name: str, iterable: &Expr, end: Option<&Expr>, inclusive: bool, body: Vec<&Stmt>): &Expr {
+        var stmts: Vec<&Stmt> = Vec::new();
+        var condition: &Expr = null;
+        var element: &Expr = null;
+        var index = new_expr(ExprKind::Ident("$index"), pos);
+        match end {
+            Option::Some(limit) => {
+                stmts.push(new_stmt(StmtKind::VarDecl("$index", true, Type::Infer, iterable), pos));
+                stmts.push(new_stmt(StmtKind::VarDecl("$end", false, Type::Infer, limit), pos));
+                var op = BinOp::Lt;
+                if inclusive {
+                    op = BinOp::Le;
+                }
+                condition = new_expr(ExprKind::Binary(op, index, new_expr(ExprKind::Ident("$end"), pos)), pos);
+                element = new_expr(ExprKind::Ident("$index"), pos);
+            },
+            Option::None => {
+                // Work out how to iterate from the type (checking a copy of the expression)
+                var copier = Copier { params: Vec::new(), args: Vec::new() };
+                var t = self.check_expr(copier.expr(iterable), Type::Infer);
+                var items = new_expr(ExprKind::Ident("$items"), pos);
+                var length: &Expr = null;
+                var is_array = false;
+                match t {
+                    Type::Array(_, size) => {
+                        if size < 0 {
+                            self.fail(iterable.pos, "can't iterate over an array of unknown size");
+                        }
+                        length = new_expr(ExprKind::IntLit(size), pos);
+                        is_array = true;
+                    },
+                    Type::Str => {
+                        var args: Vec<&Expr> = Vec::new();
+                        args.push(items);
+                        length = new_expr(ExprKind::Call(new_expr(ExprKind::Ident("strlen"), pos), args), pos);
+                        is_array = true;
+                    },
+                    _ => {
+                        var type_name = named_of(t);
+                        match t {
+                            Type::Ptr(inner) => { type_name = named_of(inner); },
+                            _ => {},
+                        }
+                        if !self.funcs.contains(concat(type_name, ".length")) || !self.funcs.contains(concat(type_name, ".get")) {
+                            self.fail(iterable.pos, concat3("can't iterate over ", mangle(t), ": it needs length() and get() methods"));
+                        }
+                        length = new_expr(ExprKind::Call(new_expr(ExprKind::Field(items, "length"), pos), Vec::new()), pos);
+                    },
+                }
+                if is_array {
+                    element = new_expr(ExprKind::Index(new_expr(ExprKind::Ident("$items"), pos), index), pos);
+                } else {
+                    var args: Vec<&Expr> = Vec::new();
+                    args.push(index);
+                    element = new_expr(ExprKind::Call(new_expr(ExprKind::Field(new_expr(ExprKind::Ident("$items"), pos), "get"), pos), args), pos);
+                }
+                stmts.push(new_stmt(StmtKind::VarDecl("$items", false, Type::Infer, iterable), pos));
+                stmts.push(new_stmt(StmtKind::VarDecl("$length", false, Type::Infer, length), pos));
+                stmts.push(new_stmt(StmtKind::VarDecl("$index", true, Type::Infer, new_expr(ExprKind::IntLit(0), pos)), pos));
+                condition = new_expr(ExprKind::Binary(BinOp::Lt, new_expr(ExprKind::Ident("$index"), pos), new_expr(ExprKind::Ident("$length"), pos)), pos);
+            },
+        }
+        var loop_body: Vec<&Stmt> = Vec::new();
+        loop_body.push(new_stmt(StmtKind::VarDecl(name, true, Type::Infer, element), pos));
+        var one = new_expr(ExprKind::IntLit(1), pos);
+        loop_body.push(new_stmt(StmtKind::CompoundAssign(BinOp::Add, new_expr(ExprKind::Ident("$index"), pos), one), pos));
+        var i = 0;
+        while i < body.len {
+            loop_body.push(body.get(i));
+            i += 1;
+        }
+        stmts.push(new_stmt(StmtKind::Loop(Option::Some(condition), loop_body), pos));
+        return new_expr(ExprKind::Block(stmts, Option::None), pos);
     }
 
     func check_condition(cond: &Expr) {
@@ -1095,6 +1208,21 @@ struct Checker {
                 }
                 return t;
             },
+            ExprKind::Deref(x) => {
+                if !is_infer(e.typ) {
+                    // Created by the checker (a method receiver), already checked
+                    return e.typ;
+                }
+                var t = self.check_expr(x, Type::Infer);
+                return match t {
+                    Type::Ptr(inner) => inner,
+                    Type::Str => Type::SInt(8),
+                    _ => {
+                        self.fail(e.pos, concat("cannot dereference a value of type ", mangle(t)));
+                        Type::Infer
+                    },
+                };
+            },
             ExprKind::AddrOf(x) => {
                 var inner_expected = match expected {
                     Type::Ptr(inner) => inner,
@@ -1131,7 +1259,7 @@ struct Checker {
                         e.kind = ExprKind::FieldAt(obj, i);
                         return info.fields.get(i).typ;
                     }
-                    i = i + 1;
+                    i += 1;
                 }
                 self.fail(e.pos, concat3(info.name, " has no field ", name));
                 return Type::Infer;
@@ -1167,7 +1295,7 @@ struct Checker {
                 while i < items.len {
                     var t = self.check_expr(items.get(i), first);
                     self.expect_assignable(first, t, items.get(i));
-                    i = i + 1;
+                    i += 1;
                 }
                 return Type::Array(first, items.len);
             },
@@ -1225,7 +1353,7 @@ struct Checker {
                 var i = 0;
                 while i < stmts.len {
                     self.check_stmt(stmts.get(i));
-                    i = i + 1;
+                    i += 1;
                 }
                 var t = match value {
                     Option::Some(v) => self.check_expr(v, expected),
@@ -1323,7 +1451,7 @@ struct Checker {
             if str_eq(info.variants.get(i), variant) {
                 return i;
             }
-            i = i + 1;
+            i += 1;
         }
         self.fail(pos, concat3(info.name, " has no variant ", variant));
         return 0;
@@ -1347,7 +1475,7 @@ struct Checker {
                     self.fail(arg.pos, "this expression has no value");
                 }
             }
-            i = i + 1;
+            i += 1;
         }
     }
 
@@ -1361,7 +1489,7 @@ struct Checker {
                     var i = 0;
                     while i < decl.params.len {
                         patterns.push(decl.params.get(i).typ);
-                        i = i + 1;
+                        i += 1;
                     }
                     var targs = self.infer_type_args(name, decl.type_params, Type::Infer, patterns, args, e.pos);
                     symbol = self.instantiate_function(name, targs, e.pos);
@@ -1379,7 +1507,7 @@ struct Checker {
                 var i = 0;
                 while i < targs.len {
                     resolved.push(self.resolve_type(targs.get(i), callee.pos));
-                    i = i + 1;
+                    i += 1;
                 }
                 var sig = self.funcs.get(self.instantiate_function(name, resolved, e.pos)).unwrap();
                 self.check_args(sig, args, 0, e.pos);
@@ -1400,7 +1528,7 @@ struct Checker {
                     while i < args.len {
                         var t = self.check_expr(args.get(i), payload.get(i));
                         self.expect_assignable(payload.get(i), t, args.get(i));
-                        i = i + 1;
+                        i += 1;
                     }
                     e.kind = ExprKind::EnumValue(type_name, tag, args);
                     return Type::Named(type_name);
@@ -1448,7 +1576,7 @@ struct Checker {
                 var i = 0;
                 while i < args.len {
                     all_args.push(args.get(i));
-                    i = i + 1;
+                    i += 1;
                 }
                 e.kind = ExprKind::CallFn(symbol, all_args);
                 return sig.ret;
@@ -1472,7 +1600,7 @@ struct Checker {
                 var i = 0;
                 while i < targs.len {
                     resolved.push(self.resolve_type(targs.get(i), name_expr.pos));
-                    i = i + 1;
+                    i += 1;
                 }
                 name = named_of(self.instantiate_type(name, resolved, name_expr.pos));
             },
@@ -1490,9 +1618,9 @@ struct Checker {
                                     patterns.push(decl.fields.get(j).typ);
                                     values.push(f.value);
                                 }
-                                j = j + 1;
+                                j += 1;
                             }
-                            i = i + 1;
+                            i += 1;
                         }
                         var targs = self.infer_type_args(name, decl.type_params, expected, patterns, values, e.pos);
                         name = named_of(self.instantiate_type(name, targs, e.pos));
@@ -1520,12 +1648,12 @@ struct Checker {
                 if str_eq(info.fields.get(j).name, f.name) {
                     known = true;
                 }
-                j = j + 1;
+                j += 1;
             }
             if !known {
                 self.fail(f.pos, concat3(name, " has no field ", f.name));
             }
-            i = i + 1;
+            i += 1;
         }
         // Fields are evaluated in declaration order
         var values: Vec<&Expr> = Vec::new();
@@ -1538,7 +1666,7 @@ struct Checker {
                 if str_eq(fields.get(j).name, field.name) {
                     value = fields.get(j).value;
                 }
-                j = j + 1;
+                j += 1;
             }
             if value == null {
                 self.fail(e.pos, concat3("missing field `", field.name, concat3("` in ", name, "")));
@@ -1546,7 +1674,7 @@ struct Checker {
             var t = self.check_expr(value, field.typ);
             self.expect_assignable(field.typ, t, value);
             values.push(value);
-            i = i + 1;
+            i += 1;
         }
         e.kind = ExprKind::StructValue(name, values);
         return Type::Named(name);
@@ -1601,7 +1729,7 @@ struct Checker {
                         } else {
                             names.push(self.declare_var(b, payload.get(j), false));
                         }
-                        j = j + 1;
+                        j += 1;
                     }
                     arm.bindings = names;
                 },
@@ -1617,7 +1745,7 @@ struct Checker {
                     result = Type::Void;
                 }
             }
-            i = i + 1;
+            i += 1;
         }
         if info != null && !has_wildcard {
             i = 0;
@@ -1625,7 +1753,7 @@ struct Checker {
                 if !covered.contains(info.variants.get(i)) {
                     self.fail(e.pos, concat3("match doesn't cover variant `", info.variants.get(i), "`"));
                 }
-                i = i + 1;
+                i += 1;
             }
         }
         if is_infer(result) {
@@ -1693,7 +1821,7 @@ struct Checker {
                     if self.has_pointers(s.fields.get(i).typ) {
                         return true;
                     }
-                    i = i + 1;
+                    i += 1;
                 }
                 false
             },
@@ -1765,7 +1893,7 @@ func subst_type(t: Type, params: Vec<str>, args: Vec<Type>): Type {
                 if str_eq(params.get(i), name) {
                     return args.get(i);
                 }
-                i = i + 1;
+                i += 1;
             }
             t
         },
@@ -1776,7 +1904,7 @@ func subst_type(t: Type, params: Vec<str>, args: Vec<Type>): Type {
             var i = 0;
             while i < targs.len {
                 out.push(subst_type(targs.get(i), params, args));
-                i = i + 1;
+                i += 1;
             }
             Type::Generic(name, out)
         },
@@ -1801,7 +1929,7 @@ struct Copier {
         var i = 0;
         while i < list.len {
             out.push(self.expr(list.get(i)));
-            i = i + 1;
+            i += 1;
         }
         return out;
     }
@@ -1811,7 +1939,7 @@ struct Copier {
         var i = 0;
         while i < list.len {
             out.push(self.stmt(list.get(i)));
-            i = i + 1;
+            i += 1;
         }
         return out;
     }
@@ -1828,6 +1956,7 @@ struct Copier {
             ExprKind::Binary(op, l, r) => ExprKind::Binary(op, self.expr(l), self.expr(r)),
             ExprKind::Unary(op, x) => ExprKind::Unary(op, self.expr(x)),
             ExprKind::AddrOf(x) => ExprKind::AddrOf(self.expr(x)),
+            ExprKind::Deref(x) => ExprKind::Deref(self.expr(x)),
             ExprKind::Call(f, args) => ExprKind::Call(self.expr(f), self.exprs(args)),
             ExprKind::Index(a, i) => ExprKind::Index(self.expr(a), self.expr(i)),
             ExprKind::Field(x, name) => ExprKind::Field(self.expr(x), name),
@@ -1837,7 +1966,7 @@ struct Copier {
                 var i = 0;
                 while i < targs.len {
                     out.push(self.typ(targs.get(i)));
-                    i = i + 1;
+                    i += 1;
                 }
                 ExprKind::Turbofish(name, out)
             },
@@ -1847,7 +1976,7 @@ struct Copier {
                 while i < fields.len {
                     var f = fields.get(i);
                     out.push(FieldInit { name: f.name, value: self.expr(f.value), pos: f.pos });
-                    i = i + 1;
+                    i += 1;
                 }
                 ExprKind::StructLit(self.expr(name), out)
             },
@@ -1869,7 +1998,7 @@ struct Copier {
                         tag: 0,
                         bindings: Vec::new(),
                     });
-                    i = i + 1;
+                    i += 1;
                 }
                 ExprKind::Match(self.expr(scrutinee), out)
             },
@@ -1887,6 +2016,10 @@ struct Copier {
             StmtKind::Return(value) => StmtKind::Return(self.opt_expr(value)),
             StmtKind::If(cond, then_body, else_body) => StmtKind::If(self.expr(cond), self.stmts(then_body), self.stmts(else_body)),
             StmtKind::Loop(cond, body) => StmtKind::Loop(self.opt_expr(cond), self.stmts(body)),
+            StmtKind::ForIn(name, iterable, end, inclusive, body) => {
+                StmtKind::ForIn(name, self.expr(iterable), self.opt_expr(end), inclusive, self.stmts(body))
+            },
+            StmtKind::CompoundAssign(op, target, value) => StmtKind::CompoundAssign(op, self.expr(target), self.expr(value)),
             _ => s.kind,
         };
         return new_stmt(kind, s.pos);
@@ -1898,7 +2031,7 @@ struct Copier {
         while i < decl.params.len {
             var p = decl.params.get(i);
             params.push(Param { name: p.name, typ: self.typ(p.typ) });
-            i = i + 1;
+            i += 1;
         }
         return new FuncDecl {
             name: decl.name,
@@ -1945,7 +2078,7 @@ func always_returns(body: Vec<&Stmt>): bool {
                     if !arm_returns {
                         all = false;
                     }
-                    i = i + 1;
+                    i += 1;
                 }
                 all
             },
@@ -1980,7 +2113,7 @@ func contains_break(body: Vec<&Stmt>): bool {
                             },
                             _ => {},
                         }
-                        j = j + 1;
+                        j += 1;
                     }
                     any
                 },
@@ -1991,7 +2124,7 @@ func contains_break(body: Vec<&Stmt>): bool {
         if found {
             return true;
         }
-        i = i + 1;
+        i += 1;
     }
     return false;
 }

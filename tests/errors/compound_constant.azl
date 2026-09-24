@@ -1,0 +1,5 @@
+// error: cannot assign to a constant or parameter
+func main {
+    const total = 0;
+    total += 1;
+}

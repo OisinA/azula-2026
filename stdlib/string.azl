@@ -57,7 +57,7 @@ struct StringBuilder {
     func reserve(extra: int) {
         if self.len + extra + 1 > self.cap {
             while self.len + extra + 1 > self.cap {
-                self.cap = self.cap * 2;
+                self.cap *= 2;
             }
             self.data = realloc(self.data, self.cap);
         }
@@ -67,20 +67,20 @@ struct StringBuilder {
         var n = strlen(s);
         self.reserve(n);
         memcpy(ptr_add(self.data, self.len), s, n + 1);
-        self.len = self.len + n;
+        self.len += n;
     }
 
     func append_char(c: int) {
         self.reserve(1);
         self.data[self.len] = c as i8;
-        self.len = self.len + 1;
+        self.len += 1;
         self.data[self.len] = 0;
     }
 
     func append_int(n: int) {
         self.reserve(24);
         var written = snprintf(ptr_add(self.data, self.len), 24, "%ld", n);
-        self.len = self.len + written;
+        self.len += written;
     }
 
     // The contents so far (shares the builder's buffer)

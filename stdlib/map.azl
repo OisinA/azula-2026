@@ -38,7 +38,7 @@ struct Map<V> {
         var index = self.slot(key);
         if self.keys[index] == null {
             self.keys[index] = key;
-            self.count = self.count + 1;
+            self.count += 1;
         }
         self.values[index] = value;
     }
@@ -50,7 +50,7 @@ struct Map<V> {
             if self.keys[i] != null {
                 bigger.insert(self.keys[i], self.values[i]);
             }
-            i = i + 1;
+            i += 1;
         }
         free(self.keys);
         free(self.values);
@@ -83,7 +83,7 @@ struct Map<V> {
             if self.keys[i] != null {
                 keys.push(self.keys[i]);
             }
-            i = i + 1;
+            i += 1;
         }
         return keys;
     }
@@ -94,7 +94,7 @@ func map_hash(key: str): int {
     var i = 0;
     while key[i] != 0 {
         h = ((h << 5) + h) ^ (key[i] as int);
-        i = i + 1;
+        i += 1;
     }
     return h & 0x7fffffffffffffff;
 }

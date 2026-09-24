@@ -18,11 +18,11 @@ struct Vec<T> {
 
     func push(value: T) {
         if self.len == self.cap {
-            self.cap = self.cap * 2;
+            self.cap *= 2;
             self.data = realloc(self.data, self.cap * sizeof(T));
         }
         self.data[self.len] = value;
-        self.len = self.len + 1;
+        self.len += 1;
     }
 
     func check_index(index: int) {
@@ -52,7 +52,7 @@ struct Vec<T> {
 
     func pop(): T {
         self.check_index(self.len - 1);
-        self.len = self.len - 1;
+        self.len -= 1;
         return self.data[self.len];
     }
 

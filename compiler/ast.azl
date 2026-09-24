@@ -114,6 +114,11 @@ enum StmtKind {
     If(&Expr, Vec<&Stmt>, Vec<&Stmt>);
     // A `while` or `for` loop; no condition loops forever
     Loop(Option<&Expr>, Vec<&Stmt>);
+    // `for name in iterable { }`, or `for name in start..end` (with the end
+    // and whether it's included)
+    ForIn(str, &Expr, Option<&Expr>, bool, Vec<&Stmt>);
+    // `target op= value`
+    CompoundAssign(BinOp, &Expr, &Expr);
     Break;
     Continue;
 }
@@ -258,7 +263,7 @@ func mangle_into(t: Type, sb: &StringBuilder) {
                     sb.append(",");
                 }
                 mangle_into(args.get(i), sb);
-                i = i + 1;
+                i += 1;
             }
             sb.append(">");
         },

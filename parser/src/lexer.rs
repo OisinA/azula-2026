@@ -1,8 +1,10 @@
 use std::{iter::Peekable, str::Chars};
 
 use crate::token::*;
+use azula_ast::prelude::Operator;
 
 /// Lexer transforms a &str into Tokens we can parse
+#[derive(Clone)]
 pub struct Lexer<'a> {
     pub input: &'a str,
     pub peekable: Peekable<Chars<'a>>,
@@ -29,6 +31,31 @@ impl<'a> Lexer<'a> {
     }
 
     fn next_token(&mut self) -> Option<Token<'a>> {
+        let token = self.next_simple_token()?;
+        // An operator followed by `=` is a compound assignment (`+=`, `<<=`, ...)
+        let operator = match token.kind {
+            TokenKind::Plus => Some(Operator::Add),
+            TokenKind::Minus => Some(Operator::Sub),
+            TokenKind::Asterisk => Some(Operator::Mul),
+            TokenKind::Slash => Some(Operator::Div),
+            TokenKind::Modulo => Some(Operator::Mod),
+            TokenKind::Ampersand => Some(Operator::BitAnd),
+            TokenKind::Bar => Some(Operator::BitOr),
+            TokenKind::Caret => Some(Operator::BitXor),
+            TokenKind::ShiftLeft => Some(Operator::Shl),
+            TokenKind::ShiftRight => Some(Operator::Shr),
+            _ => None,
+        };
+        if let Some(op) = operator {
+            if self.peekable.peek() == Some(&'=') {
+                self.next();
+                return Some(Token::new(TokenKind::CompoundAssign(op), token.span.start, self.index));
+            }
+        }
+        Some(token)
+    }
+
+    fn next_simple_token(&mut self) -> Option<Token<'a>> {
         self.skip_whitespace();
         // Skip comments (and any whitespace after them)
         while self.input[self.index..].starts_with("//") {
@@ -49,7 +76,18 @@ impl<'a> Lexer<'a> {
                 ']' => Token::new(TokenKind::SquareClose, start, self.index),
                 '{' => Token::new(TokenKind::BraceOpen, start, self.index),
                 '}' => Token::new(TokenKind::BraceClose, start, self.index),
-                '.' => Token::new(TokenKind::Dot, start, self.index),
+                '.' => match self.peekable.peek() {
+                    Some('.') => {
+                        self.next();
+                        if self.peekable.peek() == Some(&'=') {
+                            self.next();
+                            Token::new(TokenKind::DotDotEqual, start, self.index)
+                        } else {
+                            Token::new(TokenKind::DotDot, start, self.index)
+                        }
+                    }
+                    _ => Token::new(TokenKind::Dot, start, self.index),
+                },
                 ',' => Token::new(TokenKind::Comma, start, self.index),
                 ';' => Token::new(TokenKind::SemiColon, start, self.index),
                 ':' => match self.peekable.peek() {
@@ -258,6 +296,7 @@ impl<'a> Lexer<'a> {
             "type" => Token::new(TokenKind::Type, start, self.index),
             "sizeof" => Token::new(TokenKind::SizeOf, start, self.index),
             "extend" => Token::new(TokenKind::Extend, start, self.index),
+            "in" => Token::new(TokenKind::In, start, self.index),
             "import" => Token::new(TokenKind::Import, start, self.index),
             _ => Token::new(TokenKind::Identifier(value), start, self.index),
         }

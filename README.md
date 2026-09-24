@@ -150,7 +150,11 @@ Other things to know:
 - Types: `int` (64-bit), `i8`–`i64`, `u8`–`u64`, `float`, `f32`, `bool`, `str`
   (a C string), `&T` pointers, arrays `[T; n]`, structs, enums and generic instances.
 - Variables are declared with `var` (mutable) or `const`; parameters are immutable.
-- Loops are `while cond { }`, `for cond { }` and `for { }`, with `break` and `continue`.
+- Loops are `while cond { }`, `for cond { }`, `for { }`, `for i in 0..n { }` (or `0..=n`)
+  and `for x in collection { }`, which works for arrays, `str` and anything with `length()`
+  and `get(i)` methods; `break` and `continue` work in all of them.
+- Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`) and
+  `*pointer` to read or write through a pointer.
 - `match` works on enums and integers (including character literals); arms can be
   blocks, and a `match` can be used as a statement or an expression.
 - Methods are declared in a type's body and receive `self` implicitly (a reference for

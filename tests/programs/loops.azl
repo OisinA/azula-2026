@@ -1,0 +1,138 @@
+// for-in loops, ranges, compound assignment and dereferencing.
+
+struct Grid {
+    cells: Vec<int>;
+    width: int;
+
+    // Any type with length() and get() can be iterated over
+    func length(): int {
+        return self.cells.length();
+    }
+
+    func get(index: int): int {
+        return self.cells.get(index) * 10;
+    }
+}
+
+struct Point {
+    x: int;
+    y: int;
+
+    func copy(): Point {
+        return *self;
+    }
+}
+
+func next_id(counter: &int): int {
+    *counter += 1;
+    return *counter;
+}
+
+func main {
+    var total = 0;
+    for i in 0..10 {
+        total += i;
+    }
+    printf("sum 0..10 = %d\n", total);
+
+    var inclusive = 0;
+    for i in 1..=5 {
+        inclusive += i * i;
+    }
+    printf("squares 1..=5 = %d\n", inclusive);
+
+    // continue and break
+    var odd = 0;
+    for i in 0..100 {
+        if i % 2 == 0 { continue; }
+        if i > 20 { break; }
+        odd += 1;
+    }
+    printf("odd numbers below 20: %d\n", odd);
+
+    var names: Vec<str> = Vec::new();
+    names.push("ada");
+    names.push("grace");
+    names.push("linus");
+    for name in names {
+        printf("%s ", name);
+    }
+    printf("\n");
+
+    var letters = 0;
+    for c in "hello world" {
+        if c != ' ' { letters += 1; }
+    }
+    printf("letters %d\n", letters);
+
+    var primes: [int; 5] = [2, 3, 5, 7, 11];
+    var product = 1;
+    for p in primes {
+        product *= p;
+    }
+    printf("product %d\n", product);
+
+    var grid = Grid { cells: Vec::new(), width: 2 };
+    grid.cells.push(1);
+    grid.cells.push(2);
+    for value in grid {
+        printf("%d ", value);
+    }
+    printf("\n");
+
+    // Nested loops with shadowing
+    var pairs = 0;
+    for i in 0..4 {
+        for j in i..4 {
+            pairs += 1;
+        }
+    }
+    printf("pairs %d\n", pairs);
+
+    // Compound assignment on every kind of target
+    var x = 100;
+    x -= 1;
+    x *= 2;
+    x /= 3;
+    x %= 50;
+    x <<= 2;
+    x >>= 1;
+    x |= 1;
+    x &= 0xff;
+    x ^= 0x10;
+    printf("x %d\n", x);
+
+    var p = Point { x: 1, y: 2 };
+    p.x += 10;
+    var ps: &Point = &p;
+    ps.y *= 5;
+    printf("p %d %d\n", p.x, p.y);
+    var counts: &int = malloc(3 * sizeof(int));
+    counts[0] = 0;
+    counts[1] = 5;
+    counts[1] += 2;
+    printf("counts %d\n", counts[1]);
+
+    var small: i8 = 100;
+    small += 20;
+    printf("small %d\n", small);
+
+    // Dereferencing
+    var id = 0;
+    next_id(&id);
+    next_id(&id);
+    printf("id %d\n", id);
+    var copy = p.copy();
+    copy.x = 0;
+    var ptr: &Point = &p;
+    var through = *ptr;
+    *ptr = Point { x: 7, y: 8 };
+    printf("copy %d, through %d, p %d %d\n", copy.x, through.x, p.x, p.y);
+
+    // The index expression of a compound assignment is evaluated once
+    var calls = 0;
+    var array: &int = malloc(4 * sizeof(int));
+    array[0] = 1;
+    array[next_id(&calls) - 1] += 41;
+    printf("array %d, index evaluated %d time(s)\n", array[0], calls);
+}

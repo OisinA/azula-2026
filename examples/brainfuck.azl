@@ -24,7 +24,7 @@ func run(program: str) {
             },
             _ => {},
         }
-        pc = pc + 1;
+        pc += 1;
     }
     free(tape);
 }
@@ -35,14 +35,14 @@ func matching_bracket(program: str, pc: int, direction: int): int {
     var i = pc;
     while true {
         if program[i] == '[' {
-            depth = depth + direction;
+            depth += direction;
         } else if program[i] == ']' {
-            depth = depth - direction;
+            depth -= direction;
         }
         if depth == 0 {
             return i;
         }
-        i = i + direction;
+        i += direction;
     }
     return i;
 }

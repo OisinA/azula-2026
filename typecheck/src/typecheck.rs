@@ -518,6 +518,8 @@ impl<'a> Typechecker<'a> {
             Statement::If(..) => self.typecheck_if(stmt, env),
             Statement::While(..) => self.typecheck_while(stmt, env),
             Statement::For(..) => self.typecheck_for(stmt, env),
+            Statement::ForIn(..) => self.typecheck_for_in(stmt, env),
+            Statement::CompoundAssign(..) => self.typecheck_compound_assign(stmt, env),
             Statement::Break(span) => Ok((Statement::Break(span), AzulaType::Void)),
             Statement::Continue(span) => Ok((Statement::Continue(span), AzulaType::Void)),
             Statement::Reassign(..) => self.typecheck_reassign(stmt, env),
@@ -770,8 +772,10 @@ impl<'a> Typechecker<'a> {
                 },
                 Expression::ArrayAccess(..) => {}
                 Expression::StructAccess(..) => {}
+                Expression::Deref(..) => {}
                 _ => {
-                    unreachable!("{:?}", var.expression)
+                    self.error("Can't assign to this expression".to_string(), &var.span);
+                    return Err("invalid assignment target".to_string());
                 }
             }
 
@@ -960,6 +964,144 @@ impl<'a> Typechecker<'a> {
         }
     }
 
+    /// `target op= value`, checked like `target = target op value`
+    fn typecheck_compound_assign(
+        &mut self,
+        stmt: Statement<'a>,
+        env: &mut Environment<'a>,
+    ) -> Result<(Statement<'a>, AzulaType<'a>), String> {
+        if let Statement::CompoundAssign(target, op, value, span) = stmt {
+            match &target.expression {
+                Expression::Identifier(name) => {
+                    if !env.variable_definitions.get(name).map(|v| v.mutable).unwrap_or(false) {
+                        self.errors.push(AzulaError::new(ErrorType::ConstantAssign, target.span.start, target.span.end));
+                        return Err("constant assign".to_string());
+                    }
+                }
+                Expression::ArrayAccess(..) | Expression::StructAccess(..) | Expression::Deref(..) => {}
+                _ => {
+                    self.error("Can't assign to this expression".to_string(), &target.span);
+                    return Err("invalid assignment target".to_string());
+                }
+            }
+            let combined = ExpressionNode {
+                expression: Expression::Infix(Rc::new(target), op, Rc::new(value)),
+                typed: AzulaType::Infer,
+                span: span.clone(),
+            };
+            let (checked, typ) = self.typecheck_infix_expression(combined, env)?;
+            if let Expression::Infix(target, op, value) = checked.expression {
+                if !assignable(&target.typed, &typ, &value) {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::MismatchedAssignTypes(target.typed.mangle(), typ.mangle()),
+                        span.start,
+                        span.end,
+                    ));
+                    return Err("mismatched types in assign".to_string());
+                }
+                return Ok((
+                    Statement::CompoundAssign(target.as_ref().clone(), op, value.as_ref().clone(), span),
+                    AzulaType::Void,
+                ));
+            }
+        }
+        unreachable!()
+    }
+
+    /// `for name in ...` becomes a while loop over an index:
+    ///
+    ///   var $items = iterable; const $length = ...; var $index = 0;
+    ///   while $index < $length { var name = $items.get($index); $index = $index + 1; body }
+    ///
+    /// (the index advances before the body, so `continue` works). Ranges count
+    /// from start to end directly.
+    fn typecheck_for_in(
+        &mut self,
+        stmt: Statement<'a>,
+        env: &mut Environment<'a>,
+    ) -> Result<(Statement<'a>, AzulaType<'a>), String> {
+        if let Statement::ForIn(name, iterable, range_end, inclusive, body, span) = stmt {
+            let node = |expression: Expression<'a>| ExpressionNode {
+                expression,
+                typed: AzulaType::Infer,
+                span: span.clone(),
+            };
+            let ident = |name: &str| node(Expression::Identifier(name.to_string()));
+            let var = |mutable: bool, name: &str, value: ExpressionNode<'a>| {
+                Statement::Assign(mutable, name.to_string(), None, value, span.clone())
+            };
+            let method = |object: ExpressionNode<'a>, method: &str, args: Vec<ExpressionNode<'a>>| {
+                node(Expression::FunctionCall {
+                    function: Rc::new(node(Expression::StructAccess(Rc::new(object), Rc::new(ident(method))))),
+                    args,
+                })
+            };
+
+            let mut stmts = vec![];
+            let condition;
+            let element;
+            match range_end {
+                Some(end) => {
+                    stmts.push(var(true, "$index", iterable));
+                    stmts.push(var(false, "$end", end));
+                    let op = if inclusive { Operator::Lte } else { Operator::Lt };
+                    condition = node(Expression::Infix(Rc::new(ident("$index")), op, Rc::new(ident("$end"))));
+                    element = ident("$index");
+                }
+                None => {
+                    let (_, typ) = self.typecheck_expression(iterable.clone(), env)?;
+                    let length = match &typ {
+                        AzulaType::Array(_, Some(n)) => node(Expression::Integer(*n as i64)),
+                        AzulaType::Str => node(Expression::FunctionCall {
+                            function: Rc::new(ident("strlen")),
+                            args: vec![ident("$items")],
+                        }),
+                        _ => {
+                            let methods = self.namespaces.get(&typ.to_string()).map(|n| n.funcs.clone());
+                            let iterable_type = methods
+                                .map(|m| m.contains_key("length") && m.contains_key("get"))
+                                .unwrap_or(false);
+                            if !iterable_type {
+                                self.error(
+                                    format!("Can't iterate over {}: it needs length() and get() methods", typ.mangle()),
+                                    &iterable.span,
+                                );
+                                return Err("not iterable".to_string());
+                            }
+                            method(ident("$items"), "length", vec![])
+                        }
+                    };
+                    element = match &typ {
+                        AzulaType::Array(..) | AzulaType::Str => {
+                            node(Expression::ArrayAccess(Rc::new(ident("$items")), Rc::new(ident("$index"))))
+                        }
+                        _ => method(ident("$items"), "get", vec![ident("$index")]),
+                    };
+                    stmts.push(var(false, "$items", iterable));
+                    stmts.push(var(false, "$length", length));
+                    stmts.push(var(true, "$index", node(Expression::Integer(0))));
+                    condition = node(Expression::Infix(Rc::new(ident("$index")), Operator::Lt, Rc::new(ident("$length"))));
+                }
+            }
+            let mut loop_body = vec![
+                var(true, &name, element),
+                Statement::Reassign(
+                    ident("$index"),
+                    node(Expression::Infix(
+                        Rc::new(ident("$index")),
+                        Operator::Add,
+                        Rc::new(node(Expression::Integer(1))),
+                    )),
+                    span.clone(),
+                ),
+            ];
+            loop_body.extend(body);
+            stmts.push(Statement::While(condition, loop_body, span.clone()));
+            return self.typecheck_statement(Statement::Block(stmts), env);
+        }
+        unreachable!()
+    }
+
     fn typecheck_expression(
         &mut self,
         mut expr: ExpressionNode<'a>,
@@ -1091,6 +1233,25 @@ impl<'a> Typechecker<'a> {
                     },
                     typ,
                 ));
+            }
+            Expression::Deref(exp) => {
+                let (node, typ) = self.typecheck_expression(exp.deref().clone(), env)?;
+                let target = match &typ {
+                    AzulaType::Pointer(inner) => inner.as_ref().clone(),
+                    AzulaType::Str => AzulaType::SizedSignedInt(8),
+                    _ => {
+                        self.error(format!("Can't dereference a value of type {}", typ.mangle()), &expr.span);
+                        return Err("deref of non-pointer".to_string());
+                    }
+                };
+                Ok((
+                    ExpressionNode {
+                        expression: Expression::Deref(Rc::new(node)),
+                        typed: target.clone(),
+                        span: expr.span,
+                    },
+                    target,
+                ))
             }
             Expression::Pointer(exp) => {
                 let (node, typ) = match self.typecheck_expression(exp.deref().clone(), env) {

@@ -71,6 +71,17 @@ pub fn subst_stmt<'a>(stmt: &Statement<'a>, map: &Substitution<'a>) -> Statement
             subst_body(body, map),
             span.clone(),
         ),
+        Statement::ForIn(name, iterable, end, inclusive, body, span) => Statement::ForIn(
+            name.clone(),
+            subst_expr(iterable, map),
+            end.as_ref().map(|e| subst_expr(e, map)),
+            *inclusive,
+            subst_body(body, map),
+            span.clone(),
+        ),
+        Statement::CompoundAssign(target, op, value, span) => {
+            Statement::CompoundAssign(subst_expr(target, map), op.clone(), subst_expr(value, map), span.clone())
+        }
         _ => stmt.clone(),
     }
 }
@@ -88,6 +99,7 @@ pub fn subst_expr<'a>(expr: &ExpressionNode<'a>, map: &Substitution<'a>) -> Expr
         Expression::SizeOf(t) => Expression::SizeOf(subst_type(t, map)),
         Expression::Negate(e) => Expression::Negate(sub(e)),
         Expression::Pointer(e) => Expression::Pointer(sub(e)),
+        Expression::Deref(e) => Expression::Deref(sub(e)),
         Expression::Array(items) => Expression::Array(items.iter().map(|a| subst_expr(a, map)).collect()),
         Expression::ArrayAccess(a, i) => Expression::ArrayAccess(sub(a), sub(i)),
         Expression::StructInitialisation(s, fields) => Expression::StructInitialisation(

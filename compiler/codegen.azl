@@ -84,12 +84,12 @@ struct Gen {
     // -----------------------------------------------------------------------
 
     func fresh(): str {
-        self.tmp_count = self.tmp_count + 1;
+        self.tmp_count += 1;
         return concat("%t", int_to_str(self.tmp_count));
     }
 
     func new_label(hint: str): str {
-        self.label_count = self.label_count + 1;
+        self.label_count += 1;
         return concat3(hint, ".", int_to_str(self.label_count));
     }
 
@@ -138,7 +138,7 @@ struct Gen {
     }
 
     func temp_slot(t: Type): str {
-        self.tmp_count = self.tmp_count + 1;
+        self.tmp_count += 1;
         var name = concat("%slot", int_to_str(self.tmp_count));
         self.alloca(name, t);
         return name;
@@ -154,7 +154,7 @@ struct Gen {
 
     func string_constant(s: str): str {
         var name = concat("@.str.", int_to_str(self.string_count));
-        self.string_count = self.string_count + 1;
+        self.string_count += 1;
         self.strings.append(name);
         self.strings.append(" = private unnamed_addr constant [");
         self.strings.append_int(strlen(s) + 1);
@@ -222,10 +222,10 @@ struct Gen {
                 }
                 out.append(" ");
                 out.append(self.llvm_type(info.fields.get(j).typ));
-                j = j + 1;
+                j += 1;
             }
             out.append(" }\n");
-            i = i + 1;
+            i += 1;
         }
         i = 0;
         while i < self.c.out_enums.len {
@@ -240,13 +240,13 @@ struct Gen {
                     while k < payload.len {
                         out.append(", ");
                         out.append(self.llvm_type(payload.get(k)));
-                        k = k + 1;
+                        k += 1;
                     }
                     out.append(" }\n");
-                    j = j + 1;
+                    j += 1;
                 }
             }
-            i = i + 1;
+            i += 1;
         }
         out.append("\n");
 
@@ -260,7 +260,7 @@ struct Gen {
             out.append(" ");
             out.append(self.constant(g.value, g.typ));
             out.append("\n");
-            i = i + 1;
+            i += 1;
         }
         out.append("\n");
 
@@ -281,7 +281,7 @@ struct Gen {
                         out.append(", ");
                     }
                     out.append(self.llvm_type(sig.params.get(j)));
-                    j = j + 1;
+                    j += 1;
                 }
                 if sig.is_varargs {
                     if sig.params.len > 0 {
@@ -291,7 +291,7 @@ struct Gen {
                 }
                 out.append(")\n");
             }
-            i = i + 1;
+            i += 1;
         }
         // Intrinsics used by the garbage collector
         out.append("@__azula_gc_state = internal global [512 x i8] zeroinitializer, align 16\n");
@@ -303,7 +303,7 @@ struct Gen {
         i = 0;
         while i < self.c.out_funcs.len {
             self.function(self.c.out_funcs.get(i), &out);
-            i = i + 1;
+            i += 1;
         }
 
         out.append("\n");
@@ -369,7 +369,7 @@ struct Gen {
             var slot = quote_local(concat("p.", p.name));
             self.alloca(slot, p.typ);
             self.store(p.typ, concat("%arg", int_to_str(i)), slot);
-            i = i + 1;
+            i += 1;
         }
         out.append(") {\nentry:\n");
         if self.is_main && self.c.has_gc {
@@ -404,7 +404,7 @@ struct Gen {
         var i = 0;
         while i < body.len {
             self.stmt(body.get(i));
-            i = i + 1;
+            i += 1;
         }
     }
 
@@ -473,6 +473,16 @@ struct Gen {
                 }
                 self.start_block(end_label);
             },
+            StmtKind::CompoundAssign(op, target, value) => {
+                // Find the target once, then load, combine and store through it
+                var ptr = self.address(target);
+                var old = self.load(target.typ, ptr);
+                var v = self.expr(value);
+                var result = self.arith(op, old, v, target.typ, value.typ);
+                self.store(target.typ, self.coerce(result, target.typ, target.typ), ptr);
+            },
+            // Rewritten into a loop by the checker
+            StmtKind::ForIn(_, _, _, _, _) => {},
             StmtKind::Break => { self.branch(self.break_labels.peek()); },
             StmtKind::Continue => { self.branch(self.continue_labels.peek()); },
         }
@@ -589,7 +599,7 @@ struct Gen {
                     var value = values.get(i);
                     var v = self.coerce(self.expr(value), value.typ, field_type);
                     agg = self.value(concat3("insertvalue ", struct_type, concat3(" ", agg, concat3(", ", self.llvm_type(field_type), concat3(" ", v, concat(", ", int_to_str(i)))))));
-                    i = i + 1;
+                    i += 1;
                 }
                 return agg;
             },
@@ -608,7 +618,7 @@ struct Gen {
                     var v = self.coerce(self.expr(item), item.typ, elem);
                     var slot = self.value(concat3("getelementptr ", elem_llvm, concat3(", ptr ", array, concat(", i64 ", int_to_str(i)))));
                     self.store(elem, v, slot);
-                    i = i + 1;
+                    i += 1;
                 }
                 return array;
             },
@@ -650,10 +660,10 @@ struct Gen {
             var modulus = 1 << bits;
             var wrapped = v % modulus;
             if wrapped < 0 {
-                wrapped = wrapped + modulus;
+                wrapped += modulus;
             }
             if bits > 1 && wrapped >= modulus / 2 {
-                wrapped = wrapped - modulus;
+                wrapped -= modulus;
             }
             if bits == 1 {
                 if wrapped == 0 {
@@ -690,18 +700,23 @@ struct Gen {
             return self.load(Type::Bool, slot);
         }
 
-        var lv = self.expr(l);
-        var rv = self.expr(r);
-        var t = l.typ;
+        return self.arith(op, self.expr(l), self.expr(r), l.typ, r.typ);
+    }
+
+    // Combine two already-computed values with a (non short-circuit) operator
+    func arith(op: BinOp, left: str, right: str, left_type: Type, right_type: Type): str {
+        var lv = left;
+        var rv = right;
+        var t = left_type;
         // Compare integers of different widths at the wider width
-        var lw = self.int_width(l.typ);
-        var rw = self.int_width(r.typ);
+        var lw = self.int_width(left_type);
+        var rw = self.int_width(right_type);
         if lw > 0 && rw > 0 && lw != rw {
             if lw > rw {
-                rv = self.coerce(rv, r.typ, l.typ);
+                rv = self.coerce(rv, right_type, left_type);
             } else {
-                lv = self.coerce(lv, l.typ, r.typ);
-                t = r.typ;
+                lv = self.coerce(lv, left_type, right_type);
+                t = right_type;
             }
         }
         var lt = self.llvm_type(t);
@@ -831,7 +846,7 @@ struct Gen {
             arg_text.append(self.llvm_type(t));
             arg_text.append(" ");
             arg_text.append(v);
-            i = i + 1;
+            i += 1;
         }
         var callee = self.llvm_type(sig.ret);
         if sig.is_varargs {
@@ -843,7 +858,7 @@ struct Gen {
             while j < sig.params.len {
                 fn_type.append(self.llvm_type(sig.params.get(j)));
                 fn_type.append(", ");
-                j = j + 1;
+                j += 1;
             }
             fn_type.append("...)");
             callee = fn_type.to_str();
@@ -866,7 +881,7 @@ struct Gen {
         while i < payload.len {
             var p = payload.get(i);
             values.push(self.coerce(self.expr(p), p.typ, info.payloads.get(tag).get(i)));
-            i = i + 1;
+            i += 1;
         }
         var layout = quote_local(concat3(name, ".", info.variants.get(tag)));
         // The cell holds pointers only if the payload does
@@ -876,7 +891,7 @@ struct Gen {
             if self.c.has_pointers(info.payloads.get(tag).get(i)) {
                 cell_type = Type::Str;
             }
-            i = i + 1;
+            i += 1;
         }
         var cell = self.allocate(self.size_of(layout), cell_type);
         var tag_slot = self.value(concat3("getelementptr ", layout, concat3(", ptr ", cell, ", i32 0, i32 0")));
@@ -885,7 +900,7 @@ struct Gen {
         while i < values.len {
             var slot = self.value(concat3("getelementptr ", layout, concat3(", ptr ", cell, concat(", i32 0, i32 ", int_to_str(i + 1)))));
             self.store(info.payloads.get(tag).get(i), values.get(i), slot);
-            i = i + 1;
+            i += 1;
         }
         return cell;
     }
@@ -940,7 +955,7 @@ struct Gen {
                     self.alloca(slot, field_type);
                     self.store(field_type, field, slot);
                 }
-                j = j + 1;
+                j += 1;
             }
 
             var body = self.expr(arm.body);
@@ -957,7 +972,7 @@ struct Gen {
             if i + 1 < arms.len {
                 self.start_block(next_label);
             }
-            i = i + 1;
+            i += 1;
         }
         self.start_block(end_label);
         if has_result {
@@ -991,7 +1006,7 @@ func llvm_escape(s: str, sb: &StringBuilder) {
     while s[i] != 0 {
         var c: int = s[i];
         if c < 0 {
-            c = c + 256;
+            c += 256;
         }
         if c >= 32 && c < 127 && c != '"' && c != '\\' {
             sb.append_char(c);
@@ -1001,7 +1016,7 @@ func llvm_escape(s: str, sb: &StringBuilder) {
             sb.append_char(digits[c / 16] as int);
             sb.append_char(digits[c % 16] as int);
         }
-        i = i + 1;
+        i += 1;
     }
 }
 

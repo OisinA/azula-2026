@@ -7,8 +7,8 @@ func report(shapes: Vec<Rect>) {
     while i < shapes.length() {
         var r = shapes.get(i);
         printf("%dx%d: area %d, perimeter %d\n", r.width, r.height, r.area(), r.perimeter());
-        total = total + r.area();
-        i = i + 1;
+        total += r.area();
+        i += 1;
     }
     printf("total area %d\n", total);
 }

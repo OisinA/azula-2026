@@ -138,9 +138,9 @@ func gc_class_index(size: int): int {
     var step = 32;
     var index = 8;
     while size > base * 2 {
-        base = base * 2;
-        step = step * 2;
-        index = index + 4;
+        base *= 2;
+        step *= 2;
+        index += 4;
     }
     return index + (size - base + step - 1) / step - 1;
 }
@@ -172,7 +172,7 @@ func gc_table_insert(s: &GcState, key: int, page: &GcPage) {
         var old_keys = s.table_keys;
         var old_pages = s.table_pages;
         var old_cap = s.table_cap;
-        s.table_cap = s.table_cap * 2;
+        s.table_cap *= 2;
         s.table_keys = c_calloc(s.table_cap, sizeof(int));
         s.table_pages = c_calloc(s.table_cap, sizeof(&GcPage));
         s.table_count = 0;
@@ -182,16 +182,16 @@ func gc_table_insert(s: &GcState, key: int, page: &GcPage) {
                 var slot = gc_table_slot(s, old_keys[i]);
                 s.table_keys[slot] = old_keys[i];
                 s.table_pages[slot] = old_pages[i];
-                s.table_count = s.table_count + 1;
+                s.table_count += 1;
             }
-            i = i + 1;
+            i += 1;
         }
         c_free(old_keys);
         c_free(old_pages);
     }
     var slot = gc_table_slot(s, key);
     if s.table_keys[slot] == 0 {
-        s.table_count = s.table_count + 1;
+        s.table_count += 1;
     }
     s.table_keys[slot] = key;
     s.table_pages[slot] = page;
@@ -251,16 +251,16 @@ func gc_new_page(s: &GcState, bytes: int, object_size: int, capacity: int, size_
     page.atomic = c_calloc(flag_bytes, 1);
 
     if s.page_count == s.page_cap {
-        s.page_cap = s.page_cap * 2;
+        s.page_cap *= 2;
         s.pages = c_realloc(s.pages, s.page_cap * sizeof(&GcPage));
     }
     s.pages[s.page_count] = page;
-    s.page_count = s.page_count + 1;
+    s.page_count += 1;
 
     var i = 0;
     while i < page.page_count {
         gc_table_insert(s, (page.start >> GC_PAGE_SHIFT) + i, page);
-        i = i + 1;
+        i += 1;
     }
     if page.start < s.heap_min {
         s.heap_min = page.start;
@@ -295,7 +295,7 @@ func gc_release_large(s: &GcState, page: &GcPage) {
     var i = 0;
     while i < page.page_count {
         gc_table_remove(s, (page.start >> GC_PAGE_SHIFT) + i);
-        i = i + 1;
+        i += 1;
     }
     c_free(page.start as str);
     c_free(page.used);
@@ -317,7 +317,7 @@ func gc_allocate(size: int, atomic: bool): str {
     if n < 1 {
         n = 1;
     }
-    s.allocations = s.allocations + 1;
+    s.allocations += 1;
     if s.stack_base != 0 {
         if s.allocated >= s.threshold || (s.stress > 0 && s.allocations % s.stress == 0) {
             gc_collect();
@@ -333,7 +333,7 @@ func gc_allocate(size: int, atomic: bool): str {
         }
         page.live = 1;
         memset(page.start as str, 0, page.object_size);
-        s.allocated = s.allocated + bytes;
+        s.allocated += bytes;
         return page.start as str;
     }
 
@@ -345,7 +345,7 @@ func gc_allocate(size: int, atomic: bool): str {
             page = gc_new_small_page(s, index);
         }
         while page.cursor < page.capacity && page.used[page.cursor] != 0 {
-            page.cursor = page.cursor + 1;
+            page.cursor += 1;
         }
         if page.cursor < page.capacity {
             break;
@@ -361,10 +361,10 @@ func gc_allocate(size: int, atomic: bool): str {
     if atomic {
         page.atomic[slot] = 1;
     }
-    page.live = page.live + 1;
+    page.live += 1;
     var object = (page.start + slot * page.object_size) as str;
     memset(object, 0, page.object_size);
-    s.allocated = s.allocated + page.object_size;
+    s.allocated += page.object_size;
     return object;
 }
 
@@ -433,17 +433,17 @@ func gc_free(pointer: str) {
         while i < s.page_count {
             if s.pages[i] == page {
                 s.pages[i] = s.pages[s.page_count - 1];
-                s.page_count = s.page_count - 1;
+                s.page_count -= 1;
                 break;
             }
-            i = i + 1;
+            i += 1;
         }
         gc_release_large(s, page);
         return;
     }
     page.used[slot] = 0;
     page.atomic[slot] = 0;
-    page.live = page.live - 1;
+    page.live -= 1;
     if slot < page.cursor {
         page.cursor = slot;
     }
@@ -466,11 +466,11 @@ func gc_mark_address(s: &GcState, address: int) {
     page.marks[slot] = 1;
     if page.atomic[slot] == 0 {
         if s.mark_len == s.mark_cap {
-            s.mark_cap = s.mark_cap * 2;
+            s.mark_cap *= 2;
             s.mark_stack = c_realloc(s.mark_stack, s.mark_cap * sizeof(int));
         }
         s.mark_stack[s.mark_len] = page.start + slot * page.object_size;
-        s.mark_len = s.mark_len + 1;
+        s.mark_len += 1;
     }
 }
 
@@ -479,7 +479,7 @@ func gc_scan_range(s: &GcState, low: int, high: int) {
     var address = (low + 7) / 8 * 8;
     while address + 8 <= high {
         gc_mark_address(s, (address as &int)[0]);
-        address = address + 8;
+        address += 8;
     }
 }
 
@@ -496,10 +496,10 @@ func gc_collect() {
     var r = 0;
     while r < s.root_len {
         gc_scan_range(s, s.roots[r * 2], s.roots[r * 2 + 1]);
-        r = r + 1;
+        r += 1;
     }
     while s.mark_len > 0 {
-        s.mark_len = s.mark_len - 1;
+        s.mark_len -= 1;
         var object = s.mark_stack[s.mark_len];
         var page = gc_page_of(s, object);
         gc_scan_range(s, object, object + page.object_size);
@@ -511,21 +511,21 @@ func gc_sweep(s: &GcState) {
     var i = 0;
     while i < GC_CLASSES {
         s.available[i] = null;
-        i = i + 1;
+        i += 1;
     }
     var live = 0;
     var kept = 0;
     i = 0;
     while i < s.page_count {
         var page = s.pages[i];
-        i = i + 1;
+        i += 1;
         if page.size_class < 0 {
             if page.marks[0] == 0 {
                 gc_release_large(s, page);
                 continue;
             }
             page.marks[0] = 0;
-            live = live + page.object_size;
+            live += page.object_size;
         } else {
             // Keep only marked objects, 8 at a time
             var used = page.used as &int;
@@ -537,10 +537,10 @@ func gc_sweep(s: &GcState) {
             while w < words {
                 var kept_slots = used[w] & marks[w];
                 used[w] = kept_slots;
-                atomic[w] = atomic[w] & kept_slots;
+                atomic[w] &= kept_slots;
                 marks[w] = 0;
-                count = count + gc_byte_count(kept_slots);
-                w = w + 1;
+                count += gc_byte_count(kept_slots);
+                w += 1;
             }
             page.live = count;
             page.cursor = 0;
@@ -551,10 +551,10 @@ func gc_sweep(s: &GcState) {
             }
         }
         s.pages[kept] = page;
-        kept = kept + 1;
+        kept += 1;
     }
     s.page_count = kept;
-    s.collections = s.collections + 1;
+    s.collections += 1;
     if s.verbose {
         dprintf(2, "azula gc: collection %ld: %ld KB live after %ld KB allocated, %ld pages\n",
             s.collections, live / 1024, s.allocated / 1024, s.page_count);
@@ -580,7 +580,7 @@ func gc_add_root(start: str, end: str) {
     }
     s.roots[s.root_len * 2] = start as int;
     s.roots[s.root_len * 2 + 1] = end as int;
-    s.root_len = s.root_len + 1;
+    s.root_len += 1;
 }
 
 func gc_remove_root(start: str) {
@@ -588,12 +588,12 @@ func gc_remove_root(start: str) {
     var i = 0;
     while i < s.root_len {
         if s.roots[i * 2] == start as int {
-            s.root_len = s.root_len - 1;
+            s.root_len -= 1;
             s.roots[i * 2] = s.roots[s.root_len * 2];
             s.roots[i * 2 + 1] = s.roots[s.root_len * 2 + 1];
             return;
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -612,7 +612,7 @@ func gc_heap_bytes(): int {
     var i = 0;
     while i < s.page_count {
         total = total + s.pages[i].page_count * GC_PAGE_SIZE;
-        i = i + 1;
+        i += 1;
     }
     return total;
 }

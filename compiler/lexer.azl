@@ -59,12 +59,16 @@ enum Tok {
     KwEnum;
     KwMatch;
     KwAs;
-    KwAlloc;
     KwNull;
     KwType;
     KwImport;
     KwSizeof;
     KwExtend;
+    KwIn;
+    DotDot;
+    DotDotEq;
+    // `+=`, `<<=`, ...: the token's text is the operator (`+`, `<<`, ...)
+    OpAssign;
     Eof;
 }
 
@@ -128,6 +132,7 @@ func keyword_kind(word: str): Tok {
     if str_eq(word, "import") { return Tok::KwImport; }
     if str_eq(word, "sizeof") { return Tok::KwSizeof; }
     if str_eq(word, "extend") { return Tok::KwExtend; }
+    if str_eq(word, "in") { return Tok::KwIn; }
     return Tok::Ident;
 }
 
@@ -146,7 +151,7 @@ func lex(src: &Source): Vec<Token> {
             return tokens;
         }
         if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
-            i = i + 1;
+            i += 1;
             continue;
         }
         var start = i;
@@ -155,14 +160,14 @@ func lex(src: &Source): Vec<Token> {
         // Comments
         if c == '/' && next == '/' {
             while text[i] != '\n' && text[i] != 0 {
-                i = i + 1;
+                i += 1;
             }
             continue;
         }
 
         if is_ident_start(c) {
             while is_ident_char(text[i] as int) {
-                i = i + 1;
+                i += 1;
             }
             var word = substring(text, start, i - start);
             var tok = make_token(keyword_kind(word), start);
@@ -174,27 +179,27 @@ func lex(src: &Source): Vec<Token> {
         if is_digit(c) {
             var tok = make_token(Tok::Int, start);
             if c == '0' && next == 'x' {
-                i = i + 2;
+                i += 2;
                 var value = 0;
                 while is_hex_digit(text[i] as int) || text[i] == '_' {
                     if text[i] != '_' {
                         value = value * 16 + hex_value(text[i] as int);
                     }
-                    i = i + 1;
+                    i += 1;
                 }
                 tok.value = value;
             } else {
                 var value = 0;
                 while is_digit(text[i] as int) {
                     value = value * 10 + (text[i] as int - '0');
-                    i = i + 1;
+                    i += 1;
                 }
                 tok.value = value;
                 // A float literal like 1.5
                 if text[i] == '.' && is_digit(text[i + 1] as int) {
-                    i = i + 1;
+                    i += 1;
                     while is_digit(text[i] as int) {
-                        i = i + 1;
+                        i += 1;
                     }
                     tok.kind = Tok::Float;
                 }
@@ -205,23 +210,54 @@ func lex(src: &Source): Vec<Token> {
         }
 
         if c == '"' || c == '\'' {
-            i = i + 1;
+            i += 1;
             while text[i] != c {
                 if text[i] == 0 || text[i] == '\n' {
                     src.fail(start, "unterminated literal");
                 }
                 if text[i] == '\\' {
-                    i = i + 1;
+                    i += 1;
                 }
-                i = i + 1;
+                i += 1;
             }
             var tok = make_token(Tok::Str, start);
             if c == '\'' {
                 tok.kind = Tok::Char;
             }
             tok.text = substring(text, start + 1, i - start - 1);
-            i = i + 1;
+            i += 1;
             tokens.push(tok);
+            continue;
+        }
+
+        // Compound assignment: an operator followed by `=`
+        var op_len = 0;
+        var third: int = 0;
+        if next != 0 {
+            third = text[i + 2];
+        }
+        if (c == '<' && next == '<') || (c == '>' && next == '>') {
+            if third == '=' {
+                op_len = 2;
+            }
+        } else if next == '=' && (c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '&' || c == '|' || c == '^') {
+            op_len = 1;
+        }
+        if op_len > 0 {
+            var tok = make_token(Tok::OpAssign, start);
+            tok.text = substring(text, start, op_len);
+            tokens.push(tok);
+            i = i + op_len + 1;
+            continue;
+        }
+        if c == '.' && next == '.' {
+            if third == '=' {
+                tokens.push(make_token(Tok::DotDotEq, start));
+                i += 3;
+            } else {
+                tokens.push(make_token(Tok::DotDot, start));
+                i += 2;
+            }
             continue;
         }
 
@@ -272,7 +308,7 @@ func lex(src: &Source): Vec<Token> {
             }
         }
         tokens.push(make_token(kind, start));
-        i = i + len;
+        i += len;
     }
     return tokens;
 }

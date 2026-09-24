@@ -1,0 +1,5 @@
+// error: cannot dereference a value of type int
+func main {
+    var x = 5;
+    var y = *x;
+}

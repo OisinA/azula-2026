@@ -113,6 +113,9 @@ impl<'a> Parser<'a> {
                 if self.lexer.peek().unwrap().kind == TokenKind::Assign {
                     return self.parse_reassign(expr.clone());
                 }
+                if let Some(TokenKind::CompoundAssign(op)) = self.lexer.peek().map(|t| t.kind.clone()) {
+                    return self.parse_compound_assign(expr, op);
+                }
 
                 // A `match` used as a statement doesn't need a trailing semicolon
                 if matches!(expr.expression, Expression::Match(..))
@@ -658,6 +661,20 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    fn parse_compound_assign(&mut self, target: ExpressionNode<'a>, op: Operator) -> Option<Statement<'a>> {
+        self.lexer.next(); // the operator
+        let value = self.parse_expression(LOWEST, true)?;
+        if !self.expect_peek(TokenKind::SemiColon) {
+            return None;
+        }
+        let end_token = self.lexer.next().unwrap();
+        let span = Span {
+            start: target.span.start,
+            end: end_token.span.end,
+        };
+        Some(Statement::CompoundAssign(target, op, value, span))
+    }
+
     fn parse_reassign(&mut self, ident: ExpressionNode<'a>) -> Option<Statement<'a>> {
         self.lexer.next();
 
@@ -765,8 +782,43 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_for(&mut self) -> Option<Statement<'a>> {
-        // for [condition] { ... }
+        // for [condition] { ... }  or  for name in iterable { ... }
         let start_token = self.lexer.next().unwrap();
+
+        let mut lookahead = self.lexer.clone();
+        let first = lookahead.next().map(|t| t.kind);
+        let second = lookahead.next().map(|t| t.kind);
+        if let (Some(TokenKind::Identifier(name)), Some(TokenKind::In)) = (first, second) {
+            self.lexer.next(); // name
+            self.lexer.next(); // in
+            let iterable = self.parse_expression(LOWEST, false)?;
+            let mut range_end = None;
+            let mut inclusive = false;
+            match self.lexer.peek().map(|t| t.kind.clone()) {
+                Some(TokenKind::DotDot) | Some(TokenKind::DotDotEqual) => {
+                    inclusive = self.lexer.next().unwrap().kind == TokenKind::DotDotEqual;
+                    range_end = Some(self.parse_expression(LOWEST, false)?);
+                }
+                _ => {}
+            }
+            if !self.expect_peek(TokenKind::BraceOpen) {
+                return None;
+            }
+            self.lexer.next();
+            let body = self.parse_block(TokenKind::BraceClose);
+            let end_token = self.lexer.next().unwrap();
+            return Some(Statement::ForIn(
+                name.to_string(),
+                iterable,
+                range_end,
+                inclusive,
+                body,
+                Span {
+                    start: start_token.span.start,
+                    end: end_token.span.end,
+                },
+            ));
+        }
 
         // Infinite loop if next token is `{`
         let cond = if self.lexer.peek().map(|t| t.kind == TokenKind::BraceOpen).unwrap_or(false) {
@@ -1206,6 +1258,17 @@ impl<'a> Parser<'a> {
                     },
                 })
             }
+            TokenKind::Asterisk => {
+                let expr = self.parse_expression(PREFIX, allow_struct_init)?;
+                Some(ExpressionNode {
+                    span: Span {
+                        start: tok.span.start,
+                        end: expr.span.end,
+                    },
+                    expression: Expression::Deref(Rc::new(expr)),
+                    typed: AzulaType::Infer,
+                })
+            }
             TokenKind::Tilde => {
                 let expr = self.parse_expression(PREFIX, allow_struct_init)?;
 
@@ -1593,6 +1656,11 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::Assign) => {
                     // reassignment: expr = rhs;
                     if let Some(s) = self.parse_reassign(expr) {
+                        stmts.push(s);
+                    }
+                }
+                Some(TokenKind::CompoundAssign(op)) => {
+                    if let Some(s) = self.parse_compound_assign(expr, op) {
                         stmts.push(s);
                     }
                 }
@@ -2003,6 +2071,12 @@ fn statement_mentions_self(stmt: &Statement) -> bool {
         Statement::For(cond, body, _) => {
             cond.as_ref().map(expression_mentions_self).unwrap_or(false) || body.iter().any(statement_mentions_self)
         }
+        Statement::ForIn(_, iterable, end, _, body, _) => {
+            expression_mentions_self(iterable)
+                || end.as_ref().map(expression_mentions_self).unwrap_or(false)
+                || body.iter().any(statement_mentions_self)
+        }
+        Statement::CompoundAssign(target, _, value, _) => expression_mentions_self(target) || expression_mentions_self(value),
         _ => false,
     }
 }
@@ -2013,7 +2087,12 @@ fn expression_mentions_self(expr: &ExpressionNode) -> bool {
         Expression::Identifier(name) => name == "self",
         Expression::Infix(l, _, r) => e(l) || e(r),
         Expression::FunctionCall { function, args } => e(function) || args.iter().any(expression_mentions_self),
-        Expression::Not(x) | Expression::BitNot(x) | Expression::Negate(x) | Expression::Pointer(x) | Expression::Alloc(x) => e(x),
+        Expression::Not(x)
+        | Expression::BitNot(x)
+        | Expression::Negate(x)
+        | Expression::Pointer(x)
+        | Expression::Deref(x)
+        | Expression::Alloc(x) => e(x),
         Expression::Cast(x, _) => e(x),
         Expression::Array(items) => items.iter().any(expression_mentions_self),
         Expression::ArrayAccess(a, i) => e(a) || e(i),
