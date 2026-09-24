@@ -123,6 +123,11 @@ impl<'a> Lexer<'a> {
                     while let Some(val) = self.peekable.peek() {
                         match val {
                             _ if *val == char => break,
+                            '\\' => {
+                                // Skip the escaped character so `\"` doesn't end the literal
+                                self.next();
+                                self.next()
+                            }
                             _ => self.next(),
                         };
                     }
@@ -136,6 +141,11 @@ impl<'a> Lexer<'a> {
                     while let Some(val) = self.peekable.peek() {
                         match val {
                             _ if *val == char => break,
+                            '\\' => {
+                                // Skip the escaped character so `\"` doesn't end the literal
+                                self.next();
+                                self.next()
+                            }
                             _ => self.next(),
                         };
                     }
@@ -181,7 +191,7 @@ impl<'a> Lexer<'a> {
     fn skip_whitespace(&mut self) {
         while let Some(val) = self.peekable.peek() {
             match val {
-                ' ' | '\n' => self.next(),
+                ' ' | '\n' | '\t' | '\r' => self.next(),
                 _ => break,
             };
         }

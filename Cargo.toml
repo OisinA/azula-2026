@@ -18,3 +18,6 @@ azula_codegen = { path = "codegen" }
 azula_type = { path = "azula_type" }
 # azula_codegen_llvm = { path = "codegen_llvm" }
 azula_cli = { path = "azula_cli" }
+
+[workspace]
+members = ["ast", "azula_cli", "azula_ir", "azula_type", "azula_vm", "codegen", "codegen_llvm", "errors", "parser", "typecheck"]

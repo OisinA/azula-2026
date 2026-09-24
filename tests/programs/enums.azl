@@ -1,0 +1,27 @@
+enum Colour { Red, Green, Blue }
+
+func name(c: Colour): str {
+    return match c {
+        Colour::Red => "red",
+        Colour::Green => "green",
+        Colour::Blue => "blue",
+    };
+}
+
+func digit_kind(c: int): int {
+    return match c {
+        '0' => 0,
+        '1' => 1,
+        _ => {
+            var x = c * 2;
+            x + 1
+        },
+    };
+}
+
+func main {
+    var c = Colour::Green;
+    printf("%s %s\n", name(c), name(Colour::Blue));
+    if c == Colour::Green { printf("is green\n"); }
+    printf("%d %d %d\n", digit_kind('0'), digit_kind('1'), digit_kind(5));
+}

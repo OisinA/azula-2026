@@ -1,0 +1,45 @@
+const LIMIT: int = 10;
+
+func classify(n: int): str {
+    if n < 0 {
+        return "negative";
+    } else if n == 0 {
+        return "zero";
+    } else if n < LIMIT {
+        return "small";
+    } else {
+        return "large";
+    }
+}
+
+func main {
+    printf("%s %s %s %s\n", classify(-3), classify(0), classify(4), classify(40));
+
+    var i = 0;
+    var evens = 0;
+    while i < 20 {
+        i = i + 1;
+        if i % 2 == 1 { continue; }
+        if i > 12 { break; }
+        evens = evens + 1;
+    }
+    printf("evens=%d i=%d\n", evens, i);
+
+    var n = 0;
+    for {
+        n = n + 3;
+        if n > 10 { break; }
+    }
+    printf("for=%d\n", n);
+
+    var k = 0;
+    for k < 5 { k = k + 1; }
+    printf("k=%d\n", k);
+
+    var t = true && !false;
+    var f = false || (1 > 2);
+    if t && !f { printf("logic ok\n"); }
+
+    var neg = -7;
+    printf("%d %d %d\n", neg, neg / 2, 17 % 5);
+}

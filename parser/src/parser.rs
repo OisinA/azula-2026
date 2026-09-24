@@ -765,8 +765,12 @@ impl<'a> Parser<'a> {
     fn parse_type_list(&mut self, opening_delimiter: TokenKind) -> Vec<AzulaType<'a>> {
         let closing_delimiter = opening_delimiter.get_closing_delimiter().unwrap();
 
+        // Consume the opening delimiter
+        self.lexer.next();
+
         if let Some(peek) = self.lexer.peek() {
             if peek.kind == closing_delimiter {
+                self.lexer.next();
                 return vec![];
             }
         } else {
@@ -777,8 +781,6 @@ impl<'a> Parser<'a> {
             ));
             return vec![];
         }
-
-        self.lexer.next();
 
         let mut types = vec![];
 
@@ -1683,6 +1685,14 @@ fn string_transform(str: &str) -> Result<String, usize> {
                 Some((_, '0')) => {
                     chars.next();
                     result.push('\0');
+                }
+                Some((_, '"')) => {
+                    chars.next();
+                    result.push('"');
+                }
+                Some((_, '\'')) => {
+                    chars.next();
+                    result.push('\'');
                 }
                 Some((_, 'x')) => {
                     chars.next();

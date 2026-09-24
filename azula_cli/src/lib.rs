@@ -59,11 +59,10 @@ pub fn run() {
         } => {
             let result = build(files, ".build/", None, false, *release, *print_azula_ir);
 
-            Command::new(format!("./.build/{}", result))
-                .spawn()
-                .unwrap()
-                .wait()
+            let status = Command::new(format!("./.build/{}", result))
+                .status()
                 .unwrap();
+            exit(status.code().unwrap_or(1));
         }
         Commands::Build {
             files,
@@ -84,40 +83,71 @@ pub fn run() {
     }
 }
 
-const STDLIB_STRING: &str = include_str!("../../stdlib/string.azl");
-const STDLIB_VEC: &str = include_str!("../../stdlib/vec.azl");
-const STDLIB_STRMAP: &str = include_str!("../../stdlib/strmap.azl");
+const STDLIB: &[(&str, &str)] = &[
+    ("stdlib/libc.azl", include_str!("../../stdlib/libc.azl")),
+    ("stdlib/string.azl", include_str!("../../stdlib/string.azl")),
+    ("stdlib/vec.azl", include_str!("../../stdlib/vec.azl")),
+    ("stdlib/strmap.azl", include_str!("../../stdlib/strmap.azl")),
+];
 
-/// Recursively read `path` and all its `import "..."` dependencies, returning
-/// a single concatenated source string. `seen` prevents duplicate inclusion.
-fn resolve_imports(path: &Path, seen: &mut HashSet<PathBuf>) -> String {
+/// The combined program source, plus a record of which file and line every
+/// line of it came from (so errors can point at the original location).
+#[derive(Default)]
+struct Source {
+    text: String,
+    lines: Vec<(String, usize)>,
+}
+
+impl Source {
+    fn push_line(&mut self, line: &str, file: &str, line_number: usize) {
+        self.text.push_str(line);
+        self.text.push('\n');
+        self.lines.push((file.to_string(), line_number));
+    }
+
+    fn push_file(&mut self, file: &str, contents: &str) {
+        for (index, line) in contents.lines().enumerate() {
+            self.push_line(line, file, index + 1);
+        }
+    }
+
+    fn locate(&self, line: usize) -> (String, usize) {
+        self.lines
+            .get(line.saturating_sub(1))
+            .cloned()
+            .unwrap_or_else(|| ("<unknown>".to_string(), line))
+    }
+}
+
+/// Recursively read `path` and all its `import "..."` dependencies into
+/// `source`. `seen` prevents duplicate inclusion.
+fn resolve_imports(path: &Path, seen: &mut HashSet<PathBuf>, source: &mut Source) {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if seen.contains(&canonical) {
-        return String::new();
+        return;
     }
     seen.insert(canonical.clone());
 
-    let src = fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("Could not read file: {}", path.display()));
+    let src = fs::read_to_string(path).unwrap_or_else(|_| {
+        eprintln!("Could not read file: {}", path.display());
+        exit(1);
+    });
 
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut result = String::new();
+    let file = path.display().to_string();
 
-    for line in src.lines() {
+    for (index, line) in src.lines().enumerate() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("import \"") {
             if let Some(import_path) = rest.strip_suffix('"') {
-                let dep = dir.join(import_path);
-                result.push_str(&resolve_imports(&dep, seen));
-                result.push('\n');
+                resolve_imports(&dir.join(import_path), seen, source);
+                // Keep the line count of this file intact.
+                source.push_line("", &file, index + 1);
                 continue;
             }
         }
-        result.push_str(line);
-        result.push('\n');
+        source.push_line(line, &file, index + 1);
     }
-
-    result
 }
 
 fn build(
@@ -128,14 +158,17 @@ fn build(
     release: bool,
     print_azula_ir: bool,
 ) -> String {
+    let mut source = Source::default();
+    for (file, contents) in STDLIB {
+        source.push_file(file, contents);
+    }
     let mut seen = HashSet::new();
-    let user_source: String = files
-        .iter()
-        .map(|f| resolve_imports(Path::new(f), &mut seen))
-        .collect::<Vec<_>>()
-        .join("\n");
+    for f in files {
+        resolve_imports(Path::new(f), &mut seen, &mut source);
+    }
 
-    let input = format!("{}\n{}\n{}\n{}", STDLIB_STRING, STDLIB_VEC, STDLIB_STRMAP, user_source);
+    let input = source.text.clone();
+    let locate = |line: usize| source.locate(line);
 
     let primary = files.last().unwrap();
 
@@ -143,7 +176,7 @@ fn build(
     let mut parser = Parser::new(input.as_str(), lexer);
     let parsed = parser.parse();
     for error in &parser.errors {
-        error.print_stdout(&input, primary.as_str());
+        error.print_stdout_mapped(&input, &locate);
     }
 
     if !parser.errors.is_empty() {
@@ -152,17 +185,24 @@ fn build(
 
     let mut typecheck = Typechecker::new(parsed);
     let result = typecheck.typecheck();
-    for err in typecheck.errors {
-        err.print_stdout(&input, primary.as_str());
+    for err in &typecheck.errors {
+        err.print_stdout_mapped(&input, &locate);
     }
 
-    if result.is_err() {
-        exit(1);
-    }
+    let root = match result {
+        Ok(root) if typecheck.errors.is_empty() => root,
+        _ => exit(1),
+    };
 
-    let root = result.unwrap();
-
-    let name = primary.trim_end_matches(".azl").to_string();
+    let name = if destination.is_empty() {
+        primary.trim_end_matches(".azl").to_string()
+    } else {
+        Path::new(primary.trim_end_matches(".azl"))
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    };
 
     let mut codegen = Codegen::new(&name, root);
     codegen.codegen();
@@ -172,7 +212,7 @@ fn build(
         println!("{}", codegen.module);
     }
 
-    LLVMCodegen::codegen(
+    if let Err(e) = LLVMCodegen::codegen(
         &name,
         destination,
         emit_llvm,
@@ -183,10 +223,10 @@ fn build(
             OptimizationLevel::Default
         },
         codegen.module,
-    )
-    .unwrap();
+    ) {
+        eprintln!("{}", e);
+        exit(1);
+    }
 
-    // println!("{:?}", VM::new().run(codegen.module));
-
-    return name;
+    name
 }

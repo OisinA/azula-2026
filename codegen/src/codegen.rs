@@ -21,6 +21,16 @@ fn struct_byte_size<'a>(module: &Module<'a>, typ: &AzulaType<'a>) -> usize {
     }
 }
 
+/// Copy every argument into a stack slot so that arguments behave exactly like
+/// local variables (they can be addressed with `&` and have fields assigned).
+fn spill_arguments<'a>(function: &mut Function<'a>) {
+    for (index, (name, typ)) in function.arguments.clone().into_iter().enumerate() {
+        let value = function.load_arg(index, typ.clone());
+        function.store(name.clone(), value, typ.clone());
+        function.variables.insert(name, typ);
+    }
+}
+
 fn is_terminator(instr: Option<&Instruction<'_>>) -> bool {
     matches!(
         instr,
@@ -153,6 +163,7 @@ impl<'a> Codegen<'a> {
             let mut function = Function::new();
             function.arguments = arguments;
             function.returns = returns;
+            spill_arguments(&mut function);
 
             if let Statement::Block(stmts) = body.as_ref().clone() {
                 for stmt in stmts {
@@ -191,6 +202,7 @@ impl<'a> Codegen<'a> {
                         let mut function = Function::new();
                         function.arguments = arguments;
                         function.returns = returns;
+                        spill_arguments(&mut function);
 
                         if let Statement::Block(stmts) = body.as_ref().clone() {
                             for stmt in stmts {
@@ -262,8 +274,11 @@ impl<'a> Codegen<'a> {
                 }
                 Expression::StructAccess(struc, member) => {
                     // For heap pointers (&T), load the pointer value; for stack structs (T), take its address.
-                    let already_ptr = matches!(struc.typed, AzulaType::Pointer(_));
-                    let struc_val = self.codegen_expr(struc.deref().clone(), func, already_ptr);
+                    let struc_val = if matches!(struc.typed, AzulaType::Pointer(_)) {
+                        self.codegen_expr(struc.deref().clone(), func, true)
+                    } else {
+                        self.codegen_address(struc.deref().clone(), func)
+                    };
                     let member_name = match &member.expression {
                         Expression::Identifier(v) => v,
                         _ => unreachable!(),
@@ -468,16 +483,7 @@ impl<'a> Codegen<'a> {
             Expression::Integer(val) => func.const_int(val),
             Expression::Float(val) => func.const_float(val),
             Expression::Identifier(name) if resolve_pointer => {
-                if let Some((index, _)) = func
-                    .arguments
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (name, _))| (index, name))
-                    .filter(|(_, n)| n.clone().clone() == name)
-                    .next()
-                {
-                    func.load_arg(index, expr.typed)
-                } else if func.variables.contains_key(&name) {
+                if func.variables.contains_key(&name) {
                     func.load(name, expr.typed)
                 } else if let Some(val) = self.module.global_values.get(&name) {
                     if let GlobalValue::String(v) = val {
@@ -490,20 +496,7 @@ impl<'a> Codegen<'a> {
                     unreachable!()
                 }
             }
-            Expression::Identifier(name) => {
-                if let Some((index, _)) = func
-                    .arguments
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (name, _))| (index, name))
-                    .filter(|(_, n)| n.clone().clone() == name)
-                    .next()
-                {
-                    func.load_arg(index, expr.typed.clone())
-                } else {
-                    func.ptr(name)
-                }
-            }
+            Expression::Identifier(name) => func.ptr(name),
             Expression::String(val) => self.module.add_string(val),
             Expression::Boolean(val) => {
                 if val {
@@ -566,14 +559,7 @@ impl<'a> Codegen<'a> {
                 let val = self.codegen_expr(inner, func, true);
                 func.sub(zero, val)
             }
-            Expression::Pointer(expr) => {
-                //     match &expr.expression {
-                //     Expression::Identifier(ident) => func.ptr(ident.clone()),
-                //     _ => unreachable!(),
-                // }
-
-                self.codegen_expr(expr.deref().clone(), func, false)
-            }
+            Expression::Pointer(expr) => self.codegen_address(expr.deref().clone(), func),
             Expression::Array(vals) => {
                 let elem_type = vals[0].typed.clone();
                 let array = func.create_array(elem_type.clone(), vals.len());
@@ -700,6 +686,55 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
+    }
+
+    /// Generate a pointer to the storage behind an lvalue expression. Expressions
+    /// that are not lvalues are evaluated into a fresh temporary whose address is returned.
+    fn codegen_address(&mut self, expr: ExpressionNode<'a>, func: &mut Function<'a>) -> Value {
+        match &expr.expression {
+            Expression::Identifier(name) if func.variables.contains_key(name) => func.ptr(name.clone()),
+            Expression::StructAccess(struc, member) => {
+                let struct_name = match &struc.typed {
+                    AzulaType::Named(name) => name.clone(),
+                    AzulaType::Pointer(nested) => match nested.deref() {
+                        AzulaType::Named(name) => name.clone(),
+                        _ => unreachable!("{:?}", struc.typed),
+                    },
+                    _ => unreachable!("{:?}", struc.typed),
+                };
+                let base = if matches!(struc.typed, AzulaType::Pointer(_)) {
+                    self.codegen_expr(struc.deref().clone(), func, true)
+                } else {
+                    self.codegen_address(struc.deref().clone(), func)
+                };
+                let member_name = match &member.expression {
+                    Expression::Identifier(s) => s.clone(),
+                    _ => unreachable!(),
+                };
+                let index = self.struct_member_index(&struct_name, &member_name);
+                func.access_struct_member(base, index, false, struct_name)
+            }
+            _ => {
+                let temp = format!("__tmp_{}", func.if_block_index);
+                func.if_block_index += 1;
+                let typ = expr.typed.clone();
+                let value = self.codegen_expr(expr, func, true);
+                func.variables.insert(temp.clone(), typ.clone());
+                func.store(temp.clone(), value, typ);
+                func.ptr(temp)
+            }
+        }
+    }
+
+    fn struct_member_index(&self, struct_name: &str, member_name: &str) -> usize {
+        self.module
+            .structs
+            .get(struct_name)
+            .unwrap_or_else(|| panic!("Unknown struct {}", struct_name))
+            .attributes
+            .iter()
+            .position(|(_, name)| *name == member_name)
+            .unwrap_or_else(|| panic!("Unknown member {} on {}", member_name, struct_name))
     }
 
     fn codegen_match(

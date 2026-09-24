@@ -1,0 +1,30 @@
+// Declarations for the parts of the C standard library Azula programs use.
+// (printf, malloc, realloc, free, memcpy, strlen, strcmp and the f* file
+// functions are provided by the compiler itself.)
+
+extern varargs func sprintf(str, str): int;
+extern varargs func snprintf(str, int, str): int;
+extern varargs func fprintf(str, str): int;
+extern varargs func dprintf(i32, str): int;
+extern func puts(str): int;
+extern func putchar(i32): i32;
+extern func exit(i32);
+extern func abort();
+extern func fputs(str, str): int;
+extern func fwrite(str, int, int, str): int;
+extern func fflush(str): int;
+extern func fgetc(str): i32;
+extern func fdopen(i32, str): str;
+extern func getenv(str): str;
+extern func system(str): i32;
+extern func atoi(str): i32;
+extern func strtol(str, str, i32): int;
+extern func strncmp(str, str, int): i32;
+extern func strcpy(str, str): str;
+extern func strcat(str, str): str;
+extern func strchr(str, i32): str;
+extern func strstr(str, str): str;
+extern func strdup(str): str;
+extern func memset(str, i32, int): str;
+extern func memcmp(str, str, int): i32;
+extern func calloc(int, int): str;

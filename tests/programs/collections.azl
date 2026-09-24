@@ -1,0 +1,28 @@
+struct Holder { items: StrVec, nums: IntVec, }
+
+func main {
+    var v = IntVec::new();
+    var i = 0;
+    while i < 100 {
+        v.push(i * i);
+        i = i + 1;
+    }
+    printf("%d %d %d\n", v.length(), v.get(10), v.peek());
+    printf("pop %d len %d\n", v.pop(), v.length());
+
+    var h = Holder { items: StrVec::new(), nums: IntVec::new() };
+    h.items.push("alpha");
+    h.items.push("beta");
+    h.nums.push(7);
+    printf("%d %s %d\n", h.items.length(), h.items.get(1), h.nums.get(0));
+
+    var m = StrMap::new();
+    m.insert("one", 1);
+    m.insert("two", 2);
+    m.insert("one", 11);
+    printf("%d %d %d %d\n", m.get("one"), m.get("two"), m.get("three"), m.length());
+
+    var arr: [int; 4] = [3, 1, 4, 1];
+    arr[2] = 9;
+    printf("%d %d\n", arr[2], arr[3]);
+}

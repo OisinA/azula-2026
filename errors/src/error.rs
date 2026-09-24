@@ -31,6 +31,7 @@ pub enum ErrorType {
     UnknownVariant(String, String),
     NonExhaustiveMatch(String),
     MatchOnNonEnum(String),
+    Custom(String),
 }
 
 impl<'a> ErrorType {
@@ -100,6 +101,7 @@ impl<'a> ErrorType {
             ErrorType::MatchOnNonEnum(typ) => {
                 format!("Cannot match on non-enum type {}", typ)
             }
+            ErrorType::Custom(message) => message.clone(),
         }
     }
 }
@@ -121,15 +123,22 @@ impl AzulaError {
     }
 
     pub fn print_stdout(&self, source: &str, filename: &str) {
+        self.print_stdout_mapped(source, &|line| (filename.to_string(), line));
+    }
+
+    /// Print the error, using `locate` to translate a line number in `source`
+    /// into the (file, line) it originally came from.
+    pub fn print_stdout_mapped(&self, source: &str, locate: &dyn Fn(usize) -> (String, usize)) {
         let lookup = LineColLookup::new(source);
         println!(
             "{}: {}",
             Red.paint("ERROR"),
             self.error_type.error_message()
         );
-        let show_start = self.read_back_until_new_line(source, self.start - 1);
+        let show_start = self.read_back_until_new_line(source, self.start.saturating_sub(1));
         let show_end = self.read_forward_until_new_line(source, self.end - 1);
         let (line_number, col) = lookup.get(self.start);
+        let (filename, line_number) = locate(line_number);
         // println!(
         //     "{}",
         //     Red.paint(format!("Line: {} Column: {}", line_number, col))

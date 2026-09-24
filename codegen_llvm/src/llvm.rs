@@ -104,13 +104,18 @@ impl<'ctx> Backend<'ctx> for LLVMCodegen<'ctx> {
 
         for (name, func) in &module.functions {
             let mut linkage = Some(Linkage::Private);
+            let mut returns = func.returns.clone();
             if *name == "main" {
                 linkage = None;
+                // A void `main` still has to give the OS an exit code.
+                if returns == AzulaType::Void {
+                    returns = AzulaType::SizedSignedInt(32);
+                }
             }
             codegen.module.add_function(
                 name,
                 codegen.azula_type_to_function_llvm_type(
-                    func.returns.clone(),
+                    returns,
                     &func
                         .arguments
                         .iter()
@@ -166,29 +171,31 @@ impl<'ctx> Backend<'ctx> for LLVMCodegen<'ctx> {
                 .unwrap();
         }
 
-        let object_file = format!(".build/{}.o", name);
+        std::fs::create_dir_all(".build")?;
+        let base_name = Path::new(name).file_name().unwrap().to_string_lossy();
+        let object_file = format!(".build/{}.o", base_name);
         codegen.build_object_file(object_file.clone());
 
-        if let Some(target) = codegen.target {
-            Command::new("zig")
-                .arg("cc")
-                .arg(format!("-o{}{}", destination, name))
-                .arg(object_file)
-                .arg("-target")
-                .arg(target)
-                .spawn()
-                .unwrap()
-                .wait()
-                .unwrap();
+        // Prefer `zig cc` (which makes cross-compiling easy), falling back to the system C compiler.
+        let use_zig = Command::new("zig").arg("version").output().is_ok();
+        let mut command = if use_zig {
+            let mut c = Command::new("zig");
+            c.arg("cc");
+            c
         } else {
-            Command::new("zig")
-                .arg("cc")
-                .arg(format!("-o{}{}", destination, name))
-                .arg(object_file)
-                .spawn()
-                .unwrap()
-                .wait()
-                .unwrap();
+            Command::new("cc")
+        };
+        command
+            .arg("-o")
+            .arg(format!("{}{}", destination, name))
+            .arg(object_file)
+            .arg("-lm");
+        if let Some(target) = codegen.target {
+            command.arg("-target").arg(target);
+        }
+        let status = command.status()?;
+        if !status.success() {
+            return Err("linking failed".into());
         }
 
         Ok(())
@@ -418,9 +425,14 @@ impl<'a> LLVMCodegen<'a> {
             Instruction::Return(val) => {
                 let ret_basic_type: Option<BasicTypeEnum<'a>> = func.get_type().get_return_type();
                 match val {
-                    None => {
-                        self.builder.build_return(None).unwrap();
-                    }
+                    None => match ret_basic_type {
+                        Some(BasicTypeEnum::IntType(t)) => {
+                            self.builder.build_return(Some(&t.const_zero())).unwrap();
+                        }
+                        _ => {
+                            self.builder.build_return(None).unwrap();
+                        }
+                    },
                     Some(Value::Local(val)) => {
                         let mut ret_val = *locals.registers.get(&val).clone().unwrap();
                         if let Some(target) = ret_basic_type {
@@ -797,6 +809,7 @@ impl<'a> LLVMCodegen<'a> {
                 };
 
                 let elem_llvm_type = self.azula_type_to_llvm_basic_type(elem_type);
+                let val = self.coerce_int_width(val, elem_llvm_type);
                 let gep = unsafe {
                     self.builder
                         .build_gep(elem_llvm_type, array_ptr, &[index_val], "gep")
@@ -1147,7 +1160,7 @@ impl<'a> LLVMCodegen<'a> {
                 "",
                 "",
                 opt_level,
-                inkwell::targets::RelocMode::Default,
+                inkwell::targets::RelocMode::PIC,
                 inkwell::targets::CodeModel::Default,
             );
         }
@@ -1168,7 +1181,7 @@ impl<'a> LLVMCodegen<'a> {
             &cpu,
             &features,
             opt_level,
-            inkwell::targets::RelocMode::Default,
+            inkwell::targets::RelocMode::PIC,
             inkwell::targets::CodeModel::Default,
         )
     }

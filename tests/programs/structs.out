@@ -1,0 +1,4 @@
+outer 21 20 2 total=43
+copy=100 original=2
+via pointer 99
+list sum 10

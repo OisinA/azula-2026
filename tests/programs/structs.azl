@@ -1,0 +1,50 @@
+struct Inner { a: int, b: int, }
+struct Outer { inner: Inner, name: str, count: int, }
+struct Node { value: int, next: &Node, }
+
+impl Outer {
+    func bump(self: &Outer) {
+        self.count = self.count + 1;
+        self.inner.a = self.inner.a + 10;
+    }
+
+    func total(self: Outer): int {
+        return self.inner.a + self.inner.b + self.count;
+    }
+}
+
+func sum_list(n: &Node): int {
+    var total = 0;
+    var cur = n;
+    while cur != null {
+        total = total + cur.value;
+        cur = cur.next;
+    }
+    return total;
+}
+
+func modify_copy(o: Outer): int {
+    o.count = 100;
+    return o.count;
+}
+
+func main {
+    var o = Outer { inner: Inner { a: 1, b: 2 }, name: "outer", count: 0 };
+    o.inner.b = 20;
+    o.bump();
+    o.bump();
+    printf("%s %d %d %d total=%d\n", o.name, o.inner.a, o.inner.b, o.count, o.total());
+    printf("copy=%d original=%d\n", modify_copy(o), o.count);
+
+    var p: &Outer = &o;
+    p.inner.a = 99;
+    printf("via pointer %d\n", o.inner.a);
+
+    var list: &Node = null;
+    var i = 1;
+    while i <= 4 {
+        list = alloc(Node { value: i, next: list });
+        i = i + 1;
+    }
+    printf("list sum %d\n", sum_list(list));
+}

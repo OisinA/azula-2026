@@ -1,0 +1,15 @@
+func main {
+    var s = "tab\there \"quoted\" back\\slash";
+    printf("%s\n", s);
+    printf("len=%d first=%c\n", strlen(s), s[0]);
+    var buf: str = malloc(64);
+    sprintf(buf, "%d-%s-%c", 42, "x", 'y');
+    printf("%s\n", buf);
+    buf[0] = 'Z' as i8;
+    printf("%s\n", buf);
+    var str = String::new("hello world");
+    var sub = str.substr(6, 5);
+    printf("%s %d %d\n", sub.data, sub.len, str.equals(String::new("hello world")));
+    var c: int = '\n';
+    printf("%d %d\n", c, '\'');
+}
