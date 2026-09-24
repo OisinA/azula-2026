@@ -62,16 +62,6 @@ struct Pair<T> is Show {
     }
 }
 
-// Methods on built-in types
-extend int {
-    func abs(): int {
-        if self < 0 {
-            return -self;
-        }
-        return self;
-    }
-}
-
 func largest<T is Ord>(items: Vec<T>): T {
     var best = items.get(0);
     for item in items {

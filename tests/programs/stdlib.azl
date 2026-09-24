@@ -1,0 +1,63 @@
+// The standard library: Vec helpers and sorting, files, the environment and maths.
+
+struct Person is Ord {
+    name: str;
+    age: int;
+
+    func compare(other: Person): int {
+        return self.age.compare(other.age);
+    }
+}
+
+func main() {
+    // Vec
+    var v: Vec<int> = Vec::new();
+    for n in [5, 3, 9, 1, 7, 3] {
+        v.push(n);
+    }
+    println("${v.first().unwrap()} ${v.last().unwrap()} ${v.contains(9)} ${v.contains(4)} ${v.index_of(3).unwrap()}");
+    v.sort();
+    println(", ".join(v.iter().map(func(n) => "${n}").collect()));
+    v.reverse();
+    println(", ".join(v.iter().map(func(n) => "${n}").collect()));
+    v.insert(1, 100);
+    println("${v.remove(0)} ${v.get(0)} ${v.len}");
+    var tail = v.slice(4, 100);
+    tail.push_all(tail);
+    println(tail.len);
+
+    var words: Vec<str> = Vec::new();
+    for w in "pear apple fig banana".split(" ") {
+        words.push(w);
+    }
+    words.sort();
+    println(" ".join(words));
+    words.sort_by(func(a, b) => a.len() < b.len());
+    println(" ".join(words));
+
+    var people: Vec<Person> = Vec::new();
+    people.push(Person { name: "ada", age: 36 });
+    people.push(Person { name: "alan", age: 41 });
+    people.push(Person { name: "grace", age: 29 });
+    people.sort();
+    println(" ".join(people.iter().map(func(p) => p.name).collect()));
+
+    // Files
+    var path = "stdlib_test.txt";
+    write_file(path, "line one\n").unwrap();
+    append_file(path, "line two\n").unwrap();
+    var text = read_file(path).unwrap();
+    println("${text.lines().len} lines, exists: ${file_exists(path)}");
+    println(read_file("/no/such/file").is_err());
+    println(read_file("/no/such/file").unwrap_err());
+
+    // The environment
+    println(env("AZULA_TEST_UNSET_VARIABLE").is_none());
+    println(args().len >= 1);
+
+    // Maths
+    println(2.0.sqrt() * 2.0.sqrt());
+    println(2.0.pow(10.0));
+    println("${(-3.7).abs()} ${3.7.floor()} ${3.2.ceil()} ${3.5.round()} ${(PI * 100.0).round() / 100.0}");
+    println("${(-5).abs()} ${3.min(7)} ${3.max(7)} ${2.pow(10)} ${7.to_float() / 2.0} ${9.99.to_int()}");
+}

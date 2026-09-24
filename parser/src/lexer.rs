@@ -242,6 +242,24 @@ impl<'a> Lexer<'a> {
                         };
                     }
 
+                    // A float like 1.5 (but not in `t.0.1`, which accesses tuple elements)
+                    let bytes = self.input.as_bytes();
+                    let after_dot = start > 0 && bytes[start - 1] == b'.';
+                    if !after_dot
+                        && bytes.get(self.index) == Some(&b'.')
+                        && bytes.get(self.index + 1).map(|b| b.is_ascii_digit()).unwrap_or(false)
+                    {
+                        self.next(); // .
+                        while let Some(val) = self.peekable.peek() {
+                            match val {
+                                '0'..='9' => self.next(),
+                                _ => break,
+                            };
+                        }
+                        let text = &self.input[start..self.index];
+                        return Some(Token::new(TokenKind::Float(text.parse().unwrap()), start, self.index));
+                    }
+
                     let identifier = &self.input[start..self.index];
                     Token::new(
                         TokenKind::Integer(identifier.parse().unwrap()),

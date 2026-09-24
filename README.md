@@ -196,6 +196,14 @@ Other things to know:
   `equals`, and `<` and friends on types that are `Ord` call `compare`. The standard
   interfaces `Eq`, `Ord`, `Hash` and `Show` are implemented for `int`, `str`, `bool` and
   `float`, and `Map<K, V>` takes any `K` that is `Hash + Eq`.
+- The standard library also has:
+  - `Vec`: `first`, `last`, `insert`, `remove`, `push_all`, `slice`, `reverse`,
+    `index_of`, `contains`, `sort()` (a stable sort using `<`) and `sort_by(less)`.
+  - Files and the environment: `read_file(path)` and `write_file`/`append_file`
+    (returning `Result`s), `file_exists`, `read_line()` from standard input,
+    `args()` (Linux) and `env(name)`.
+  - Maths: `x.sqrt()`, `x.pow(y)`, `floor`, `ceil`, `round`, `abs`, `sin`, `cos`, `tan`,
+    `exp`, `ln`, `min`, `max` on floats; `abs`, `min`, `max`, `pow` on ints; `PI` and `E`.
 - Printing: `print(x)` and `println(x)` take any value whose type is `Show` (strings,
   numbers, bools, and your own types that implement `Show`), so `println("sum ${n}")`
   and `println(n)` both work. `printf` is still available, and the compilers check its

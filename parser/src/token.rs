@@ -12,6 +12,7 @@ pub enum TokenKind<'a> {
     String(&'a str),
     Char(&'a str),
     Integer(i64),
+    Float(f64),
 
     BracketOpen,  // (
     BracketClose, // )

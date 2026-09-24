@@ -68,6 +68,151 @@ struct Vec<T> {
         free(self.data);
     }
 
+    func first(): Option<T> {
+        if self.len == 0 {
+            return Option::None;
+        }
+        return Option::Some(self.data[0]);
+    }
+
+    func last(): Option<T> {
+        if self.len == 0 {
+            return Option::None;
+        }
+        return Option::Some(self.data[self.len - 1]);
+    }
+
+    // Insert `value` at `index`, moving later elements along
+    func insert(index: int, value: T) {
+        if index < 0 || index > self.len {
+            printf("Vec insert at %ld out of bounds (length %ld)\n", index, self.len);
+            exit(1);
+        }
+        self.push(value);
+        var i = self.len - 1;
+        while i > index {
+            self.data[i] = self.data[i - 1];
+            i -= 1;
+        }
+        self.data[index] = value;
+    }
+
+    // Remove and return the element at `index`, moving later elements back
+    func remove(index: int): T {
+        self.check_index(index);
+        var value = self.data[index];
+        var i = index;
+        while i + 1 < self.len {
+            self.data[i] = self.data[i + 1];
+            i += 1;
+        }
+        self.len -= 1;
+        return value;
+    }
+
+    // Add all of `other`'s elements to the end
+    func push_all(other: Vec<T>) {
+        var i = 0;
+        while i < other.len {
+            self.push(other.data[i]);
+            i += 1;
+        }
+    }
+
+    // A new Vec of the elements from `start` up to (not including) `end`,
+    // which are clamped to the Vec
+    func slice(start: int, end: int): Vec<T> {
+        var from = start;
+        var to = end;
+        if from < 0 {
+            from = 0;
+        }
+        if to > self.len {
+            to = self.len;
+        }
+        var out: Vec<T> = Vec::new();
+        var i = from;
+        while i < to {
+            out.push(self.data[i]);
+            i += 1;
+        }
+        return out;
+    }
+
+    func reverse() {
+        var i = 0;
+        var j = self.len - 1;
+        while i < j {
+            var t = self.data[i];
+            self.data[i] = self.data[j];
+            self.data[j] = t;
+            i += 1;
+            j -= 1;
+        }
+    }
+
+    // The position of the first element equal to `value`, if any
+    func index_of(value: T): Option<int> {
+        var i = 0;
+        while i < self.len {
+            if self.data[i] == value {
+                return Option::Some(i);
+            }
+            i += 1;
+        }
+        return Option::None;
+    }
+
+    func contains(value: T): bool {
+        return self.index_of(value).is_some();
+    }
+
+    // Sort into ascending order (a stable merge sort) using `<`, which works
+    // for numbers, strings, chars and types that are Ord
+    func sort() {
+        self.sort_by(func(a, b) => a < b);
+    }
+
+    // Sort so that `less(a, b)` holds for any a before b (stable)
+    func sort_by(less: func(T, T): bool) {
+        if self.len < 2 {
+            return;
+        }
+        var temp: &T = malloc(self.len * sizeof(T));
+        var width = 1;
+        while width < self.len {
+            var start = 0;
+            while start < self.len {
+                var mid = start + width;
+                if mid > self.len {
+                    mid = self.len;
+                }
+                var end = start + 2 * width;
+                if end > self.len {
+                    end = self.len;
+                }
+                // Merge [start, mid) and [mid, end) into temp
+                var i = start;
+                var j = mid;
+                var k = start;
+                while k < end {
+                    if i < mid && (j >= end || !less(self.data[j], self.data[i])) {
+                        temp[k] = self.data[i];
+                        i += 1;
+                    } else {
+                        temp[k] = self.data[j];
+                        j += 1;
+                    }
+                    k += 1;
+                }
+                start = end;
+            }
+            memcpy(self.data, temp, self.len * sizeof(T));
+            width *= 2;
+        }
+        free(temp);
+    }
+
     // Call `f` with each element in turn
     func each(f: func(T)) {
         var i = 0;

@@ -1591,45 +1591,16 @@ impl<'a> Parser<'a> {
         };
 
         let mut left = match tok.kind {
-            TokenKind::Integer(i) => {
-                if let Some(peek) = self.lexer.peek() {
-                    if peek.kind == TokenKind::Dot {
-                        self.lexer.next();
-                        let second_number = self.parse_expression(CALL, false).unwrap();
-                        match second_number.expression {
-                            Expression::Integer(_) => Some(ExpressionNode {
-                                expression: Expression::Float(
-                                    self.source[tok.span.start..second_number.span.end].replace('_', "").parse().unwrap(),
-                                ),
-                                typed: AzulaType::Float,
-                                span: Span {
-                                    start: tok.span.start,
-                                    end: second_number.span.end,
-                                },
-                            }),
-                            _ => panic!(),
-                        }
-                    } else {
-                        Some(ExpressionNode {
-                            expression: Expression::Integer(i),
-                            typed: AzulaType::Int,
-                            span: Span {
-                                start: tok.span.start,
-                                end: tok.span.end,
-                            },
-                        })
-                    }
-                } else {
-                    Some(ExpressionNode {
-                        expression: Expression::Integer(i),
-                        typed: AzulaType::Int,
-                        span: Span {
-                            start: tok.span.start,
-                            end: tok.span.end,
-                        },
-                    })
-                }
-            }
+            TokenKind::Integer(i) => Some(ExpressionNode {
+                expression: Expression::Integer(i),
+                typed: AzulaType::Int,
+                span: Span { start: tok.span.start, end: tok.span.end },
+            }),
+            TokenKind::Float(f) => Some(ExpressionNode {
+                expression: Expression::Float(f),
+                typed: AzulaType::Float,
+                span: Span { start: tok.span.start, end: tok.span.end },
+            }),
             TokenKind::True => Some(ExpressionNode {
                 expression: Expression::Boolean(true),
                 typed: AzulaType::Bool,

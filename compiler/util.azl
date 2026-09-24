@@ -104,14 +104,6 @@ func write_text_file(path: str, contents: str): bool {
     return true;
 }
 
-func file_exists(path: str): bool {
-    var f = fopen(path, "rb");
-    if f == null {
-        return false;
-    }
-    fclose(f);
-    return true;
-}
 
 // ---------------------------------------------------------------------------
 // Source text and error reporting

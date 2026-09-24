@@ -9,3 +9,104 @@ func print<T is Show>(value: T) {
 func println<T is Show>(value: T) {
     printf("%s\n", value.to_str());
 }
+
+// ---------------------------------------------------------------------------
+// Files, the command line and the environment
+// ---------------------------------------------------------------------------
+
+// The whole contents of the file at `path`
+func read_file(path: str): Result<str, str> {
+    var f = fopen(path, "rb");
+    if f == null {
+        return Result::Err("can't open ${path}");
+    }
+    fseek(f, 0, 2);
+    var size = ftell(f);
+    fseek(f, 0, 0);
+    var text: str = malloc((size + 1) * sizeof(u8));
+    var got = fread(text, 1, size, f);
+    text[got] = 0;
+    fclose(f);
+    return Result::Ok(text);
+}
+
+// Replace the contents of the file at `path` with `text`, returning the
+// number of bytes written
+func write_file(path: str, text: str): Result<int, str> {
+    return write_with_mode(path, text, "wb");
+}
+
+// Add `text` to the end of the file at `path`
+func append_file(path: str, text: str): Result<int, str> {
+    return write_with_mode(path, text, "ab");
+}
+
+func write_with_mode(path: str, text: str, mode: str): Result<int, str> {
+    var f = fopen(path, mode);
+    if f == null {
+        return Result::Err("can't open ${path}");
+    }
+    var written = fwrite(text, 1, strlen(text), f);
+    fclose(f);
+    if written < strlen(text) {
+        return Result::Err("couldn't write all of ${path}");
+    }
+    return Result::Ok(written);
+}
+
+func file_exists(path: str): bool {
+    var f = fopen(path, "rb");
+    if f == null {
+        return false;
+    }
+    fclose(f);
+    return true;
+}
+
+// A line from standard input (without its newline), or None at the end
+func read_line(): Option<str> {
+    var input = fdopen(0, "r");
+    var line = StringBuilder::new();
+    var c = fgetc(input);
+    if c < 0 {
+        return Option::None;
+    }
+    while c >= 0 && c != '\n' {
+        line.append_char(c);
+        c = fgetc(input);
+    }
+    return Option::Some(line.build());
+}
+
+// The program's command-line arguments, starting with the program's name
+// (read from /proc, so Linux only)
+func args(): Vec<str> {
+    var out: Vec<str> = Vec::new();
+    var f = fopen("/proc/self/cmdline", "rb");
+    if f == null {
+        return out;
+    }
+    // The arguments are each followed by a NUL byte
+    var buf: str = malloc(65536 * sizeof(u8));
+    var n = fread(buf, 1, 65535, f);
+    fclose(f);
+    var start = 0;
+    var i = 0;
+    while i < n {
+        if buf[i] == 0 {
+            out.push(ptr_add(buf, start));
+            start = i + 1;
+        }
+        i += 1;
+    }
+    return out;
+}
+
+// The value of environment variable `name`, if it's set
+func env(name: str): Option<str> {
+    var value = getenv(name);
+    if value == null {
+        return Option::None;
+    }
+    return Option::Some(value);
+}

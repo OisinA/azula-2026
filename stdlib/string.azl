@@ -30,18 +30,6 @@ struct String {
     }
 }
 
-func read_file(path: str): String {
-    var f = fopen(path, "r");
-    fseek(f, 0, 2);
-    var size = ftell(f);
-    fseek(f, 0, 0);
-    var buf = malloc((size + 1) * sizeof(u8));
-    fread(buf, 1, size, f);
-    buf[size] = 0;
-    fclose(f);
-    return String { data: buf, len: size };
-}
-
 // Builds up a string piece by piece.
 struct StringBuilder {
     data: str;

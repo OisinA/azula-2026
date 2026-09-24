@@ -1,0 +1,121 @@
+// Numbers: maths on floats and ints.
+
+extern func sqrt(float): float;
+extern func pow(float, float): float;
+extern func floor(float): float;
+extern func ceil(float): float;
+extern func round(float): float;
+extern func fabs(float): float;
+extern func sin(float): float;
+extern func cos(float): float;
+extern func tan(float): float;
+extern func atan2(float, float): float;
+extern func exp(float): float;
+extern func log(float): float;
+
+const PI: float = 3.141592653589793;
+const E: float = 2.718281828459045;
+
+extend float {
+    func sqrt(): float {
+        return sqrt(self);
+    }
+
+    func pow(exponent: float): float {
+        return pow(self, exponent);
+    }
+
+    func floor(): float {
+        return floor(self);
+    }
+
+    func ceil(): float {
+        return ceil(self);
+    }
+
+    func round(): float {
+        return round(self);
+    }
+
+    func abs(): float {
+        return fabs(self);
+    }
+
+    func sin(): float {
+        return sin(self);
+    }
+
+    func cos(): float {
+        return cos(self);
+    }
+
+    func tan(): float {
+        return tan(self);
+    }
+
+    func exp(): float {
+        return exp(self);
+    }
+
+    // The natural logarithm
+    func ln(): float {
+        return log(self);
+    }
+
+    func min(other: float): float {
+        if other < self {
+            return other;
+        }
+        return self;
+    }
+
+    func max(other: float): float {
+        if other > self {
+            return other;
+        }
+        return self;
+    }
+
+    // Rounded towards zero
+    func to_int(): int {
+        return self as int;
+    }
+}
+
+extend int {
+    func abs(): int {
+        if self < 0 {
+            return -self;
+        }
+        return self;
+    }
+
+    func min(other: int): int {
+        if other < self {
+            return other;
+        }
+        return self;
+    }
+
+    func max(other: int): int {
+        if other > self {
+            return other;
+        }
+        return self;
+    }
+
+    // `self` to the power `exponent` (which must not be negative)
+    func pow(exponent: int): int {
+        var result = 1;
+        var i = 0;
+        while i < exponent {
+            result *= self;
+            i += 1;
+        }
+        return result;
+    }
+
+    func to_float(): float {
+        return self as float;
+    }
+}
