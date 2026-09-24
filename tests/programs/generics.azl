@@ -1,15 +1,15 @@
-struct Vec<T> {
+struct Stack<T> {
     data: &T,
     len: int,
     cap: int,
 }
 
-impl Vec<T> {
-    func new(): Vec<T> {
-        return Vec { data: malloc(4 * sizeof(T)), len: 0, cap: 4 };
+impl Stack<T> {
+    func new(): Stack<T> {
+        return Stack { data: malloc(4 * sizeof(T)), len: 0, cap: 4 };
     }
 
-    func push(self: &Vec<T>, value: T) {
+    func push(self: &Stack<T>, value: T) {
         if self.len == self.cap {
             self.cap = self.cap * 2;
             self.data = realloc(self.data, self.cap * sizeof(T));
@@ -18,11 +18,11 @@ impl Vec<T> {
         self.len = self.len + 1;
     }
 
-    func get(self: &Vec<T>, index: int): T {
+    func get(self: &Stack<T>, index: int): T {
         return self.data[index];
     }
 
-    func length(self: Vec<T>): int {
+    func length(self: Stack<T>): int {
         return self.len;
     }
 }
@@ -32,7 +32,7 @@ struct Pair<A, B> {
     second: B,
 }
 
-enum Option<T> {
+enum Maybe<T> {
     Some(T),
     None,
 }
@@ -51,15 +51,15 @@ func swap<A, B>(p: Pair<A, B>): Pair<B, A> {
     return Pair { first: p.second, second: p.first };
 }
 
-func find(v: &Vec<str>, needle: str): Option<int> {
+func find(v: &Stack<str>, needle: str): Maybe<int> {
     var i = 0;
     while i < v.len {
         if strcmp(v.get(i), needle) == 0 {
-            return Option::Some(i);
+            return Maybe::Some(i);
         }
         i = i + 1;
     }
-    return Option::None;
+    return Maybe::None;
 }
 
 func sum(l: List<int>): int {
@@ -72,7 +72,7 @@ func sum(l: List<int>): int {
 struct Point { x: int, y: int, }
 
 func main {
-    var ints: Vec<int> = Vec::new();
+    var ints: Stack<int> = Stack::new();
     var i = 0;
     while i < 10 {
         ints.push(i * i);
@@ -80,29 +80,29 @@ func main {
     }
     printf("ints %d %d %d\n", ints.length(), ints.get(3), ints.get(9));
 
-    var words = Vec::<str>::new();
+    var words = Stack::<str>::new();
     words.push("alpha");
     words.push("beta");
     words.push("gamma");
     var found = find(&words, "gamma");
     match found {
-        Option::Some(index) => { printf("found at %d\n", index); },
-        Option::None => { printf("missing\n"); },
+        Maybe::Some(index) => { printf("found at %d\n", index); },
+        Maybe::None => { printf("missing\n"); },
     }
-    var missing: Option<int> = find(&words, "delta");
+    var missing: Maybe<int> = find(&words, "delta");
     match missing {
-        Option::Some(_) => { printf("?\n"); },
-        Option::None => { printf("delta missing\n"); },
+        Maybe::Some(_) => { printf("?\n"); },
+        Maybe::None => { printf("delta missing\n"); },
     }
 
-    var points: Vec<Point> = Vec::new();
+    var points: Stack<Point> = Stack::new();
     points.push(Point { x: 1, y: 2 });
     points.push(Point { y: 20, x: 10 });
     printf("points %d %d\n", points.get(1).x, points.get(1).y);
 
-    var nested: Vec<Vec<int>> = Vec::new();
-    nested.push(Vec::new());
-    var inner: &Vec<int> = &nested.data[0];
+    var nested: Stack<Stack<int>> = Stack::new();
+    nested.push(Stack::new());
+    var inner: &Stack<int> = &nested.data[0];
     inner.push(42);
     printf("nested %d %d\n", nested.length(), nested.get(0).get(0));
 
@@ -116,9 +116,9 @@ func main {
 
     var list = List::Cons(1, List::Cons(2, List::Cons(3, List::Nil)));
     printf("sum %d\n", sum(list));
-    var opt = Option::<str>::Some("text");
+    var opt = Maybe::<str>::Some("text");
     match opt {
-        Option::Some(s) => { printf("%s\n", s); },
+        Maybe::Some(s) => { printf("%s\n", s); },
         _ => {},
     }
 }

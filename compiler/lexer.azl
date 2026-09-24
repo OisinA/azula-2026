@@ -1,0 +1,305 @@
+// Turns source text into tokens.
+
+enum Tok {
+    Ident,
+    Int,
+    Float,
+    Str,
+    Char,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    LBrace,
+    RBrace,
+    Dot,
+    Comma,
+    Semi,
+    Colon,
+    ColonColon,
+    Plus,
+    Minus,
+    Star,
+    StarStar,
+    Slash,
+    Percent,
+    Assign,
+    EqEq,
+    NotEq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Shl,
+    Shr,
+    Amp,
+    AmpAmp,
+    Pipe,
+    PipePipe,
+    Caret,
+    Tilde,
+    Bang,
+    FatArrow,
+    KwFunc,
+    KwReturn,
+    KwVar,
+    KwConst,
+    KwTrue,
+    KwFalse,
+    KwIf,
+    KwElse,
+    KwBreak,
+    KwContinue,
+    KwExtern,
+    KwVarargs,
+    KwWhile,
+    KwStruct,
+    KwImpl,
+    KwFor,
+    KwEnum,
+    KwMatch,
+    KwAs,
+    KwAlloc,
+    KwNull,
+    KwType,
+    KwImport,
+    KwSizeof,
+    Eof,
+}
+
+struct Token {
+    kind: Tok,
+    // Identifier name, or the raw (still escaped) contents of a string/char literal
+    text: str,
+    // Value of an integer literal
+    value: int,
+    pos: int,
+}
+
+func is_digit(c: int): bool {
+    return c >= '0' && c <= '9';
+}
+
+func is_hex_digit(c: int): bool {
+    return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+func is_ident_start(c: int): bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+func is_ident_char(c: int): bool {
+    return is_ident_start(c) || is_digit(c);
+}
+
+func hex_value(c: int): int {
+    if is_digit(c) {
+        return c - '0';
+    }
+    if c >= 'a' && c <= 'f' {
+        return c - 'a' + 10;
+    }
+    return c - 'A' + 10;
+}
+
+func keyword_kind(word: str): Tok {
+    if str_eq(word, "func") { return Tok::KwFunc; }
+    if str_eq(word, "return") { return Tok::KwReturn; }
+    if str_eq(word, "var") { return Tok::KwVar; }
+    if str_eq(word, "const") { return Tok::KwConst; }
+    if str_eq(word, "true") { return Tok::KwTrue; }
+    if str_eq(word, "false") { return Tok::KwFalse; }
+    if str_eq(word, "if") { return Tok::KwIf; }
+    if str_eq(word, "else") { return Tok::KwElse; }
+    if str_eq(word, "break") { return Tok::KwBreak; }
+    if str_eq(word, "continue") { return Tok::KwContinue; }
+    if str_eq(word, "extern") { return Tok::KwExtern; }
+    if str_eq(word, "varargs") { return Tok::KwVarargs; }
+    if str_eq(word, "while") { return Tok::KwWhile; }
+    if str_eq(word, "struct") { return Tok::KwStruct; }
+    if str_eq(word, "impl") { return Tok::KwImpl; }
+    if str_eq(word, "for") { return Tok::KwFor; }
+    if str_eq(word, "enum") { return Tok::KwEnum; }
+    if str_eq(word, "match") { return Tok::KwMatch; }
+    if str_eq(word, "as") { return Tok::KwAs; }
+    if str_eq(word, "alloc") { return Tok::KwAlloc; }
+    if str_eq(word, "null") { return Tok::KwNull; }
+    if str_eq(word, "type") { return Tok::KwType; }
+    if str_eq(word, "import") { return Tok::KwImport; }
+    if str_eq(word, "sizeof") { return Tok::KwSizeof; }
+    return Tok::Ident;
+}
+
+func make_token(kind: Tok, pos: int): Token {
+    return Token { kind: kind, text: "", value: 0, pos: pos };
+}
+
+func lex(src: &Source): Vec<Token> {
+    var text = src.text.to_str();
+    var tokens: Vec<Token> = Vec::new();
+    var i = 0;
+    while true {
+        var c: int = text[i];
+        if c == 0 {
+            tokens.push(make_token(Tok::Eof, i));
+            return tokens;
+        }
+        if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
+            i = i + 1;
+            continue;
+        }
+        var start = i;
+        var next: int = text[i + 1];
+
+        // Comments
+        if c == '/' && next == '/' {
+            while text[i] != '\n' && text[i] != 0 {
+                i = i + 1;
+            }
+            continue;
+        }
+
+        if is_ident_start(c) {
+            while is_ident_char(text[i] as int) {
+                i = i + 1;
+            }
+            var word = substring(text, start, i - start);
+            var tok = make_token(keyword_kind(word), start);
+            tok.text = word;
+            tokens.push(tok);
+            continue;
+        }
+
+        if is_digit(c) {
+            var tok = make_token(Tok::Int, start);
+            if c == '0' && next == 'x' {
+                i = i + 2;
+                var value = 0;
+                while is_hex_digit(text[i] as int) || text[i] == '_' {
+                    if text[i] != '_' {
+                        value = value * 16 + hex_value(text[i] as int);
+                    }
+                    i = i + 1;
+                }
+                tok.value = value;
+            } else {
+                var value = 0;
+                while is_digit(text[i] as int) {
+                    value = value * 10 + (text[i] as int - '0');
+                    i = i + 1;
+                }
+                tok.value = value;
+                // A float literal like 1.5
+                if text[i] == '.' && is_digit(text[i + 1] as int) {
+                    i = i + 1;
+                    while is_digit(text[i] as int) {
+                        i = i + 1;
+                    }
+                    tok.kind = Tok::Float;
+                }
+            }
+            tok.text = substring(text, start, i - start);
+            tokens.push(tok);
+            continue;
+        }
+
+        if c == '"' || c == '\'' {
+            i = i + 1;
+            while text[i] != c {
+                if text[i] == 0 || text[i] == '\n' {
+                    src.fail(start, "unterminated literal");
+                }
+                if text[i] == '\\' {
+                    i = i + 1;
+                }
+                i = i + 1;
+            }
+            var tok = make_token(Tok::Str, start);
+            if c == '\'' {
+                tok.kind = Tok::Char;
+            }
+            tok.text = substring(text, start + 1, i - start - 1);
+            i = i + 1;
+            tokens.push(tok);
+            continue;
+        }
+
+        // Operators and punctuation: try two-character tokens first
+        var kind = Tok::Eof;
+        var len = 2;
+        if c == ':' && next == ':' { kind = Tok::ColonColon; }
+        else if c == '*' && next == '*' { kind = Tok::StarStar; }
+        else if c == '=' && next == '=' { kind = Tok::EqEq; }
+        else if c == '=' && next == '>' { kind = Tok::FatArrow; }
+        else if c == '!' && next == '=' { kind = Tok::NotEq; }
+        else if c == '<' && next == '=' { kind = Tok::Le; }
+        else if c == '<' && next == '<' { kind = Tok::Shl; }
+        else if c == '>' && next == '=' { kind = Tok::Ge; }
+        else if c == '>' && next == '>' { kind = Tok::Shr; }
+        else if c == '&' && next == '&' { kind = Tok::AmpAmp; }
+        else if c == '|' && next == '|' { kind = Tok::PipePipe; }
+        else {
+            len = 1;
+            kind = match c {
+                '(' => Tok::LParen,
+                ')' => Tok::RParen,
+                '[' => Tok::LBracket,
+                ']' => Tok::RBracket,
+                '{' => Tok::LBrace,
+                '}' => Tok::RBrace,
+                '.' => Tok::Dot,
+                ',' => Tok::Comma,
+                ';' => Tok::Semi,
+                ':' => Tok::Colon,
+                '+' => Tok::Plus,
+                '-' => Tok::Minus,
+                '*' => Tok::Star,
+                '/' => Tok::Slash,
+                '%' => Tok::Percent,
+                '=' => Tok::Assign,
+                '<' => Tok::Lt,
+                '>' => Tok::Gt,
+                '&' => Tok::Amp,
+                '|' => Tok::Pipe,
+                '^' => Tok::Caret,
+                '~' => Tok::Tilde,
+                '!' => Tok::Bang,
+                _ => Tok::Eof,
+            };
+            if kind == Tok::Eof {
+                src.fail(start, "unexpected character");
+            }
+        }
+        tokens.push(make_token(kind, start));
+        i = i + len;
+    }
+    return tokens;
+}
+
+// Names of token kinds for error messages
+func tok_name(kind: Tok): str {
+    return match kind {
+        Tok::Ident => "identifier",
+        Tok::Int => "integer",
+        Tok::Float => "float",
+        Tok::Str => "string",
+        Tok::Char => "character",
+        Tok::LParen => "`(`",
+        Tok::RParen => "`)`",
+        Tok::LBracket => "`[`",
+        Tok::RBracket => "`]`",
+        Tok::LBrace => "`{`",
+        Tok::RBrace => "`}`",
+        Tok::Dot => "`.`",
+        Tok::Comma => "`,`",
+        Tok::Semi => "`;`",
+        Tok::Colon => "`:`",
+        Tok::ColonColon => "`::`",
+        Tok::Assign => "`=`",
+        Tok::Lt => "`<`",
+        Tok::Gt => "`>`",
+        Tok::FatArrow => "`=>`",
+        Tok::Eof => "end of file",
+        _ => "operator or keyword",
+    };
+}

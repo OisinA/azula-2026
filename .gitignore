@@ -17,4 +17,4 @@
 !*/*.azl
 !tests/**/*.azl
 !compiler/**/*.azl
-.DS_STORE
+.DS_STORE/build/

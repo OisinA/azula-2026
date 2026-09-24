@@ -127,7 +127,23 @@ impl<'a> Typechecker<'a> {
         };
 
         // Pass 0: collect names of everything declared, so declaration order doesn't matter
+        let mut defined: HashSet<String> = HashSet::new();
         for stmt in &stmts {
+            let defined_name = match stmt {
+                Statement::Struct { name, span, .. } | Statement::Enum { name, span, .. } => Some((format!("type {}", name), span.clone())),
+                Statement::Function { name, span, .. } => Some((format!("func {}", name), span.clone())),
+                Statement::Generic(_, inner) => match inner.as_ref() {
+                    Statement::Struct { name, span, .. } | Statement::Enum { name, span, .. } => Some((format!("type {}", name), span.clone())),
+                    Statement::Function { name, span, .. } => Some((format!("func {}", name), span.clone())),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((key, span)) = defined_name {
+                if !defined.insert(key.clone()) {
+                    self.error(format!("`{}` is defined more than once", &key[5..]), &span);
+                }
+            }
             match stmt {
                 Statement::Generic(params, inner) => self.register_generic(params, inner),
                 Statement::TypeAlias { name, typ, .. } => {
@@ -1329,7 +1345,7 @@ impl<'a> Typechecker<'a> {
                 ));
             }
             Expression::Match(scrutinee, arms) => {
-                self.typecheck_match(scrutinee, arms, expr.span, env)
+                self.typecheck_match(scrutinee, arms, expr.span, env, expected)
             }
             Expression::Cast(_, _) => self.typecheck_cast_expression(expr, env),
             Expression::Null => Ok((
@@ -1359,8 +1375,10 @@ impl<'a> Typechecker<'a> {
                 }
                 match final_expr {
                     Some(fe) => {
-                        let (fe_node, fe_type) =
-                            self.typecheck_expression(fe.as_ref().clone(), &new_env)?;
+                        let (fe_node, fe_type) = match &expected {
+                            Some(expected) => self.typecheck_expecting(fe.as_ref().clone(), &new_env, expected)?,
+                            None => self.typecheck_expression(fe.as_ref().clone(), &new_env)?,
+                        };
                         Ok((
                             ExpressionNode {
                                 expression: Expression::Block(new_stmts, Some(Rc::new(fe_node))),
@@ -1389,6 +1407,7 @@ impl<'a> Typechecker<'a> {
         arms: Vec<(MatchPattern<'a>, ExpressionNode<'a>)>,
         span: Span,
         env: &Environment<'a>,
+        expected: Option<AzulaType<'a>>,
     ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
         let (scrut_node, scrut_type) = match self.typecheck_expression(scrutinee.deref().clone(), env) {
             Ok(x) => x,
@@ -1501,13 +1520,23 @@ impl<'a> Typechecker<'a> {
                 }
             }
 
-            let (body_node, body_type) = self.typecheck_expression(body, &arm_env)?;
+            let (body_node, body_type) = match &expected {
+                Some(expected) => self.typecheck_expecting(body, &arm_env, expected)?,
+                None => self.typecheck_expression(body, &arm_env)?,
+            };
 
-            // Arms that disagree on their type make the match a statement (Void)
-            match result_type.clone() {
-                Some(rt) if rt != body_type => result_type = Some(AzulaType::Void),
-                Some(_) => {}
-                None => result_type = Some(body_type),
+            // Arms that always return don't produce a value, so don't affect the
+            // match's type. Arms that disagree make the match a statement (Void).
+            let diverges = match &body_node.expression {
+                Expression::Block(stmts, None) => always_returns(stmts),
+                _ => false,
+            };
+            if !diverges {
+                match result_type.clone() {
+                    Some(rt) if rt != body_type => result_type = Some(AzulaType::Void),
+                    Some(_) => {}
+                    None => result_type = Some(body_type),
+                }
             }
 
             let pattern = match pattern {
@@ -1989,7 +2018,9 @@ impl<'a> Typechecker<'a> {
                 | Operator::Gt
                 | Operator::Gte => {
                     let both_pointers = is_pointer_like(&left_typ) && is_pointer_like(&right_typ);
-                    if left_typ != right_typ && !both_pointers {
+                    // Integers of different widths can be compared (the narrower is widened)
+                    let both_integers = is_integer_type(&left_typ) && is_integer_type(&right_typ);
+                    if left_typ != right_typ && !both_pointers && !both_integers {
                         self.errors.push(AzulaError::new(
                             ErrorType::MismatchedTypes(format!("{:?}", left_typ), format!("{:?}", right_typ)),
                             left.span.start,
@@ -2237,8 +2268,7 @@ impl<'a> Typechecker<'a> {
 
         if let Expression::StructAccess(struc, method) = expr.expression {
             let (_, resolved_type) = self
-                .typecheck_expression(struc.deref().clone(), env)
-                .unwrap();
+                .typecheck_expression(struc.deref().clone(), env)?;
 
             let namespace = match self.namespaces.get(&resolved_type.to_string()) {
                 Some(namespace) => namespace.clone(),

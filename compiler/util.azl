@@ -1,0 +1,247 @@
+// Small helpers shared by every part of the compiler.
+
+extern func realpath(str, str): str;
+extern func fputc(i32, str): i32;
+extern func strtod(str, str): float;
+
+func str_eq(a: str, b: str): bool {
+    return strcmp(a, b) == 0;
+}
+
+func concat(a: str, b: str): str {
+    var sb = StringBuilder::new();
+    sb.append(a);
+    sb.append(b);
+    return sb.to_str();
+}
+
+func concat3(a: str, b: str, c: str): str {
+    var sb = StringBuilder::new();
+    sb.append(a);
+    sb.append(b);
+    sb.append(c);
+    return sb.to_str();
+}
+
+func int_to_str(n: int): str {
+    var buf: str = malloc(24);
+    snprintf(buf, 24, "%ld", n);
+    return buf;
+}
+
+func substring(s: str, start: int, len: int): str {
+    var buf: str = malloc(len + 1);
+    memcpy(buf, ptr_add(s, start), len);
+    buf[len] = 0;
+    return buf;
+}
+
+func starts_with(s: str, prefix: str): bool {
+    return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+func ends_with(s: str, suffix: str): bool {
+    var n = strlen(s);
+    var m = strlen(suffix);
+    if m > n {
+        return false;
+    }
+    return strcmp(ptr_add(s, n - m), suffix) == 0;
+}
+
+// The directory part of a path ("." if there is none)
+func dir_name(path: str): str {
+    var i = strlen(path) - 1;
+    while i >= 0 {
+        if path[i] == '/' {
+            if i == 0 {
+                return "/";
+            }
+            return substring(path, 0, i);
+        }
+        i = i - 1;
+    }
+    return ".";
+}
+
+// The last component of a path
+func base_name(path: str): str {
+    var i = strlen(path) - 1;
+    while i >= 0 {
+        if path[i] == '/' {
+            return substring(path, i + 1, strlen(path) - i - 1);
+        }
+        i = i - 1;
+    }
+    return path;
+}
+
+func join_path(dir: str, file: str): str {
+    if file[0] == '/' {
+        return file;
+    }
+    return concat3(dir, "/", file);
+}
+
+// Read a whole file, or return null if it can't be opened
+func read_text_file(path: str): str {
+    var f = fopen(path, "rb");
+    if f == null {
+        return null;
+    }
+    fseek(f, 0, 2);
+    var size = ftell(f);
+    fseek(f, 0, 0);
+    var buf: str = malloc(size + 1);
+    fread(buf, 1, size, f);
+    buf[size] = 0;
+    fclose(f);
+    return buf;
+}
+
+func write_text_file(path: str, contents: str): bool {
+    var f = fopen(path, "wb");
+    if f == null {
+        return false;
+    }
+    fwrite(contents, 1, strlen(contents), f);
+    fclose(f);
+    return true;
+}
+
+func file_exists(path: str): bool {
+    var f = fopen(path, "rb");
+    if f == null {
+        return false;
+    }
+    fclose(f);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Source text and error reporting
+// ---------------------------------------------------------------------------
+
+// All source files are concatenated into one text. For each line of that text
+// we remember the file and line number it came from.
+struct Source {
+    text: StringBuilder,
+    line_starts: Vec<int>,
+    line_files: Vec<str>,
+    line_numbers: Vec<int>,
+}
+
+func new_source(): &Source {
+    return alloc(Source {
+        text: StringBuilder::new(),
+        line_starts: Vec::new(),
+        line_files: Vec::new(),
+        line_numbers: Vec::new(),
+    });
+}
+
+impl Source {
+    func add_line(self: &Source, line: str, file: str, number: int) {
+        self.line_starts.push(self.text.len);
+        self.line_files.push(file);
+        self.line_numbers.push(number);
+        self.text.append(line);
+        self.text.append_char('\n');
+    }
+
+    // Add a file line by line; `import "..."` lines are handed to `on_import`
+    // by returning them in `imports` and blanked out.
+    func add_file(self: &Source, file: str, contents: str, imports: &Vec<str>) {
+        var start = 0;
+        var number = 1;
+        var i = 0;
+        while true {
+            var c = contents[i];
+            if c == '\n' || c == 0 {
+                var line = substring(contents, start, i - start);
+                var import_path = import_target(line);
+                if import_path != null {
+                    imports.push(import_path);
+                    self.add_line("", file, number);
+                } else {
+                    self.add_line(line, file, number);
+                }
+                if c == 0 {
+                    return;
+                }
+                start = i + 1;
+                number = number + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    // Index of the line containing byte offset `pos`
+    func line_index(self: &Source, pos: int): int {
+        var lo = 0;
+        var hi = self.line_starts.len - 1;
+        while lo < hi {
+            var mid = (lo + hi + 1) / 2;
+            if self.line_starts.get(mid) <= pos {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return lo;
+    }
+
+    // Print an error at `pos` and stop.
+    func fail(self: &Source, pos: int, message: str) {
+        var text = self.text.to_str();
+        if self.line_starts.len == 0 {
+            printf("error: %s\n", message);
+            exit(1);
+        }
+        var line = self.line_index(pos);
+        var start = self.line_starts.get(line);
+        var col = pos - start + 1;
+        printf("%s:%ld:%ld: error: %s\n", self.line_files.get(line), self.line_numbers.get(line), col, message);
+        var end = start;
+        while text[end] != '\n' && text[end] != 0 {
+            end = end + 1;
+        }
+        printf("    %s\n    ", substring(text, start, end - start));
+        var i = 1;
+        while i < col {
+            if text[start + i - 1] == '\t' {
+                printf("\t");
+            } else {
+                printf(" ");
+            }
+            i = i + 1;
+        }
+        printf("^\n");
+        exit(1);
+    }
+}
+
+// If `line` is `import "path"` (ignoring surrounding spaces), return the path.
+func import_target(line: str): str {
+    var i = 0;
+    while line[i] == ' ' || line[i] == '\t' {
+        i = i + 1;
+    }
+    if strncmp(ptr_add(line, i), "import \"", 8) != 0 {
+        return null;
+    }
+    var start = i + 8;
+    var end = start;
+    while line[end] != '"' {
+        if line[end] == 0 {
+            return null;
+        }
+        end = end + 1;
+    }
+    return substring(line, start, end - start);
+}
+
+func fatal(message: str) {
+    printf("error: %s\n", message);
+    exit(1);
+}

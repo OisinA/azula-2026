@@ -1079,7 +1079,7 @@ impl<'a> Parser<'a> {
                 },
             }),
             TokenKind::BracketOpen => {
-                let expr = self.parse_expression(LOWEST, true).unwrap();
+                let expr = self.parse_expression(LOWEST, true)?;
 
                 self.expect_peek(TokenKind::BracketClose);
 
@@ -1088,7 +1088,7 @@ impl<'a> Parser<'a> {
                 Some(expr)
             }
             TokenKind::Bang => {
-                let expr = self.parse_expression(PREFIX, allow_struct_init).unwrap();
+                let expr = self.parse_expression(PREFIX, allow_struct_init)?;
 
                 Some(ExpressionNode {
                     expression: Expression::Not(Rc::new(expr.clone())),
@@ -1131,7 +1131,7 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::Minus => {
-                let expr = self.parse_expression(PREFIX, allow_struct_init).unwrap();
+                let expr = self.parse_expression(PREFIX, allow_struct_init)?;
 
                 Some(ExpressionNode {
                     expression: Expression::Negate(Rc::new(expr.clone())),
@@ -1143,7 +1143,7 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::Ampersand => {
-                let expr = self.parse_expression(PREFIX, true).unwrap();
+                let expr = self.parse_expression(PREFIX, true)?;
 
                 Some(ExpressionNode {
                     expression: Expression::Pointer(Rc::new(expr.clone())),
@@ -1845,7 +1845,7 @@ impl<'a> Parser<'a> {
 
             self.lexer.next();
 
-            let expr = self.parse_expression(LOWEST, true).unwrap();
+            let expr = self.parse_expression(LOWEST, true)?;
 
             attrs.push((name, expr));
 

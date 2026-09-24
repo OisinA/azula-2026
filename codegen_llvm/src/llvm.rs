@@ -1031,7 +1031,9 @@ impl<'a> LLVMCodegen<'a> {
                     (BasicValueEnum::IntValue(iv), BasicTypeEnum::IntType(it)) => {
                         let src_bits = iv.get_type().get_bit_width();
                         let dst_bits = it.get_bit_width();
-                        if dst_bits > src_bits {
+                        if dst_bits > src_bits && src_bits == 1 {
+                            self.builder.build_int_z_extend(iv, it, "zext").unwrap().as_basic_value_enum()
+                        } else if dst_bits > src_bits {
                             self.builder.build_int_s_extend(iv, it, "sext").unwrap().as_basic_value_enum()
                         } else if dst_bits < src_bits {
                             self.builder.build_int_truncate(iv, it, "trunc").unwrap().as_basic_value_enum()
@@ -1358,7 +1360,9 @@ impl<'a> LLVMCodegen<'a> {
         if let (BasicValueEnum::IntValue(iv), BasicTypeEnum::IntType(it)) = (val, target) {
             let src = iv.get_type().get_bit_width();
             let dst = it.get_bit_width();
-            if dst > src {
+            if dst > src && src == 1 {
+                return self.builder.build_int_z_extend(iv, it, "zext").unwrap().as_basic_value_enum();
+            } else if dst > src {
                 return self.builder.build_int_s_extend(iv, it, "sext").unwrap().as_basic_value_enum();
             } else if dst < src {
                 return self.builder.build_int_truncate(iv, it, "trunc").unwrap().as_basic_value_enum();

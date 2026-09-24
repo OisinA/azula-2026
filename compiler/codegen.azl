@@ -1,0 +1,980 @@
+// Generates LLVM IR (as text) from the checked program.
+//
+// Every local variable lives in a stack slot (alloca) created in the entry
+// block; expressions produce SSA values named %t1, %t2, ...
+
+struct Gen {
+    c: &Checker,
+    strings: StringBuilder,
+    string_count: int,
+
+    // State for the function being generated
+    body: StringBuilder,
+    allocas: StringBuilder,
+    tmp_count: int,
+    label_count: int,
+    terminated: bool,
+    continue_labels: Vec<str>,
+    break_labels: Vec<str>,
+    ret: Type,
+    is_main: bool,
+}
+
+func generate(c: &Checker, module_name: str): str {
+    var g = Gen {
+        c: c,
+        strings: StringBuilder::new(),
+        string_count: 0,
+        body: StringBuilder::new(),
+        allocas: StringBuilder::new(),
+        tmp_count: 0,
+        label_count: 0,
+        terminated: false,
+        continue_labels: Vec::new(),
+        break_labels: Vec::new(),
+        ret: Type::Void,
+        is_main: false,
+    };
+    return g.module(module_name);
+}
+
+// Escape bytes for an LLVM c"..." string
+func llvm_escape(s: str, sb: &StringBuilder) {
+    var i = 0;
+    while s[i] != 0 {
+        var c: int = s[i];
+        if c < 0 {
+            c = c + 256;
+        }
+        if c >= 32 && c < 127 && c != '"' && c != '\\' {
+            sb.append_char(c);
+        } else {
+            sb.append_char('\\');
+            var digits = "0123456789ABCDEF";
+            sb.append_char(digits[c / 16] as int);
+            sb.append_char(digits[c % 16] as int);
+        }
+        i = i + 1;
+    }
+}
+
+func quote_global(name: str): str {
+    return concat3("@\"", name, "\"");
+}
+
+func quote_local(name: str): str {
+    return concat3("%\"", name, "\"");
+}
+
+// The bit pattern of a double, in LLVM's hexadecimal float syntax
+func double_bits(text: str): str {
+    var cell: &float = malloc(8);
+    cell[0] = strtod(text, null);
+    var bits = (cell as &int)[0];
+    var buf: str = malloc(24);
+    snprintf(buf, 24, "0x%016lX", bits);
+    return buf;
+}
+
+impl Gen {
+    // -----------------------------------------------------------------------
+    // Types
+    // -----------------------------------------------------------------------
+
+    func is_boxed_enum(self: &Gen, t: Type): bool {
+        var info = self.c.enum_named(named_of(t));
+        return info != null && info.boxed;
+    }
+
+    func llvm_type(self: &Gen, t: Type): str {
+        return match t {
+            Type::Int => "i64",
+            Type::SInt(bits) => concat("i", int_to_str(bits)),
+            Type::UInt(bits) => concat("i", int_to_str(bits)),
+            Type::Float => "double",
+            Type::SFloat(bits) => {
+                if bits == 32 {
+                    return "float";
+                }
+                "double"
+            },
+            Type::Bool => "i1",
+            Type::Str => "ptr",
+            Type::Void => "void",
+            Type::Ptr(_) => "ptr",
+            Type::Array(_, _) => "ptr",
+            Type::Named(name) => {
+                var info = self.c.enum_named(name);
+                if info != null {
+                    if info.boxed {
+                        return "ptr";
+                    }
+                    return "i64";
+                }
+                quote_local(name)
+            },
+            _ => {
+                fatal(concat("internal error: no LLVM type for ", mangle(t)));
+                ""
+            },
+        };
+    }
+
+    // Integer width of a type, or 0 if it isn't an integer-like type
+    func int_width(self: &Gen, t: Type): int {
+        return match t {
+            Type::Int => 64,
+            Type::SInt(bits) => bits,
+            Type::UInt(bits) => bits,
+            Type::Bool => 1,
+            Type::Named(_) => {
+                if self.c.enum_named(named_of(t)) != null && !self.is_boxed_enum(t) {
+                    return 64;
+                }
+                0
+            },
+            _ => 0,
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Emitting instructions
+    // -----------------------------------------------------------------------
+
+    func fresh(self: &Gen): str {
+        self.tmp_count = self.tmp_count + 1;
+        return concat("%t", int_to_str(self.tmp_count));
+    }
+
+    func new_label(self: &Gen, hint: str): str {
+        self.label_count = self.label_count + 1;
+        return concat3(hint, ".", int_to_str(self.label_count));
+    }
+
+    func emit(self: &Gen, line: str) {
+        if self.terminated {
+            // Code after a return/break: give it its own (unreachable) block
+            self.start_block(self.new_label("dead"));
+        }
+        self.body.append("  ");
+        self.body.append(line);
+        self.body.append_char('\n');
+    }
+
+    // Emit `name = instruction` into a fresh temporary and return its name
+    func value(self: &Gen, instruction: str): str {
+        var t = self.fresh();
+        self.emit(concat3(t, " = ", instruction));
+        return t;
+    }
+
+    func terminate(self: &Gen, line: str) {
+        self.emit(line);
+        self.terminated = true;
+    }
+
+    func start_block(self: &Gen, label: str) {
+        self.body.append(label);
+        self.body.append(":\n");
+        self.terminated = false;
+    }
+
+    func branch(self: &Gen, label: str) {
+        self.terminate(concat("br label %", label));
+    }
+
+    func cond_branch(self: &Gen, cond: str, yes: str, no: str) {
+        self.terminate(concat3("br i1 ", cond, concat3(", label %", yes, concat(", label %", no))));
+    }
+
+    func alloca(self: &Gen, name: str, t: Type) {
+        self.allocas.append("  ");
+        self.allocas.append(name);
+        self.allocas.append(" = alloca ");
+        self.allocas.append(self.llvm_type(t));
+        self.allocas.append_char('\n');
+    }
+
+    func temp_slot(self: &Gen, t: Type): str {
+        self.tmp_count = self.tmp_count + 1;
+        var name = concat("%slot", int_to_str(self.tmp_count));
+        self.alloca(name, t);
+        return name;
+    }
+
+    func load(self: &Gen, t: Type, ptr: str): str {
+        return self.value(concat3("load ", self.llvm_type(t), concat(", ptr ", ptr)));
+    }
+
+    func store(self: &Gen, t: Type, value: str, ptr: str) {
+        self.emit(concat3("store ", self.llvm_type(t), concat3(" ", value, concat(", ptr ", ptr))));
+    }
+
+    func string_constant(self: &Gen, s: str): str {
+        var name = concat("@.str.", int_to_str(self.string_count));
+        self.string_count = self.string_count + 1;
+        self.strings.append(name);
+        self.strings.append(" = private unnamed_addr constant [");
+        self.strings.append_int(strlen(s) + 1);
+        self.strings.append(" x i8] c\"");
+        llvm_escape(s, &self.strings);
+        self.strings.append("\\00\"\n");
+        return name;
+    }
+
+    // Convert integer `v` of type `from` to type `to` if their widths differ
+    func coerce(self: &Gen, v: str, from: Type, to: Type): str {
+        var fw = self.int_width(from);
+        var tw = self.int_width(to);
+        if fw == 0 || tw == 0 || fw == tw {
+            return v;
+        }
+        var op = "trunc";
+        if tw > fw {
+            op = "sext";
+            if fw == 1 {
+                op = "zext";
+            }
+        }
+        return self.value(concat3(op, " ", concat3(self.llvm_type(from), " ", concat3(v, " to ", self.llvm_type(to)))));
+    }
+
+    func size_of(self: &Gen, llvm: str): str {
+        var p = self.value(concat3("getelementptr ", llvm, ", ptr null, i32 1"));
+        return self.value(concat3("ptrtoint ptr ", p, " to i64"));
+    }
+
+    func malloc(self: &Gen, size: str): str {
+        return self.value(concat3("call ptr @\"malloc\"(i64 ", size, ")"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Module
+    // -----------------------------------------------------------------------
+
+    func module(self: &Gen, name: str): str {
+        var out = StringBuilder::new();
+        out.append("; ModuleID = '");
+        out.append(name);
+        out.append("'\n\n");
+
+        // Struct types, and the layout of each variant of boxed enums
+        var i = 0;
+        while i < self.c.out_structs.len {
+            var info = self.c.out_structs.get(i);
+            out.append(quote_local(info.name));
+            out.append(" = type {");
+            var j = 0;
+            while j < info.fields.len {
+                if j > 0 {
+                    out.append(",");
+                }
+                out.append(" ");
+                out.append(self.llvm_type(info.fields.get(j).typ));
+                j = j + 1;
+            }
+            out.append(" }\n");
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.c.out_enums.len {
+            var info = self.c.out_enums.get(i);
+            if info.boxed {
+                var j = 0;
+                while j < info.variants.len {
+                    out.append(quote_local(concat3(info.name, ".", info.variants.get(j))));
+                    out.append(" = type { i64");
+                    var payload = info.payloads.get(j);
+                    var k = 0;
+                    while k < payload.len {
+                        out.append(", ");
+                        out.append(self.llvm_type(payload.get(k)));
+                        k = k + 1;
+                    }
+                    out.append(" }\n");
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+        out.append("\n");
+
+        // Constants
+        i = 0;
+        while i < self.c.out_globals.len {
+            var g = self.c.out_globals.get(i);
+            out.append(quote_global(g.name));
+            out.append(" = internal constant ");
+            out.append(self.llvm_type(g.typ));
+            out.append(" ");
+            out.append(self.constant(g.value, g.typ));
+            out.append("\n");
+            i = i + 1;
+        }
+        out.append("\n");
+
+        // External functions
+        var symbols = self.c.funcs.key_list();
+        i = 0;
+        while i < symbols.len {
+            var sig = self.c.funcs.get(symbols.get(i)).unwrap();
+            if sig.is_extern && !str_eq(sig.symbol, "ptr_add") {
+                out.append("declare ");
+                out.append(self.llvm_type(sig.ret));
+                out.append(" ");
+                out.append(quote_global(sig.symbol));
+                out.append("(");
+                var j = 0;
+                while j < sig.params.len {
+                    if j > 0 {
+                        out.append(", ");
+                    }
+                    out.append(self.llvm_type(sig.params.get(j)));
+                    j = j + 1;
+                }
+                if sig.is_varargs {
+                    if sig.params.len > 0 {
+                        out.append(", ");
+                    }
+                    out.append("...");
+                }
+                out.append(")\n");
+            }
+            i = i + 1;
+        }
+        out.append("\n");
+
+        i = 0;
+        while i < self.c.out_funcs.len {
+            self.function(self.c.out_funcs.get(i), &out);
+            i = i + 1;
+        }
+
+        out.append("\n");
+        out.append(self.strings.to_str());
+        return out.to_str();
+    }
+
+    // The text of a constant's value
+    func constant(self: &Gen, e: &Expr, t: Type): str {
+        return match e.kind {
+            ExprKind::IntLit(v) => int_to_str(v),
+            ExprKind::Unary(_, inner) => concat("-", self.constant(inner, t)),
+            ExprKind::BoolLit(b) => {
+                if b {
+                    return "true";
+                }
+                "false"
+            },
+            ExprKind::FloatLit(text) => double_bits(text),
+            ExprKind::StrLit(s) => self.string_constant(s),
+            _ => "zeroinitializer",
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Functions and statements
+    // -----------------------------------------------------------------------
+
+    func function(self: &Gen, f: &FuncDecl, out: &StringBuilder) {
+        self.body = StringBuilder::new();
+        self.allocas = StringBuilder::new();
+        self.tmp_count = 0;
+        self.label_count = 0;
+        self.terminated = false;
+        self.ret = f.ret;
+        self.is_main = str_eq(f.symbol, "main");
+
+        if self.is_main {
+            out.append("define ");
+            if is_void(f.ret) {
+                out.append("i32");
+            } else {
+                out.append(self.llvm_type(f.ret));
+            }
+            out.append(" @main(");
+        } else {
+            out.append("define internal ");
+            out.append(self.llvm_type(f.ret));
+            out.append(" ");
+            out.append(quote_global(f.symbol));
+            out.append("(");
+        }
+        var i = 0;
+        while i < f.params.len {
+            var p = f.params.get(i);
+            if i > 0 {
+                out.append(", ");
+            }
+            out.append(self.llvm_type(p.typ));
+            out.append(" %arg");
+            out.append_int(i);
+            // Parameters live in stack slots like other variables
+            var slot = quote_local(concat("p.", p.name));
+            self.alloca(slot, p.typ);
+            self.store(p.typ, concat("%arg", int_to_str(i)), slot);
+            i = i + 1;
+        }
+        out.append(") {\nentry:\n");
+
+        self.block(f.body);
+        if !self.terminated {
+            if is_void(f.ret) {
+                self.return_void();
+            } else {
+                self.terminate("unreachable");
+            }
+        }
+
+        out.append(self.allocas.to_str());
+        out.append(self.body.to_str());
+        out.append("}\n\n");
+    }
+
+    func return_void(self: &Gen) {
+        if self.is_main {
+            self.terminate("ret i32 0");
+        } else {
+            self.terminate("ret void");
+        }
+    }
+
+    func block(self: &Gen, body: Vec<&Stmt>) {
+        var i = 0;
+        while i < body.len {
+            self.stmt(body.get(i));
+            i = i + 1;
+        }
+    }
+
+    func stmt(self: &Gen, s: &Stmt) {
+        match s.kind {
+            StmtKind::VarDecl(_, _, _, value) => {
+                var slot = quote_local(s.ir_name);
+                self.alloca(slot, s.typ);
+                var v = self.expr(value);
+                self.store(s.typ, self.coerce(v, value.typ, s.typ), slot);
+            },
+            StmtKind::Assign(target, value) => {
+                var v = self.expr(value);
+                var ptr = self.address(target);
+                self.store(target.typ, self.coerce(v, value.typ, target.typ), ptr);
+            },
+            StmtKind::ExprStmt(e) => { self.expr(e); },
+            StmtKind::Return(value) => {
+                match value {
+                    Option::None => { self.return_void(); },
+                    Option::Some(v) => {
+                        var result = self.coerce(self.expr(v), v.typ, self.ret);
+                        self.terminate(concat3("ret ", self.llvm_type(self.ret), concat(" ", result)));
+                    },
+                }
+            },
+            StmtKind::If(cond, then_body, else_body) => {
+                var then_label = self.new_label("then");
+                var else_label = self.new_label("else");
+                var end_label = self.new_label("endif");
+                var c = self.expr(cond);
+                self.cond_branch(c, then_label, else_label);
+                self.start_block(then_label);
+                self.block(then_body);
+                if !self.terminated {
+                    self.branch(end_label);
+                }
+                self.start_block(else_label);
+                self.block(else_body);
+                if !self.terminated {
+                    self.branch(end_label);
+                }
+                self.start_block(end_label);
+            },
+            StmtKind::Loop(cond, body) => {
+                var cond_label = self.new_label("loop.cond");
+                var body_label = self.new_label("loop.body");
+                var end_label = self.new_label("loop.end");
+                self.branch(cond_label);
+                self.start_block(cond_label);
+                match cond {
+                    Option::Some(c) => {
+                        var v = self.expr(c);
+                        self.cond_branch(v, body_label, end_label);
+                    },
+                    Option::None => { self.branch(body_label); },
+                }
+                self.start_block(body_label);
+                self.continue_labels.push(cond_label);
+                self.break_labels.push(end_label);
+                self.block(body);
+                self.continue_labels.pop();
+                self.break_labels.pop();
+                if !self.terminated {
+                    self.branch(cond_label);
+                }
+                self.start_block(end_label);
+            },
+            StmtKind::Break => { self.branch(self.break_labels.peek()); },
+            StmtKind::Continue => { self.branch(self.continue_labels.peek()); },
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Expressions
+    // -----------------------------------------------------------------------
+
+    // Can we take the address of `e` without copying it?
+    func addressable(self: &Gen, e: &Expr): bool {
+        return match e.kind {
+            ExprKind::Local(_) => true,
+            ExprKind::Global(_) => true,
+            ExprKind::Index(_, _) => true,
+            ExprKind::Deref(_) => true,
+            ExprKind::FieldAt(obj, _) => {
+                match obj.typ {
+                    Type::Ptr(_) => { return true; },
+                    _ => {},
+                }
+                self.addressable(obj)
+            },
+            _ => false,
+        };
+    }
+
+    // A pointer to the storage of `e` (a temporary copy if it isn't an lvalue)
+    func address(self: &Gen, e: &Expr): str {
+        match e.kind {
+            ExprKind::Local(ir) => { return quote_local(ir); },
+            ExprKind::Global(name) => { return quote_global(name); },
+            ExprKind::Deref(p) => { return self.expr(p); },
+            ExprKind::FieldAt(obj, index) => {
+                var base = "";
+                var struct_type = obj.typ;
+                match obj.typ {
+                    Type::Ptr(inner) => {
+                        base = self.expr(obj);
+                        struct_type = inner;
+                    },
+                    _ => { base = self.address(obj); },
+                }
+                return self.value(concat3("getelementptr ", self.llvm_type(struct_type), concat3(", ptr ", base, concat(", i32 0, i32 ", int_to_str(index)))));
+            },
+            ExprKind::Index(a, i) => {
+                var base = self.expr(a);
+                var index = self.coerce(self.expr(i), i.typ, Type::Int);
+                return self.value(concat3("getelementptr ", self.llvm_type(e.typ), concat3(", ptr ", base, concat(", i64 ", index))));
+            },
+            _ => {
+                var slot = self.temp_slot(e.typ);
+                self.store(e.typ, self.expr(e), slot);
+                return slot;
+            },
+        }
+    }
+
+    func expr(self: &Gen, e: &Expr): str {
+        match e.kind {
+            ExprKind::IntLit(v) => { return self.int_constant(v, e.typ); },
+            ExprKind::FloatLit(text) => {
+                if type_eq(e.typ, Type::SFloat(32)) {
+                    return self.value(concat3("fptrunc double ", double_bits(text), " to float"));
+                }
+                return double_bits(text);
+            },
+            ExprKind::BoolLit(b) => {
+                if b {
+                    return "true";
+                }
+                return "false";
+            },
+            ExprKind::StrLit(s) => { return self.string_constant(s); },
+            ExprKind::Null => { return "null"; },
+            ExprKind::Local(_) => { return self.load(e.typ, self.address(e)); },
+            ExprKind::Global(_) => { return self.load(e.typ, self.address(e)); },
+            ExprKind::Binary(op, l, r) => { return self.binary(op, l, r); },
+            ExprKind::Unary(op, x) => {
+                var v = self.expr(x);
+                var t = self.llvm_type(x.typ);
+                if op == UnOp::Not {
+                    return self.value(concat3("xor i1 ", v, ", true"));
+                }
+                if op == UnOp::BitNot {
+                    return self.value(concat3("xor ", t, concat3(" ", v, ", -1")));
+                }
+                if is_float(x.typ) {
+                    return self.value(concat3("fneg ", t, concat(" ", v)));
+                }
+                return self.value(concat3("sub ", t, concat(" 0, ", v)));
+            },
+            ExprKind::AddrOf(x) => { return self.address(x); },
+            ExprKind::Deref(p) => { return self.load(e.typ, self.expr(p)); },
+            ExprKind::CallFn(symbol, args) => { return self.call(e, symbol, args); },
+            ExprKind::Index(_, _) => { return self.load(e.typ, self.address(e)); },
+            ExprKind::FieldAt(obj, index) => {
+                if self.addressable(e) {
+                    return self.load(e.typ, self.address(e));
+                }
+                var v = self.expr(obj);
+                return self.value(concat3("extractvalue ", self.llvm_type(obj.typ), concat3(" ", v, concat(", ", int_to_str(index)))));
+            },
+            ExprKind::StructValue(name, values) => {
+                var struct_type = quote_local(name);
+                if values.len == 0 {
+                    return "zeroinitializer";
+                }
+                var info = self.c.structs.get(name).unwrap();
+                var agg = "zeroinitializer";
+                var i = 0;
+                while i < values.len {
+                    var field_type = info.fields.get(i).typ;
+                    var value = values.get(i);
+                    var v = self.coerce(self.expr(value), value.typ, field_type);
+                    agg = self.value(concat3("insertvalue ", struct_type, concat3(" ", agg, concat3(", ", self.llvm_type(field_type), concat3(" ", v, concat(", ", int_to_str(i)))))));
+                    i = i + 1;
+                }
+                return agg;
+            },
+            ExprKind::EnumValue(name, tag, payload) => { return self.enum_value(name, tag, payload); },
+            ExprKind::ArrayLit(items) => {
+                var elem = match e.typ {
+                    Type::Array(inner, _) => inner,
+                    _ => Type::Int,
+                };
+                var elem_llvm = self.llvm_type(elem);
+                var size = self.value(concat3("mul i64 ", self.size_of(elem_llvm), concat(", ", int_to_str(items.len))));
+                var array = self.malloc(size);
+                var i = 0;
+                while i < items.len {
+                    var item = items.get(i);
+                    var v = self.coerce(self.expr(item), item.typ, elem);
+                    var slot = self.value(concat3("getelementptr ", elem_llvm, concat3(", ptr ", array, concat(", i64 ", int_to_str(i)))));
+                    self.store(elem, v, slot);
+                    i = i + 1;
+                }
+                return array;
+            },
+            ExprKind::Cast(x, t) => { return self.cast(self.expr(x), x.typ, t); },
+            ExprKind::SizeOf(t) => { return self.size_of(self.llvm_type(t)); },
+            ExprKind::Alloc(x) => {
+                var v = self.expr(x);
+                var ptr = self.malloc(self.size_of(self.llvm_type(x.typ)));
+                self.store(x.typ, v, ptr);
+                return ptr;
+            },
+            ExprKind::Match(scrutinee, arms) => { return self.match_expr(e, scrutinee, arms); },
+            ExprKind::Block(stmts, value) => {
+                self.block(stmts);
+                return match value {
+                    Option::Some(v) => self.expr(v),
+                    Option::None => "",
+                };
+            },
+            _ => {
+                fatal("internal error: unresolved expression reached code generation");
+                return "";
+            },
+        }
+    }
+
+    func int_constant(self: &Gen, v: int, t: Type): str {
+        var bits = self.int_width(t);
+        if bits > 0 && bits < 64 {
+            // Wrap into the range of the type
+            var modulus = 1 << bits;
+            var wrapped = v % modulus;
+            if wrapped < 0 {
+                wrapped = wrapped + modulus;
+            }
+            if bits > 1 && wrapped >= modulus / 2 {
+                wrapped = wrapped - modulus;
+            }
+            if bits == 1 {
+                if wrapped == 0 {
+                    return "false";
+                }
+                return "true";
+            }
+            return int_to_str(wrapped);
+        }
+        if is_float(t) {
+            return double_bits(int_to_str(v));
+        }
+        return int_to_str(v);
+    }
+
+    func binary(self: &Gen, op: BinOp, l: &Expr, r: &Expr): str {
+        if op == BinOp::And || op == BinOp::Or {
+            // Short-circuit through a stack slot
+            var slot = self.temp_slot(Type::Bool);
+            var rhs_label = self.new_label("sc.rhs");
+            var end_label = self.new_label("sc.end");
+            var lv = self.expr(l);
+            self.store(Type::Bool, lv, slot);
+            if op == BinOp::And {
+                self.cond_branch(lv, rhs_label, end_label);
+            } else {
+                self.cond_branch(lv, end_label, rhs_label);
+            }
+            self.start_block(rhs_label);
+            var rv = self.expr(r);
+            self.store(Type::Bool, rv, slot);
+            self.branch(end_label);
+            self.start_block(end_label);
+            return self.load(Type::Bool, slot);
+        }
+
+        var lv = self.expr(l);
+        var rv = self.expr(r);
+        var t = l.typ;
+        // Compare integers of different widths at the wider width
+        var lw = self.int_width(l.typ);
+        var rw = self.int_width(r.typ);
+        if lw > 0 && rw > 0 && lw != rw {
+            if lw > rw {
+                rv = self.coerce(rv, r.typ, l.typ);
+            } else {
+                lv = self.coerce(lv, l.typ, r.typ);
+                t = r.typ;
+            }
+        }
+        var lt = self.llvm_type(t);
+        var operands = concat3(lt, " ", concat3(lv, ", ", rv));
+
+        if is_float(t) {
+            var fop = match op {
+                BinOp::Add => "fadd",
+                BinOp::Sub => "fsub",
+                BinOp::Mul => "fmul",
+                BinOp::Div => "fdiv",
+                BinOp::Mod => "frem",
+                BinOp::Eq => "fcmp oeq",
+                BinOp::Ne => "fcmp one",
+                BinOp::Lt => "fcmp olt",
+                BinOp::Le => "fcmp ole",
+                BinOp::Gt => "fcmp ogt",
+                _ => "fcmp oge",
+            };
+            return self.value(concat3(fop, " ", operands));
+        }
+        if is_pointer_like(t) {
+            operands = concat3("ptr ", lv, concat(", ", rv));
+        }
+        var iop = match op {
+            BinOp::Add => "add",
+            BinOp::Sub => "sub",
+            BinOp::Mul => "mul",
+            BinOp::Div => "sdiv",
+            BinOp::Mod => "srem",
+            BinOp::BitAnd => "and",
+            BinOp::BitOr => "or",
+            BinOp::BitXor => "xor",
+            BinOp::Shl => "shl",
+            BinOp::Shr => "ashr",
+            BinOp::Eq => "icmp eq",
+            BinOp::Ne => "icmp ne",
+            BinOp::Lt => "icmp slt",
+            BinOp::Le => "icmp sle",
+            BinOp::Gt => "icmp sgt",
+            _ => "icmp sge",
+        };
+        if is_pointer_like(t) {
+            iop = match op {
+                BinOp::Eq => "icmp eq",
+                BinOp::Ne => "icmp ne",
+                BinOp::Lt => "icmp ult",
+                BinOp::Le => "icmp ule",
+                BinOp::Gt => "icmp ugt",
+                _ => "icmp uge",
+            };
+        }
+        return self.value(concat3(iop, " ", operands));
+    }
+
+    func cast(self: &Gen, v: str, from: Type, to: Type): str {
+        var fw = self.int_width(from);
+        var tw = self.int_width(to);
+        var from_ll = self.llvm_type(from);
+        var to_ll = self.llvm_type(to);
+        var conversion = "";
+        if fw > 0 && tw > 0 {
+            return self.coerce(v, from, to);
+        }
+        if fw > 0 && is_float(to) {
+            conversion = "sitofp";
+        } else if is_float(from) && tw > 0 {
+            conversion = "fptosi";
+        } else if is_float(from) && is_float(to) {
+            if str_eq(from_ll, to_ll) {
+                return v;
+            }
+            conversion = "fpext";
+            if str_eq(to_ll, "float") {
+                conversion = "fptrunc";
+            }
+        } else if fw > 0 && str_eq(to_ll, "ptr") {
+            conversion = "inttoptr";
+        } else if str_eq(from_ll, "ptr") && tw > 0 {
+            conversion = "ptrtoint";
+        } else {
+            return v;
+        }
+        return self.value(concat3(conversion, " ", concat3(from_ll, " ", concat3(v, " to ", to_ll))));
+    }
+
+    func call(self: &Gen, e: &Expr, symbol: str, args: Vec<&Expr>): str {
+        if str_eq(symbol, "ptr_add") {
+            var base = self.expr(args.get(0));
+            var offset = self.coerce(self.expr(args.get(1)), args.get(1).typ, Type::Int);
+            return self.value(concat3("getelementptr i8, ptr ", base, concat(", i64 ", offset)));
+        }
+        var sig = self.c.funcs.get(symbol).unwrap();
+        var arg_text = StringBuilder::new();
+        var i = 0;
+        while i < args.len {
+            var arg = args.get(i);
+            var v = self.expr(arg);
+            var t = arg.typ;
+            if i < sig.params.len {
+                v = self.coerce(v, arg.typ, sig.params.get(i));
+                t = sig.params.get(i);
+            } else {
+                // C's default argument promotions for variadic arguments
+                var w = self.int_width(t);
+                if w > 0 && w < 32 {
+                    v = self.coerce(v, t, Type::SInt(32));
+                    t = Type::SInt(32);
+                } else if type_eq(t, Type::SFloat(32)) {
+                    v = self.value(concat3("fpext float ", v, " to double"));
+                    t = Type::Float;
+                }
+            }
+            if i > 0 {
+                arg_text.append(", ");
+            }
+            arg_text.append(self.llvm_type(t));
+            arg_text.append(" ");
+            arg_text.append(v);
+            i = i + 1;
+        }
+        var callee = self.llvm_type(sig.ret);
+        if sig.is_varargs {
+            // Variadic calls spell out the function type
+            var fn_type = StringBuilder::new();
+            fn_type.append(callee);
+            fn_type.append(" (");
+            var j = 0;
+            while j < sig.params.len {
+                fn_type.append(self.llvm_type(sig.params.get(j)));
+                fn_type.append(", ");
+                j = j + 1;
+            }
+            fn_type.append("...)");
+            callee = fn_type.to_str();
+        }
+        var text = concat3("call ", callee, concat3(" ", quote_global(symbol), concat3("(", arg_text.to_str(), ")")));
+        if is_void(sig.ret) {
+            self.emit(text);
+            return "";
+        }
+        return self.value(text);
+    }
+
+    func enum_value(self: &Gen, name: str, tag: int, payload: Vec<&Expr>): str {
+        var info = self.c.enum_named(name);
+        if !info.boxed {
+            return int_to_str(tag);
+        }
+        var values: Vec<str> = Vec::new();
+        var i = 0;
+        while i < payload.len {
+            var p = payload.get(i);
+            values.push(self.coerce(self.expr(p), p.typ, info.payloads.get(tag).get(i)));
+            i = i + 1;
+        }
+        var layout = quote_local(concat3(name, ".", info.variants.get(tag)));
+        var cell = self.malloc(self.size_of(layout));
+        var tag_slot = self.value(concat3("getelementptr ", layout, concat3(", ptr ", cell, ", i32 0, i32 0")));
+        self.store(Type::Int, int_to_str(tag), tag_slot);
+        i = 0;
+        while i < values.len {
+            var slot = self.value(concat3("getelementptr ", layout, concat3(", ptr ", cell, concat(", i32 0, i32 ", int_to_str(i + 1)))));
+            self.store(info.payloads.get(tag).get(i), values.get(i), slot);
+            i = i + 1;
+        }
+        return cell;
+    }
+
+    func match_expr(self: &Gen, e: &Expr, scrutinee: &Expr, arms: Vec<&MatchArm>): str {
+        var v = self.expr(scrutinee);
+        var boxed = self.is_boxed_enum(scrutinee.typ);
+        var tag = v;
+        var tag_type = scrutinee.typ;
+        if boxed {
+            tag = self.load(Type::Int, v);
+            tag_type = Type::Int;
+        }
+        var has_result = !is_void(e.typ);
+        var result_slot = "";
+        if has_result {
+            result_slot = self.temp_slot(e.typ);
+        }
+        var end_label = self.new_label("match.end");
+        var info = self.c.enum_named(named_of(scrutinee.typ));
+
+        var i = 0;
+        while i < arms.len {
+            var arm = arms.get(i);
+            var arm_label = self.new_label("match.arm");
+            var next_label = end_label;
+            if i + 1 < arms.len {
+                next_label = self.new_label("match.next");
+            }
+            var is_wildcard = match arm.pattern {
+                Pattern::Wildcard => true,
+                _ => false,
+            };
+            if is_wildcard {
+                self.branch(arm_label);
+            } else {
+                var cond = self.value(concat3("icmp eq ", self.llvm_type(tag_type), concat3(" ", tag, concat(", ", self.int_constant(arm.tag, tag_type)))));
+                self.cond_branch(cond, arm_label, next_label);
+            }
+            self.start_block(arm_label);
+
+            // Load the payload fields the pattern binds
+            var j = 0;
+            while j < arm.bindings.len {
+                var binding = arm.bindings.get(j);
+                if !str_eq(binding, "_") {
+                    var field_type = info.payloads.get(arm.tag).get(j);
+                    var layout = quote_local(concat3(arm.enum_name, ".", info.variants.get(arm.tag)));
+                    var field_ptr = self.value(concat3("getelementptr ", layout, concat3(", ptr ", v, concat(", i32 0, i32 ", int_to_str(j + 1)))));
+                    var field = self.load(field_type, field_ptr);
+                    var slot = quote_local(binding);
+                    self.alloca(slot, field_type);
+                    self.store(field_type, field, slot);
+                }
+                j = j + 1;
+            }
+
+            var body = self.expr(arm.body);
+            if !self.terminated {
+                if has_result {
+                    self.store(e.typ, self.coerce(body, arm.body.typ, e.typ), result_slot);
+                }
+                self.branch(end_label);
+            }
+            if is_wildcard {
+                // Later arms can't be reached
+                break;
+            }
+            if i + 1 < arms.len {
+                self.start_block(next_label);
+            }
+            i = i + 1;
+        }
+        self.start_block(end_label);
+        if has_result {
+            return self.load(e.typ, result_slot);
+        }
+        return "";
+    }
+}

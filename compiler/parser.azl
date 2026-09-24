@@ -1,0 +1,834 @@
+// Recursive descent parser producing the syntax tree.
+
+const PREC_LOWEST: int = 0;
+const PREC_OR: int = 1;
+const PREC_AND: int = 2;
+const PREC_EQUALS: int = 3;
+const PREC_COMPARE: int = 4;
+const PREC_BIT_OR: int = 5;
+const PREC_BIT_XOR: int = 6;
+const PREC_BIT_AND: int = 7;
+const PREC_SHIFT: int = 8;
+const PREC_SUM: int = 9;
+const PREC_PRODUCT: int = 10;
+const PREC_PREFIX: int = 11;
+const PREC_CAST: int = 12;
+const PREC_STRUCT: int = 13;
+const PREC_CALL: int = 14;
+const PREC_ACCESS: int = 15;
+
+struct Parser {
+    tokens: Vec<Token>,
+    index: int,
+    src: &Source,
+    // A `>>` closed two lists of type arguments; the outer `>` is already consumed
+    pending_gt: bool,
+}
+
+func new_program(): &Program {
+    return alloc(Program {
+        funcs: Vec::new(),
+        structs: Vec::new(),
+        enums: Vec::new(),
+        impls: Vec::new(),
+        globals: Vec::new(),
+        aliases: Vec::new(),
+    });
+}
+
+func parse_program(src: &Source, tokens: Vec<Token>): &Program {
+    var p = Parser { tokens: tokens, index: 0, src: src, pending_gt: false };
+    var program = new_program();
+    while !p.at(Tok::Eof) {
+        p.parse_item(program);
+    }
+    return program;
+}
+
+// Process the escapes in the raw contents of a string literal
+func unescape(src: &Source, raw: str, pos: int): str {
+    var sb = StringBuilder::new();
+    var i = 0;
+    while raw[i] != 0 {
+        var c: int = raw[i];
+        if c == '\\' {
+            i = i + 1;
+            var e: int = raw[i];
+            if e == 'n' { sb.append_char(10); }
+            else if e == 't' { sb.append_char(9); }
+            else if e == 'r' { sb.append_char(13); }
+            else if e == '0' { sb.append_char(0); }
+            else if e == '\\' { sb.append_char('\\'); }
+            else if e == '"' { sb.append_char('"'); }
+            else if e == '\'' { sb.append_char('\''); }
+            else if e == 'x' {
+                sb.append_char(hex_value(raw[i + 1] as int) * 16 + hex_value(raw[i + 2] as int));
+                i = i + 2;
+            } else {
+                src.fail(pos + i, "invalid escape sequence");
+            }
+        } else {
+            sb.append_char(c);
+        }
+        i = i + 1;
+    }
+    return sb.to_str();
+}
+
+// The value of a character literal's raw contents
+func char_value(raw: str): int {
+    if raw[0] == '\\' {
+        var e: int = raw[1];
+        if e == 'n' { return 10; }
+        if e == 't' { return 9; }
+        if e == 'r' { return 13; }
+        if e == '0' { return 0; }
+        return e;
+    }
+    return raw[0] as int;
+}
+
+func infix_precedence(kind: Tok, allow_struct: bool): int {
+    return match kind {
+        Tok::PipePipe => PREC_OR,
+        Tok::AmpAmp => PREC_AND,
+        Tok::EqEq => PREC_EQUALS,
+        Tok::NotEq => PREC_EQUALS,
+        Tok::Lt => PREC_COMPARE,
+        Tok::Le => PREC_COMPARE,
+        Tok::Gt => PREC_COMPARE,
+        Tok::Ge => PREC_COMPARE,
+        Tok::Pipe => PREC_BIT_OR,
+        Tok::Caret => PREC_BIT_XOR,
+        Tok::Amp => PREC_BIT_AND,
+        Tok::Shl => PREC_SHIFT,
+        Tok::Shr => PREC_SHIFT,
+        Tok::Plus => PREC_SUM,
+        Tok::Minus => PREC_SUM,
+        Tok::Star => PREC_PRODUCT,
+        Tok::Slash => PREC_PRODUCT,
+        Tok::Percent => PREC_PRODUCT,
+        Tok::StarStar => PREC_PRODUCT,
+        Tok::KwAs => PREC_CAST,
+        Tok::LBrace => {
+            if allow_struct {
+                return PREC_STRUCT;
+            }
+            PREC_LOWEST
+        },
+        Tok::LParen => PREC_CALL,
+        Tok::LBracket => PREC_CALL,
+        Tok::Dot => PREC_ACCESS,
+        Tok::ColonColon => PREC_ACCESS,
+        _ => PREC_LOWEST,
+    };
+}
+
+func binop_for(kind: Tok): BinOp {
+    return match kind {
+        Tok::PipePipe => BinOp::Or,
+        Tok::AmpAmp => BinOp::And,
+        Tok::EqEq => BinOp::Eq,
+        Tok::NotEq => BinOp::Ne,
+        Tok::Lt => BinOp::Lt,
+        Tok::Le => BinOp::Le,
+        Tok::Gt => BinOp::Gt,
+        Tok::Ge => BinOp::Ge,
+        Tok::Pipe => BinOp::BitOr,
+        Tok::Caret => BinOp::BitXor,
+        Tok::Amp => BinOp::BitAnd,
+        Tok::Shl => BinOp::Shl,
+        Tok::Shr => BinOp::Shr,
+        Tok::Plus => BinOp::Add,
+        Tok::Minus => BinOp::Sub,
+        Tok::Star => BinOp::Mul,
+        Tok::Slash => BinOp::Div,
+        Tok::Percent => BinOp::Mod,
+        _ => BinOp::Pow,
+    };
+}
+
+impl Parser {
+    func peek(self: &Parser): Token {
+        return self.tokens.get(self.index);
+    }
+
+    func peek_at(self: &Parser, offset: int): Token {
+        var i = self.index + offset;
+        if i >= self.tokens.len {
+            i = self.tokens.len - 1;
+        }
+        return self.tokens.get(i);
+    }
+
+    func at(self: &Parser, kind: Tok): bool {
+        return self.peek().kind == kind;
+    }
+
+    func advance(self: &Parser): Token {
+        var tok = self.peek();
+        if tok.kind != Tok::Eof {
+            self.index = self.index + 1;
+        }
+        return tok;
+    }
+
+    func accept(self: &Parser, kind: Tok): bool {
+        if self.at(kind) {
+            self.advance();
+            return true;
+        }
+        return false;
+    }
+
+    func expect(self: &Parser, kind: Tok, what: str): Token {
+        var tok = self.peek();
+        if tok.kind != kind {
+            self.src.fail(tok.pos, concat3("expected ", what, concat(", found ", tok_name(tok.kind))));
+        }
+        return self.advance();
+    }
+
+    func expect_ident(self: &Parser, what: str): str {
+        return self.expect(Tok::Ident, what).text;
+    }
+
+    // -----------------------------------------------------------------------
+    // Items
+    // -----------------------------------------------------------------------
+
+    func parse_item(self: &Parser, program: &Program) {
+        var tok = self.peek();
+        match tok.kind {
+            Tok::KwFunc => { program.funcs.push(self.parse_func()); },
+            Tok::KwExtern => { program.funcs.push(self.parse_extern()); },
+            Tok::KwStruct => { program.structs.push(self.parse_struct()); },
+            Tok::KwEnum => { program.enums.push(self.parse_enum()); },
+            Tok::KwImpl => { program.impls.push(self.parse_impl()); },
+            Tok::KwType => {
+                self.advance();
+                var name = self.expect_ident("type alias name");
+                self.expect(Tok::Assign, "`=`");
+                var typ = self.parse_type();
+                self.expect(Tok::Semi, "`;`");
+                program.aliases.push(alloc(AliasDecl { name: name, typ: typ, pos: tok.pos }));
+            },
+            Tok::KwConst => { program.globals.push(self.parse_global()); },
+            Tok::KwVar => {
+                self.src.fail(tok.pos, "only constants are allowed at the top level");
+            },
+            Tok::KwImport => {
+                self.advance();
+                self.expect(Tok::Str, "import path");
+            },
+            Tok::Semi => { self.advance(); },
+            _ => {
+                self.src.fail(tok.pos, concat("expected a declaration, found ", tok_name(tok.kind)));
+            },
+        }
+    }
+
+    func parse_global(self: &Parser): &GlobalDecl {
+        var pos = self.advance().pos;
+        var name = self.expect_ident("constant name");
+        var typ = Type::Infer;
+        if self.accept(Tok::Colon) {
+            typ = self.parse_type();
+        }
+        self.expect(Tok::Assign, "`=`");
+        var value = self.parse_expr(PREC_LOWEST, true);
+        self.expect(Tok::Semi, "`;`");
+        return alloc(GlobalDecl { name: name, typ: typ, value: value, pos: pos });
+    }
+
+    // `<T, U>` after a declaration's name
+    func parse_type_params(self: &Parser): Vec<str> {
+        var params: Vec<str> = Vec::new();
+        if !self.accept(Tok::Lt) {
+            return params;
+        }
+        while !self.accept(Tok::Gt) {
+            params.push(self.expect_ident("type parameter"));
+            if !self.at(Tok::Gt) {
+                self.expect(Tok::Comma, "`,` or `>`");
+            }
+        }
+        return params;
+    }
+
+    func parse_func(self: &Parser): &FuncDecl {
+        var pos = self.advance().pos;
+        var name = self.expect_ident("function name");
+        var type_params = self.parse_type_params();
+        var params: Vec<Param> = Vec::new();
+        if self.accept(Tok::LParen) {
+            while !self.accept(Tok::RParen) {
+                var pname = self.expect_ident("parameter name");
+                self.expect(Tok::Colon, "`:`");
+                params.push(Param { name: pname, typ: self.parse_type() });
+                if !self.at(Tok::RParen) {
+                    self.expect(Tok::Comma, "`,` or `)`");
+                }
+            }
+        }
+        var ret = Type::Void;
+        if self.accept(Tok::Colon) {
+            ret = self.parse_type();
+        }
+        self.expect(Tok::LBrace, "`{`");
+        var body = self.parse_block_body();
+        return alloc(FuncDecl {
+            name: name,
+            type_params: type_params,
+            params: params,
+            ret: ret,
+            body: body,
+            pos: pos,
+            is_extern: false,
+            is_varargs: false,
+            symbol: name,
+        });
+    }
+
+    func parse_extern(self: &Parser): &FuncDecl {
+        var pos = self.advance().pos;
+        var is_varargs = self.accept(Tok::KwVarargs);
+        self.expect(Tok::KwFunc, "`func`");
+        var name = self.expect_ident("function name");
+        var params: Vec<Param> = Vec::new();
+        if self.accept(Tok::LParen) {
+            while !self.accept(Tok::RParen) {
+                params.push(Param { name: "_", typ: self.parse_type() });
+                if !self.at(Tok::RParen) {
+                    self.expect(Tok::Comma, "`,` or `)`");
+                }
+            }
+        }
+        var ret = Type::Void;
+        if self.accept(Tok::Colon) {
+            ret = self.parse_type();
+        }
+        self.expect(Tok::Semi, "`;`");
+        return alloc(FuncDecl {
+            name: name,
+            type_params: Vec::new(),
+            params: params,
+            ret: ret,
+            body: Vec::new(),
+            pos: pos,
+            is_extern: true,
+            is_varargs: is_varargs,
+            symbol: name,
+        });
+    }
+
+    func parse_struct(self: &Parser): &StructDecl {
+        var pos = self.advance().pos;
+        var name = self.expect_ident("struct name");
+        var type_params = self.parse_type_params();
+        var fields: Vec<Param> = Vec::new();
+        self.expect(Tok::LBrace, "`{`");
+        while !self.accept(Tok::RBrace) {
+            var fname = self.expect_ident("field name");
+            self.expect(Tok::Colon, "`:`");
+            fields.push(Param { name: fname, typ: self.parse_type() });
+            if !self.at(Tok::RBrace) {
+                self.expect(Tok::Comma, "`,` or `}`");
+            }
+        }
+        return alloc(StructDecl { name: name, type_params: type_params, fields: fields, pos: pos });
+    }
+
+    func parse_enum(self: &Parser): &EnumDecl {
+        var pos = self.advance().pos;
+        var name = self.expect_ident("enum name");
+        var type_params = self.parse_type_params();
+        var variants: Vec<Variant> = Vec::new();
+        self.expect(Tok::LBrace, "`{`");
+        while !self.accept(Tok::RBrace) {
+            var vname = self.expect_ident("variant name");
+            var payload: Vec<Type> = Vec::new();
+            if self.accept(Tok::LParen) {
+                while !self.accept(Tok::RParen) {
+                    payload.push(self.parse_type());
+                    if !self.at(Tok::RParen) {
+                        self.expect(Tok::Comma, "`,` or `)`");
+                    }
+                }
+            }
+            variants.push(Variant { name: vname, payload: payload });
+            if !self.at(Tok::RBrace) {
+                self.expect(Tok::Comma, "`,` or `}`");
+            }
+        }
+        return alloc(EnumDecl { name: name, type_params: type_params, variants: variants, pos: pos });
+    }
+
+    func parse_impl(self: &Parser): &ImplDecl {
+        var pos = self.advance().pos;
+        var type_params = self.parse_type_params();
+        var target = self.parse_type();
+        // `impl Vec<T>` declares T too
+        match target {
+            Type::Generic(_, args) => {
+                var i = 0;
+                while i < args.len {
+                    var name = named_of(args.get(i));
+                    if !str_eq(name, "") && !contains_str(type_params, name) {
+                        type_params.push(name);
+                    }
+                    i = i + 1;
+                }
+            },
+            _ => {},
+        }
+        var methods: Vec<&FuncDecl> = Vec::new();
+        self.expect(Tok::LBrace, "`{`");
+        while !self.accept(Tok::RBrace) {
+            if self.accept(Tok::Semi) {
+                continue;
+            }
+            if !self.at(Tok::KwFunc) {
+                self.src.fail(self.peek().pos, "expected a method");
+            }
+            methods.push(self.parse_func());
+        }
+        return alloc(ImplDecl { target: target, type_params: type_params, methods: methods, pos: pos });
+    }
+
+    // -----------------------------------------------------------------------
+    // Types
+    // -----------------------------------------------------------------------
+
+    func parse_type(self: &Parser): Type {
+        var tok = self.advance();
+        match tok.kind {
+            Tok::Amp => { return Type::Ptr(self.parse_type()); },
+            Tok::AmpAmp => { return Type::Ptr(Type::Ptr(self.parse_type())); },
+            Tok::LBracket => {
+                var inner = self.parse_type();
+                var size = -1;
+                if self.accept(Tok::Semi) {
+                    size = self.expect(Tok::Int, "array size").value;
+                }
+                self.expect(Tok::RBracket, "`]`");
+                return Type::Array(inner, size);
+            },
+            Tok::Ident => {
+                var base = type_from_name(tok.text);
+                if !str_eq(named_of(base), "") && self.at(Tok::Lt) {
+                    return Type::Generic(tok.text, self.parse_type_args());
+                }
+                return base;
+            },
+            _ => {
+                self.src.fail(tok.pos, concat("expected a type, found ", tok_name(tok.kind)));
+                return Type::Void;
+            },
+        }
+    }
+
+    // `<A, B>` type arguments
+    func parse_type_args(self: &Parser): Vec<Type> {
+        self.expect(Tok::Lt, "`<`");
+        var args: Vec<Type> = Vec::new();
+        while true {
+            args.push(self.parse_type());
+            if self.pending_gt {
+                self.pending_gt = false;
+                return args;
+            }
+            if self.accept(Tok::Comma) {
+                continue;
+            }
+            if self.accept(Tok::Gt) {
+                return args;
+            }
+            if self.accept(Tok::Shr) {
+                // `>>` closes this list and the enclosing one
+                self.pending_gt = true;
+                return args;
+            }
+            self.expect(Tok::Gt, "`>`");
+        }
+        return args;
+    }
+
+    // -----------------------------------------------------------------------
+    // Statements
+    // -----------------------------------------------------------------------
+
+    // Statements up to and including the closing `}` (the `{` is already consumed)
+    func parse_block_body(self: &Parser): Vec<&Stmt> {
+        var body: Vec<&Stmt> = Vec::new();
+        while !self.accept(Tok::RBrace) {
+            if self.at(Tok::Eof) {
+                self.src.fail(self.peek().pos, "expected `}`");
+            }
+            if self.accept(Tok::Semi) {
+                continue;
+            }
+            body.push(self.parse_stmt());
+        }
+        return body;
+    }
+
+    func parse_stmt(self: &Parser): &Stmt {
+        var tok = self.peek();
+        var pos = tok.pos;
+        match tok.kind {
+            Tok::KwVar => { return self.parse_var_decl(true); },
+            Tok::KwConst => { return self.parse_var_decl(false); },
+            Tok::KwReturn => {
+                self.advance();
+                if self.accept(Tok::Semi) {
+                    return new_stmt(StmtKind::Return(Option::None), pos);
+                }
+                var value = self.parse_expr(PREC_LOWEST, true);
+                self.expect(Tok::Semi, "`;`");
+                return new_stmt(StmtKind::Return(Option::Some(value)), pos);
+            },
+            Tok::KwIf => { return self.parse_if(); },
+            Tok::KwWhile => {
+                self.advance();
+                var cond = self.parse_expr(PREC_LOWEST, false);
+                self.expect(Tok::LBrace, "`{`");
+                var body = self.parse_block_body();
+                return new_stmt(StmtKind::Loop(Option::Some(cond), body), pos);
+            },
+            Tok::KwFor => {
+                self.advance();
+                var cond: Option<&Expr> = Option::None;
+                if !self.at(Tok::LBrace) {
+                    cond = Option::Some(self.parse_expr(PREC_LOWEST, false));
+                }
+                self.expect(Tok::LBrace, "`{`");
+                var body = self.parse_block_body();
+                return new_stmt(StmtKind::Loop(cond, body), pos);
+            },
+            Tok::KwBreak => {
+                self.advance();
+                self.accept(Tok::Semi);
+                return new_stmt(StmtKind::Break, pos);
+            },
+            Tok::KwContinue => {
+                self.advance();
+                self.accept(Tok::Semi);
+                return new_stmt(StmtKind::Continue, pos);
+            },
+            _ => {
+                var expr = self.parse_expr(PREC_LOWEST, true);
+                if self.accept(Tok::Assign) {
+                    var value = self.parse_expr(PREC_LOWEST, true);
+                    self.expect(Tok::Semi, "`;`");
+                    return new_stmt(StmtKind::Assign(expr, value), pos);
+                }
+                // A `match` statement doesn't need a semicolon
+                if is_match_expr(expr) {
+                    self.accept(Tok::Semi);
+                } else {
+                    self.expect(Tok::Semi, "`;`");
+                }
+                return new_stmt(StmtKind::ExprStmt(expr), pos);
+            },
+        }
+    }
+
+    func parse_var_decl(self: &Parser, mutable: bool): &Stmt {
+        var pos = self.advance().pos;
+        var name = self.expect_ident("variable name");
+        var typ = Type::Infer;
+        if self.accept(Tok::Colon) {
+            typ = self.parse_type();
+        }
+        self.expect(Tok::Assign, "`=`");
+        var value = self.parse_expr(PREC_LOWEST, true);
+        self.expect(Tok::Semi, "`;`");
+        return new_stmt(StmtKind::VarDecl(name, mutable, typ, value), pos);
+    }
+
+    func parse_if(self: &Parser): &Stmt {
+        var pos = self.advance().pos;
+        var cond = self.parse_expr(PREC_LOWEST, false);
+        self.expect(Tok::LBrace, "`{`");
+        var body = self.parse_block_body();
+        var else_body: Vec<&Stmt> = Vec::new();
+        if self.accept(Tok::KwElse) {
+            if self.at(Tok::KwIf) {
+                else_body.push(self.parse_if());
+            } else {
+                self.expect(Tok::LBrace, "`{`");
+                else_body = self.parse_block_body();
+            }
+        }
+        return new_stmt(StmtKind::If(cond, body, else_body), pos);
+    }
+
+    // -----------------------------------------------------------------------
+    // Expressions
+    // -----------------------------------------------------------------------
+
+    func parse_expr(self: &Parser, precedence: int, allow_struct: bool): &Expr {
+        var left = self.parse_prefix(allow_struct);
+        while precedence < infix_precedence(self.peek().kind, allow_struct) {
+            left = self.parse_infix(left, allow_struct);
+        }
+        return left;
+    }
+
+    func parse_prefix(self: &Parser, allow_struct: bool): &Expr {
+        var tok = self.advance();
+        var pos = tok.pos;
+        match tok.kind {
+            Tok::Int => { return new_expr(ExprKind::IntLit(tok.value), pos); },
+            Tok::Float => { return new_expr(ExprKind::FloatLit(tok.text), pos); },
+            Tok::Char => { return new_expr(ExprKind::IntLit(char_value(tok.text)), pos); },
+            Tok::Str => { return new_expr(ExprKind::StrLit(unescape(self.src, tok.text, pos + 1)), pos); },
+            Tok::KwTrue => { return new_expr(ExprKind::BoolLit(true), pos); },
+            Tok::KwFalse => { return new_expr(ExprKind::BoolLit(false), pos); },
+            Tok::KwNull => { return new_expr(ExprKind::Null, pos); },
+            Tok::Ident => { return new_expr(ExprKind::Ident(tok.text), pos); },
+            Tok::LParen => {
+                var inner = self.parse_expr(PREC_LOWEST, true);
+                self.expect(Tok::RParen, "`)`");
+                return inner;
+            },
+            Tok::Bang => {
+                return new_expr(ExprKind::Unary(UnOp::Not, self.parse_expr(PREC_PREFIX, allow_struct)), pos);
+            },
+            Tok::Minus => {
+                return new_expr(ExprKind::Unary(UnOp::Neg, self.parse_expr(PREC_PREFIX, allow_struct)), pos);
+            },
+            Tok::Tilde => {
+                return new_expr(ExprKind::Unary(UnOp::BitNot, self.parse_expr(PREC_PREFIX, allow_struct)), pos);
+            },
+            Tok::Amp => {
+                return new_expr(ExprKind::AddrOf(self.parse_expr(PREC_PREFIX, true)), pos);
+            },
+            Tok::LBracket => { return self.parse_array_lit(pos); },
+            Tok::KwMatch => { return self.parse_match(pos); },
+            Tok::KwAlloc => {
+                self.expect(Tok::LParen, "`(`");
+                var inner = self.parse_expr(PREC_LOWEST, true);
+                self.expect(Tok::RParen, "`)`");
+                return new_expr(ExprKind::Alloc(inner), pos);
+            },
+            Tok::KwSizeof => {
+                self.expect(Tok::LParen, "`(`");
+                var typ = self.parse_type();
+                self.expect(Tok::RParen, "`)`");
+                return new_expr(ExprKind::SizeOf(typ), pos);
+            },
+            _ => {
+                self.src.fail(pos, concat("expected an expression, found ", tok_name(tok.kind)));
+                return new_expr(ExprKind::Null, pos);
+            },
+        }
+    }
+
+    func parse_array_lit(self: &Parser, pos: int): &Expr {
+        var items: Vec<&Expr> = Vec::new();
+        if self.accept(Tok::RBracket) {
+            return new_expr(ExprKind::ArrayLit(items), pos);
+        }
+        var first = self.parse_expr(PREC_LOWEST, true);
+        items.push(first);
+        // `[value; count]` repeats the value
+        if self.accept(Tok::Semi) {
+            var count = self.expect(Tok::Int, "array length").value;
+            var i = 1;
+            while i < count {
+                items.push(first);
+                i = i + 1;
+            }
+            self.expect(Tok::RBracket, "`]`");
+            return new_expr(ExprKind::ArrayLit(items), pos);
+        }
+        while self.accept(Tok::Comma) {
+            if self.at(Tok::RBracket) {
+                break;
+            }
+            items.push(self.parse_expr(PREC_LOWEST, true));
+        }
+        self.expect(Tok::RBracket, "`]`");
+        return new_expr(ExprKind::ArrayLit(items), pos);
+    }
+
+    func parse_infix(self: &Parser, left: &Expr, allow_struct: bool): &Expr {
+        var tok = self.advance();
+        var pos = tok.pos;
+        match tok.kind {
+            Tok::KwAs => { return new_expr(ExprKind::Cast(left, self.parse_type()), left.pos); },
+            Tok::Dot => {
+                var name = self.expect_ident("field or method name");
+                return new_expr(ExprKind::Field(left, name), left.pos);
+            },
+            Tok::ColonColon => {
+                if self.at(Tok::Lt) {
+                    // Turbofish: `Name::<Types>`
+                    var name = match left.kind {
+                        ExprKind::Ident(n) => n,
+                        _ => {
+                            self.src.fail(pos, "type arguments can only follow a name");
+                            ""
+                        },
+                    };
+                    return new_expr(ExprKind::Turbofish(name, self.parse_type_args()), left.pos);
+                }
+                var member = self.expect_ident("name after `::`");
+                return new_expr(ExprKind::Path(left, member), left.pos);
+            },
+            Tok::LParen => {
+                var args: Vec<&Expr> = Vec::new();
+                while !self.accept(Tok::RParen) {
+                    args.push(self.parse_expr(PREC_LOWEST, true));
+                    if !self.at(Tok::RParen) {
+                        self.expect(Tok::Comma, "`,` or `)`");
+                    }
+                }
+                return new_expr(ExprKind::Call(left, args), left.pos);
+            },
+            Tok::LBracket => {
+                var index = self.parse_expr(PREC_LOWEST, true);
+                self.expect(Tok::RBracket, "`]`");
+                return new_expr(ExprKind::Index(left, index), left.pos);
+            },
+            Tok::LBrace => { return self.parse_struct_lit(left); },
+            _ => {
+                var precedence = infix_precedence(tok.kind, allow_struct);
+                var right = self.parse_expr(precedence, allow_struct);
+                if tok.kind == Tok::StarStar {
+                    self.src.fail(pos, "`**` is not supported");
+                }
+                return new_expr(ExprKind::Binary(binop_for(tok.kind), left, right), left.pos);
+            },
+        }
+    }
+
+    func parse_struct_lit(self: &Parser, name: &Expr): &Expr {
+        var fields: Vec<FieldInit> = Vec::new();
+        while !self.accept(Tok::RBrace) {
+            var field_tok = self.expect(Tok::Ident, "field name");
+            self.expect(Tok::Colon, "`:`");
+            var value = self.parse_expr(PREC_LOWEST, true);
+            fields.push(FieldInit { name: field_tok.text, value: value, pos: field_tok.pos });
+            if !self.at(Tok::RBrace) {
+                self.expect(Tok::Comma, "`,` or `}`");
+            }
+        }
+        return new_expr(ExprKind::StructLit(name, fields), name.pos);
+    }
+
+    func parse_match(self: &Parser, pos: int): &Expr {
+        var scrutinee = self.parse_expr(PREC_LOWEST, false);
+        self.expect(Tok::LBrace, "`{`");
+        var arms: Vec<&MatchArm> = Vec::new();
+        while !self.accept(Tok::RBrace) {
+            if self.accept(Tok::Comma) {
+                continue;
+            }
+            var arm_pos = self.peek().pos;
+            var pattern = self.parse_pattern();
+            self.expect(Tok::FatArrow, "`=>`");
+            var body_pos = self.peek().pos;
+            var body = new_expr(ExprKind::Null, body_pos);
+            if self.accept(Tok::LBrace) {
+                body = self.parse_block_expr(body_pos);
+            } else {
+                body = self.parse_expr(PREC_LOWEST, false);
+            }
+            arms.push(alloc(MatchArm {
+                pattern: pattern,
+                body: body,
+                pos: arm_pos,
+                enum_name: "",
+                tag: 0,
+                bindings: Vec::new(),
+            }));
+        }
+        return new_expr(ExprKind::Match(scrutinee, arms), pos);
+    }
+
+    func parse_pattern(self: &Parser): Pattern {
+        var tok = self.advance();
+        match tok.kind {
+            Tok::Int => { return Pattern::IntValue(tok.value); },
+            Tok::Char => { return Pattern::IntValue(char_value(tok.text)); },
+            Tok::Minus => { return Pattern::IntValue(0 - self.expect(Tok::Int, "integer").value); },
+            Tok::Ident => {
+                if str_eq(tok.text, "_") {
+                    return Pattern::Wildcard;
+                }
+                self.expect(Tok::ColonColon, "`::`");
+                var variant = self.expect_ident("variant name");
+                var bindings: Vec<str> = Vec::new();
+                if self.accept(Tok::LParen) {
+                    while !self.accept(Tok::RParen) {
+                        bindings.push(self.expect_ident("binding name"));
+                        if !self.at(Tok::RParen) {
+                            self.expect(Tok::Comma, "`,` or `)`");
+                        }
+                    }
+                }
+                return Pattern::Variant(tok.text, variant, bindings);
+            },
+            _ => {
+                self.src.fail(tok.pos, "expected a pattern");
+                return Pattern::Wildcard;
+            },
+        }
+    }
+
+    // A `{ statements; value }` block (the `{` is already consumed)
+    func parse_block_expr(self: &Parser, pos: int): &Expr {
+        var stmts: Vec<&Stmt> = Vec::new();
+        var value: Option<&Expr> = Option::None;
+        while !self.accept(Tok::RBrace) {
+            if self.accept(Tok::Semi) {
+                continue;
+            }
+            var kind = self.peek().kind;
+            if kind == Tok::KwVar || kind == Tok::KwConst || kind == Tok::KwIf || kind == Tok::KwWhile
+                || kind == Tok::KwFor || kind == Tok::KwReturn || kind == Tok::KwBreak || kind == Tok::KwContinue {
+                stmts.push(self.parse_stmt());
+                continue;
+            }
+            var stmt_pos = self.peek().pos;
+            var expr = self.parse_expr(PREC_LOWEST, true);
+            if self.accept(Tok::Assign) {
+                var rhs = self.parse_expr(PREC_LOWEST, true);
+                self.expect(Tok::Semi, "`;`");
+                stmts.push(new_stmt(StmtKind::Assign(expr, rhs), stmt_pos));
+            } else if self.accept(Tok::Semi) {
+                stmts.push(new_stmt(StmtKind::ExprStmt(expr), stmt_pos));
+            } else if self.at(Tok::RBrace) {
+                self.advance();
+                value = Option::Some(expr);
+                return new_expr(ExprKind::Block(stmts, value), pos);
+            } else if is_match_expr(expr) {
+                stmts.push(new_stmt(StmtKind::ExprStmt(expr), stmt_pos));
+            } else {
+                self.expect(Tok::Semi, "`;` or `}`");
+            }
+        }
+        return new_expr(ExprKind::Block(stmts, value), pos);
+    }
+}
+
+func is_match_expr(e: &Expr): bool {
+    return match e.kind {
+        ExprKind::Match(_, _) => true,
+        _ => false,
+    };
+}
+
+func contains_str(list: Vec<str>, s: str): bool {
+    var i = 0;
+    while i < list.len {
+        if str_eq(list.get(i), s) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}

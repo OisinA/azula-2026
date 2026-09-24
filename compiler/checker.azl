@@ -1,0 +1,1843 @@
+// Type checking, generic instantiation and lowering.
+//
+// The checker annotates every expression with its type and rewrites the tree
+// into resolved forms (Local, CallFn, FieldAt, EnumValue, ...), so the code
+// generator never needs to look names up. Generic structs, enums, functions and
+// methods are instantiated on demand for each set of type arguments used.
+
+struct VarInfo {
+    typ: Type,
+    mutable: bool,
+    ir: str,
+}
+
+struct StructInfo {
+    name: str,
+    fields: Vec<Param>,
+}
+
+struct EnumInfo {
+    name: str,
+    variants: Vec<str>,
+    payloads: Vec<Vec<Type>>,
+    // Enums with any payload are boxed: values are pointers to heap cells
+    boxed: bool,
+}
+
+struct FuncSig {
+    symbol: str,
+    params: Vec<Type>,
+    ret: Type,
+    is_varargs: bool,
+    is_extern: bool,
+}
+
+struct Instance {
+    generic: str,
+    args: Vec<Type>,
+}
+
+// A method of a generic type, with the names the impl gave the type's parameters
+struct GenericMethod {
+    params: Vec<str>,
+    decl: &FuncDecl,
+}
+
+struct Checker {
+    src: &Source,
+    structs: Map<&StructInfo>,
+    enums: Map<&EnumInfo>,
+    // Signatures by symbol: functions by name, methods as `Type.method`
+    funcs: Map<&FuncSig>,
+    generic_structs: Map<&StructDecl>,
+    generic_enums: Map<&EnumDecl>,
+    generic_funcs: Map<&FuncDecl>,
+    generic_methods: Map<Vec<GenericMethod>>,
+    instances: Map<Instance>,
+    instantiated: Map<bool>,
+    aliases: Map<Type>,
+    globals: Map<Type>,
+
+    // Results, in a deterministic order
+    out_structs: Vec<&StructInfo>,
+    out_enums: Vec<&EnumInfo>,
+    out_funcs: Vec<&FuncDecl>,
+    out_globals: Vec<&GlobalDecl>,
+    extern_symbols: Vec<str>,
+    pending: Vec<&FuncDecl>,
+
+    // State for the function being checked
+    scopes: Vec<Map<VarInfo>>,
+    var_counter: int,
+    current_return: Type,
+    loop_depth: int,
+}
+
+func new_checker(src: &Source): &Checker {
+    var c = alloc(Checker {
+        src: src,
+        structs: Map::new(),
+        enums: Map::new(),
+        funcs: Map::new(),
+        generic_structs: Map::new(),
+        generic_enums: Map::new(),
+        generic_funcs: Map::new(),
+        generic_methods: Map::new(),
+        instances: Map::new(),
+        instantiated: Map::new(),
+        aliases: Map::new(),
+        globals: Map::new(),
+        out_structs: Vec::new(),
+        out_enums: Vec::new(),
+        out_funcs: Vec::new(),
+        out_globals: Vec::new(),
+        extern_symbols: Vec::new(),
+        pending: Vec::new(),
+        scopes: Vec::new(),
+        var_counter: 0,
+        current_return: Type::Void,
+        loop_depth: 0,
+    });
+    c.add_builtins();
+    return c;
+}
+
+func types1(a: Type): Vec<Type> {
+    var v: Vec<Type> = Vec::new();
+    v.push(a);
+    return v;
+}
+
+func types2(a: Type, b: Type): Vec<Type> {
+    var v = types1(a);
+    v.push(b);
+    return v;
+}
+
+func types3(a: Type, b: Type, c: Type): Vec<Type> {
+    var v = types2(a, b);
+    v.push(c);
+    return v;
+}
+
+func types4(a: Type, b: Type, c: Type, d: Type): Vec<Type> {
+    var v = types3(a, b, c);
+    v.push(d);
+    return v;
+}
+
+// Substitute type arguments for type parameters
+func subst_type(t: Type, params: Vec<str>, args: Vec<Type>): Type {
+    return match t {
+        Type::Named(name) => {
+            var i = 0;
+            while i < params.len {
+                if str_eq(params.get(i), name) {
+                    return args.get(i);
+                }
+                i = i + 1;
+            }
+            t
+        },
+        Type::Ptr(inner) => Type::Ptr(subst_type(inner, params, args)),
+        Type::Array(inner, size) => Type::Array(subst_type(inner, params, args), size),
+        Type::Generic(name, targs) => {
+            var out: Vec<Type> = Vec::new();
+            var i = 0;
+            while i < targs.len {
+                out.push(subst_type(targs.get(i), params, args));
+                i = i + 1;
+            }
+            Type::Generic(name, out)
+        },
+        _ => t,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Copying generic definitions (with their type parameters substituted)
+// ---------------------------------------------------------------------------
+
+struct Copier {
+    params: Vec<str>,
+    args: Vec<Type>,
+}
+
+impl Copier {
+    func typ(self: &Copier, t: Type): Type {
+        return subst_type(t, self.params, self.args);
+    }
+
+    func exprs(self: &Copier, list: Vec<&Expr>): Vec<&Expr> {
+        var out: Vec<&Expr> = Vec::new();
+        var i = 0;
+        while i < list.len {
+            out.push(self.expr(list.get(i)));
+            i = i + 1;
+        }
+        return out;
+    }
+
+    func stmts(self: &Copier, list: Vec<&Stmt>): Vec<&Stmt> {
+        var out: Vec<&Stmt> = Vec::new();
+        var i = 0;
+        while i < list.len {
+            out.push(self.stmt(list.get(i)));
+            i = i + 1;
+        }
+        return out;
+    }
+
+    func opt_expr(self: &Copier, e: Option<&Expr>): Option<&Expr> {
+        return match e {
+            Option::Some(x) => Option::Some(self.expr(x)),
+            Option::None => Option::None,
+        };
+    }
+
+    func expr(self: &Copier, e: &Expr): &Expr {
+        var kind = match e.kind {
+            ExprKind::Binary(op, l, r) => ExprKind::Binary(op, self.expr(l), self.expr(r)),
+            ExprKind::Unary(op, x) => ExprKind::Unary(op, self.expr(x)),
+            ExprKind::AddrOf(x) => ExprKind::AddrOf(self.expr(x)),
+            ExprKind::Call(f, args) => ExprKind::Call(self.expr(f), self.exprs(args)),
+            ExprKind::Index(a, i) => ExprKind::Index(self.expr(a), self.expr(i)),
+            ExprKind::Field(x, name) => ExprKind::Field(self.expr(x), name),
+            ExprKind::Path(ns, member) => ExprKind::Path(self.expr(ns), member),
+            ExprKind::Turbofish(name, targs) => {
+                var out: Vec<Type> = Vec::new();
+                var i = 0;
+                while i < targs.len {
+                    out.push(self.typ(targs.get(i)));
+                    i = i + 1;
+                }
+                ExprKind::Turbofish(name, out)
+            },
+            ExprKind::StructLit(name, fields) => {
+                var out: Vec<FieldInit> = Vec::new();
+                var i = 0;
+                while i < fields.len {
+                    var f = fields.get(i);
+                    out.push(FieldInit { name: f.name, value: self.expr(f.value), pos: f.pos });
+                    i = i + 1;
+                }
+                ExprKind::StructLit(self.expr(name), out)
+            },
+            ExprKind::ArrayLit(items) => ExprKind::ArrayLit(self.exprs(items)),
+            ExprKind::Cast(x, t) => ExprKind::Cast(self.expr(x), self.typ(t)),
+            ExprKind::SizeOf(t) => ExprKind::SizeOf(self.typ(t)),
+            ExprKind::Alloc(x) => ExprKind::Alloc(self.expr(x)),
+            ExprKind::Match(scrutinee, arms) => {
+                var out: Vec<&MatchArm> = Vec::new();
+                var i = 0;
+                while i < arms.len {
+                    var arm = arms.get(i);
+                    out.push(alloc(MatchArm {
+                        pattern: arm.pattern,
+                        body: self.expr(arm.body),
+                        pos: arm.pos,
+                        enum_name: "",
+                        tag: 0,
+                        bindings: Vec::new(),
+                    }));
+                    i = i + 1;
+                }
+                ExprKind::Match(self.expr(scrutinee), out)
+            },
+            ExprKind::Block(stmts, value) => ExprKind::Block(self.stmts(stmts), self.opt_expr(value)),
+            _ => e.kind,
+        };
+        return new_expr(kind, e.pos);
+    }
+
+    func stmt(self: &Copier, s: &Stmt): &Stmt {
+        var kind = match s.kind {
+            StmtKind::VarDecl(name, mutable, t, value) => StmtKind::VarDecl(name, mutable, self.typ(t), self.expr(value)),
+            StmtKind::Assign(target, value) => StmtKind::Assign(self.expr(target), self.expr(value)),
+            StmtKind::ExprStmt(e) => StmtKind::ExprStmt(self.expr(e)),
+            StmtKind::Return(value) => StmtKind::Return(self.opt_expr(value)),
+            StmtKind::If(cond, then_body, else_body) => StmtKind::If(self.expr(cond), self.stmts(then_body), self.stmts(else_body)),
+            StmtKind::Loop(cond, body) => StmtKind::Loop(self.opt_expr(cond), self.stmts(body)),
+            _ => s.kind,
+        };
+        return new_stmt(kind, s.pos);
+    }
+
+    func copy_func(self: &Copier, decl: &FuncDecl, symbol: str): &FuncDecl {
+        var params: Vec<Param> = Vec::new();
+        var i = 0;
+        while i < decl.params.len {
+            var p = decl.params.get(i);
+            params.push(Param { name: p.name, typ: self.typ(p.typ) });
+            i = i + 1;
+        }
+        return alloc(FuncDecl {
+            name: decl.name,
+            type_params: Vec::new(),
+            params: params,
+            ret: self.typ(decl.ret),
+            body: self.stmts(decl.body),
+            pos: decl.pos,
+            is_extern: false,
+            is_varargs: false,
+            symbol: symbol,
+        });
+    }
+}
+
+// Does executing `body` always end in a return (or never finish)?
+func always_returns(body: Vec<&Stmt>): bool {
+    if body.len == 0 {
+        return false;
+    }
+    var last = body.get(body.len - 1);
+    return match last.kind {
+        StmtKind::Return(_) => true,
+        StmtKind::If(_, then_body, else_body) => always_returns(then_body) && always_returns(else_body),
+        StmtKind::Loop(cond, loop_body) => {
+            var infinite = match cond {
+                Option::None => true,
+                Option::Some(c) => match c.kind {
+                    ExprKind::BoolLit(b) => b,
+                    _ => false,
+                },
+            };
+            infinite && !contains_break(loop_body)
+        },
+        StmtKind::ExprStmt(e) => match e.kind {
+            ExprKind::Match(_, arms) => {
+                var i = 0;
+                var all = true;
+                while i < arms.len {
+                    var arm_returns = match arms.get(i).body.kind {
+                        ExprKind::Block(stmts, value) => value.is_none() && always_returns(stmts),
+                        _ => false,
+                    };
+                    if !arm_returns {
+                        all = false;
+                    }
+                    i = i + 1;
+                }
+                all
+            },
+            ExprKind::Call(f, _) => match f.kind {
+                ExprKind::Ident(name) => str_eq(name, "exit") || str_eq(name, "abort"),
+                _ => false,
+            },
+            ExprKind::CallFn(name, _) => str_eq(name, "exit") || str_eq(name, "abort"),
+            _ => false,
+        },
+        _ => false,
+    };
+}
+
+// Does `body` contain a `break` for this loop (not a nested one)?
+func contains_break(body: Vec<&Stmt>): bool {
+    var i = 0;
+    while i < body.len {
+        var found = match body.get(i).kind {
+            StmtKind::Break => true,
+            StmtKind::If(_, then_body, else_body) => contains_break(then_body) || contains_break(else_body),
+            StmtKind::ExprStmt(e) => match e.kind {
+                ExprKind::Match(_, arms) => {
+                    var j = 0;
+                    var any = false;
+                    while j < arms.len {
+                        match arms.get(j).body.kind {
+                            ExprKind::Block(stmts, _) => {
+                                if contains_break(stmts) {
+                                    any = true;
+                                }
+                            },
+                            _ => {},
+                        }
+                        j = j + 1;
+                    }
+                    any
+                },
+                _ => false,
+            },
+            _ => false,
+        };
+        if found {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+func is_int_literal(e: &Expr): bool {
+    return match e.kind {
+        ExprKind::IntLit(_) => true,
+        ExprKind::Unary(op, inner) => op == UnOp::Neg && is_int_literal(inner),
+        _ => false,
+    };
+}
+
+// Can a value of type `got` (from expression `e`) be stored where `expected` is wanted?
+func assignable(expected: Type, got: Type, e: &Expr): bool {
+    if type_eq(expected, got) {
+        return true;
+    }
+    if is_integer(expected) && is_integer(got) {
+        return is_int_literal(e) || type_eq(got, Type::Int) || type_eq(expected, Type::Int);
+    }
+    if is_pointer_like(expected) && is_pointer_like(got) {
+        return type_eq(expected, Type::Str) || type_eq(got, Type::Str);
+    }
+    return false;
+}
+
+impl Checker {
+    func fail(self: &Checker, pos: int, message: str) {
+        self.src.fail(pos, message);
+    }
+
+    func add_builtin(self: &Checker, name: str, params: Vec<Type>, ret: Type, is_varargs: bool) {
+        self.funcs.insert(name, alloc(FuncSig {
+            symbol: name,
+            params: params,
+            ret: ret,
+            is_varargs: is_varargs,
+            is_extern: true,
+        }));
+    }
+
+    func add_builtins(self: &Checker) {
+        var i32t = Type::SInt(32);
+        self.add_builtin("printf", types1(Type::Str), i32t, true);
+        self.add_builtin("strlen", types1(Type::Str), Type::Int, false);
+        self.add_builtin("strcmp", types2(Type::Str, Type::Str), i32t, false);
+        self.add_builtin("malloc", types1(Type::Int), Type::Str, false);
+        self.add_builtin("memcpy", types3(Type::Str, Type::Str, Type::Int), Type::Str, false);
+        self.add_builtin("free", types1(Type::Str), Type::Void, false);
+        self.add_builtin("realloc", types2(Type::Str, Type::Int), Type::Str, false);
+        self.add_builtin("fopen", types2(Type::Str, Type::Str), Type::Str, false);
+        self.add_builtin("fclose", types1(Type::Str), i32t, false);
+        self.add_builtin("fseek", types3(Type::Str, Type::Int, i32t), i32t, false);
+        self.add_builtin("ftell", types1(Type::Str), Type::Int, false);
+        self.add_builtin("fread", types4(Type::Str, Type::Int, Type::Int, Type::Str), Type::Int, false);
+        // Compiler intrinsic: byte offset from a pointer
+        self.add_builtin("ptr_add", types2(Type::Str, Type::Int), Type::Str, false);
+    }
+
+    // -----------------------------------------------------------------------
+    // Program
+    // -----------------------------------------------------------------------
+
+    func check_program(self: &Checker, program: &Program) {
+        // Pass 0: names of everything declared, so order doesn't matter
+        var i = 0;
+        while i < program.aliases.len {
+            var a = program.aliases.get(i);
+            self.aliases.insert(a.name, a.typ);
+            i = i + 1;
+        }
+        var type_names: Map<bool> = Map::new();
+        i = 0;
+        while i < program.structs.len {
+            var s = program.structs.get(i);
+            self.check_unique(&type_names, s.name, s.pos);
+            if s.type_params.len > 0 {
+                self.generic_structs.insert(s.name, s);
+            } else {
+                var info = alloc(StructInfo { name: s.name, fields: s.fields });
+                self.structs.insert(s.name, info);
+                self.out_structs.push(info);
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < program.enums.len {
+            var e = program.enums.get(i);
+            self.check_unique(&type_names, e.name, e.pos);
+            if e.type_params.len > 0 {
+                self.generic_enums.insert(e.name, e);
+            } else {
+                var names: Vec<str> = Vec::new();
+                var payloads: Vec<Vec<Type>> = Vec::new();
+                var boxed = false;
+                var j = 0;
+                while j < e.variants.len {
+                    var v = e.variants.get(j);
+                    names.push(v.name);
+                    payloads.push(v.payload);
+                    if v.payload.len > 0 {
+                        boxed = true;
+                    }
+                    j = j + 1;
+                }
+                var info = alloc(EnumInfo { name: e.name, variants: names, payloads: payloads, boxed: boxed });
+                self.enums.insert(e.name, info);
+                self.out_enums.push(info);
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < program.funcs.len {
+            var f = program.funcs.get(i);
+            if f.type_params.len > 0 {
+                if self.generic_funcs.contains(f.name) {
+                    self.fail(f.pos, concat3("`", f.name, "` is defined more than once"));
+                }
+                self.generic_funcs.insert(f.name, f);
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < program.impls.len {
+            var imp = program.impls.get(i);
+            match imp.target {
+                Type::Generic(name, args) => {
+                    var params: Vec<str> = Vec::new();
+                    var j = 0;
+                    while j < args.len {
+                        params.push(named_of(args.get(j)));
+                        j = j + 1;
+                    }
+                    var methods = self.generic_methods.get(name).unwrap_or(Vec::new());
+                    j = 0;
+                    while j < imp.methods.len {
+                        methods.push(GenericMethod { params: params, decl: imp.methods.get(j) });
+                        j = j + 1;
+                    }
+                    self.generic_methods.insert(name, methods);
+                },
+                _ => {},
+            }
+            i = i + 1;
+        }
+
+        // Pass 1: resolve the types in declarations and record signatures
+        i = 0;
+        while i < self.out_structs.len {
+            var info = self.out_structs.get(i);
+            info.fields = self.resolve_params(info.fields, 0);
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.out_enums.len {
+            var info = self.out_enums.get(i);
+            info.payloads = self.resolve_payloads(info.payloads, 0);
+            i = i + 1;
+        }
+        i = 0;
+        while i < program.funcs.len {
+            var f = program.funcs.get(i);
+            if f.type_params.len == 0 {
+                self.declare_func(f, f.name);
+                if f.is_extern {
+                    self.extern_symbols.push(f.name);
+                }
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < program.impls.len {
+            var imp = program.impls.get(i);
+            if imp.type_params.len == 0 {
+                var target = mangle(self.resolve_type(imp.target, imp.pos));
+                var j = 0;
+                while j < imp.methods.len {
+                    var m = imp.methods.get(j);
+                    self.declare_func(m, concat3(target, ".", m.name));
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < program.globals.len {
+            self.check_global(program.globals.get(i));
+            i = i + 1;
+        }
+
+        // Pass 2: function bodies
+        i = 0;
+        while i < program.funcs.len {
+            var f = program.funcs.get(i);
+            if f.type_params.len == 0 && !f.is_extern {
+                self.check_function(f);
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < program.impls.len {
+            var imp = program.impls.get(i);
+            if imp.type_params.len == 0 {
+                var j = 0;
+                while j < imp.methods.len {
+                    self.check_function(imp.methods.get(j));
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+
+        // Pass 3: generic instances requested along the way
+        while self.pending.len > 0 {
+            self.check_function(self.pending.pop());
+        }
+
+        if !self.funcs.contains("main") {
+            fatal("no `main` function");
+        }
+    }
+
+    func resolve_params(self: &Checker, params: Vec<Param>, pos: int): Vec<Param> {
+        var out: Vec<Param> = Vec::new();
+        var i = 0;
+        while i < params.len {
+            var p = params.get(i);
+            out.push(Param { name: p.name, typ: self.resolve_type(p.typ, pos) });
+            i = i + 1;
+        }
+        return out;
+    }
+
+    func resolve_payloads(self: &Checker, payloads: Vec<Vec<Type>>, pos: int): Vec<Vec<Type>> {
+        var out: Vec<Vec<Type>> = Vec::new();
+        var i = 0;
+        while i < payloads.len {
+            var payload = payloads.get(i);
+            var resolved: Vec<Type> = Vec::new();
+            var j = 0;
+            while j < payload.len {
+                resolved.push(self.resolve_type(payload.get(j), pos));
+                j = j + 1;
+            }
+            out.push(resolved);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    func check_unique(self: &Checker, names: &Map<bool>, name: str, pos: int) {
+        if names.contains(name) {
+            self.fail(pos, concat3("`", name, "` is defined more than once"));
+        }
+        names.insert(name, true);
+    }
+
+    // Record the signature of a (non-generic) function under `symbol`
+    func declare_func(self: &Checker, f: &FuncDecl, symbol: str) {
+        // Externs may redeclare the compiler's built-in C functions
+        var existing = self.funcs.get(symbol);
+        if existing.is_some() && (!f.is_extern || !existing.unwrap().is_extern) {
+            self.fail(f.pos, concat3("`", symbol, "` is defined more than once"));
+        }
+        f.symbol = symbol;
+        f.params = self.resolve_params(f.params, f.pos);
+        f.ret = self.resolve_type(f.ret, f.pos);
+        var params: Vec<Type> = Vec::new();
+        var i = 0;
+        while i < f.params.len {
+            params.push(f.params.get(i).typ);
+            i = i + 1;
+        }
+        self.funcs.insert(symbol, alloc(FuncSig {
+            symbol: symbol,
+            params: params,
+            ret: f.ret,
+            is_varargs: f.is_varargs,
+            is_extern: f.is_extern,
+        }));
+    }
+
+    func check_global(self: &Checker, g: &GlobalDecl) {
+        var expected = self.resolve_type(g.typ, g.pos);
+        var valid = match g.value.kind {
+            ExprKind::IntLit(_) => true,
+            ExprKind::FloatLit(_) => true,
+            ExprKind::BoolLit(_) => true,
+            ExprKind::StrLit(_) => true,
+            ExprKind::Unary(op, inner) => op == UnOp::Neg && is_int_literal(inner),
+            _ => false,
+        };
+        if !valid {
+            self.fail(g.pos, "constants must be literals");
+        }
+        self.scopes = Vec::new();
+        var t = self.check_expr(g.value, expected);
+        if !is_infer(expected) {
+            if !assignable(expected, t, g.value) {
+                self.fail(g.pos, concat3("constant has type ", mangle(t), concat(", expected ", mangle(expected))));
+            }
+            t = expected;
+        }
+        g.typ = t;
+        self.globals.insert(g.name, t);
+        self.out_globals.push(g);
+    }
+
+    // -----------------------------------------------------------------------
+    // Types and generics
+    // -----------------------------------------------------------------------
+
+    func resolve_type(self: &Checker, t: Type, pos: int): Type {
+        return match t {
+            Type::Named(name) => {
+                var alias = self.aliases.get(name);
+                match alias {
+                    Option::Some(target) => { return self.resolve_type(target, pos); },
+                    Option::None => {},
+                }
+                if !self.structs.contains(name) && !self.enums.contains(name) {
+                    if self.generic_structs.contains(name) || self.generic_enums.contains(name) {
+                        self.fail(pos, concat3("`", name, "` needs type arguments"));
+                    }
+                    self.fail(pos, concat3("unknown type `", name, "`"));
+                }
+                t
+            },
+            Type::Ptr(inner) => Type::Ptr(self.resolve_type(inner, pos)),
+            Type::Array(inner, size) => Type::Array(self.resolve_type(inner, pos), size),
+            Type::Generic(name, args) => {
+                var resolved: Vec<Type> = Vec::new();
+                var i = 0;
+                while i < args.len {
+                    resolved.push(self.resolve_type(args.get(i), pos));
+                    i = i + 1;
+                }
+                self.instantiate_type(name, resolved, pos)
+            },
+            Type::Infer => t,
+            _ => t,
+        };
+    }
+
+    func type_params_of(self: &Checker, name: str): Vec<str> {
+        match self.generic_structs.get(name) {
+            Option::Some(s) => { return s.type_params; },
+            Option::None => {},
+        }
+        match self.generic_enums.get(name) {
+            Option::Some(e) => { return e.type_params; },
+            Option::None => {},
+        }
+        return Vec::new();
+    }
+
+    // The concrete type for generic `name` applied to `args`, creating it if needed
+    func instantiate_type(self: &Checker, name: str, args: Vec<Type>, pos: int): Type {
+        var inst = mangle(Type::Generic(name, args));
+        if self.instances.contains(inst) {
+            return Type::Named(inst);
+        }
+        if !self.generic_structs.contains(name) && !self.generic_enums.contains(name) {
+            self.fail(pos, concat3("unknown generic type `", name, "`"));
+        }
+        var params = self.type_params_of(name);
+        if params.len != args.len {
+            self.fail(pos, concat3("wrong number of type arguments for `", name, "`"));
+        }
+        self.instances.insert(inst, Instance { generic: name, args: args });
+
+        match self.generic_structs.get(name) {
+            Option::Some(decl) => {
+                var info = alloc(StructInfo { name: inst, fields: Vec::new() });
+                self.structs.insert(inst, info);
+                self.out_structs.push(info);
+                var fields: Vec<Param> = Vec::new();
+                var i = 0;
+                while i < decl.fields.len {
+                    var f = decl.fields.get(i);
+                    fields.push(Param { name: f.name, typ: self.resolve_type(subst_type(f.typ, params, args), pos) });
+                    i = i + 1;
+                }
+                info.fields = fields;
+            },
+            Option::None => {},
+        }
+        match self.generic_enums.get(name) {
+            Option::Some(decl) => {
+                var info = alloc(EnumInfo { name: inst, variants: Vec::new(), payloads: Vec::new(), boxed: false });
+                self.enums.insert(inst, info);
+                self.out_enums.push(info);
+                var i = 0;
+                while i < decl.variants.len {
+                    var v = decl.variants.get(i);
+                    info.variants.push(v.name);
+                    var payload: Vec<Type> = Vec::new();
+                    var j = 0;
+                    while j < v.payload.len {
+                        payload.push(self.resolve_type(subst_type(v.payload.get(j), params, args), pos));
+                        j = j + 1;
+                    }
+                    if payload.len > 0 {
+                        info.boxed = true;
+                    }
+                    info.payloads.push(payload);
+                    i = i + 1;
+                }
+            },
+            Option::None => {},
+        }
+
+        // Method signatures (bodies are instantiated when first used)
+        var methods = self.generic_methods.get(name).unwrap_or(Vec::new());
+        var i = 0;
+        while i < methods.len {
+            var m = methods.get(i);
+            var sig_params: Vec<Type> = Vec::new();
+            var j = 0;
+            while j < m.decl.params.len {
+                sig_params.push(self.resolve_type(subst_type(m.decl.params.get(j).typ, m.params, args), m.decl.pos));
+                j = j + 1;
+            }
+            var symbol = concat3(inst, ".", m.decl.name);
+            self.funcs.insert(symbol, alloc(FuncSig {
+                symbol: symbol,
+                params: sig_params,
+                ret: self.resolve_type(subst_type(m.decl.ret, m.params, args), m.decl.pos),
+                is_varargs: false,
+                is_extern: false,
+            }));
+            i = i + 1;
+        }
+        return Type::Named(inst);
+    }
+
+    // Make sure the body of `type_name.method` exists if it's a generic method
+    func instantiate_method(self: &Checker, type_name: str, method: str) {
+        var symbol = concat3(type_name, ".", method);
+        if self.instantiated.contains(symbol) {
+            return;
+        }
+        var instance = match self.instances.get(type_name) {
+            Option::Some(inst) => inst,
+            Option::None => { return; },
+        };
+        var methods = self.generic_methods.get(instance.generic).unwrap_or(Vec::new());
+        var i = 0;
+        while i < methods.len {
+            var m = methods.get(i);
+            if str_eq(m.decl.name, method) {
+                self.instantiated.insert(symbol, true);
+                var copier = Copier { params: m.params, args: instance.args };
+                self.pending.push(copier.copy_func(m.decl, symbol));
+                return;
+            }
+            i = i + 1;
+        }
+    }
+
+    // The symbol of generic function `name` instantiated with `args`
+    func instantiate_function(self: &Checker, name: str, args: Vec<Type>, pos: int): str {
+        var symbol = mangle(Type::Generic(name, args));
+        if self.instantiated.contains(symbol) {
+            return symbol;
+        }
+        self.instantiated.insert(symbol, true);
+        var decl = self.generic_funcs.get(name).unwrap();
+        if decl.type_params.len != args.len {
+            self.fail(pos, concat3("wrong number of type arguments for `", name, "`"));
+        }
+        var copier = Copier { params: decl.type_params, args: args };
+        var copy = copier.copy_func(decl, symbol);
+        self.declare_func(copy, symbol);
+        self.pending.push(copy);
+        return symbol;
+    }
+
+    // Match a generic `pattern` type against a `concrete` one, binding type parameters
+    func unify(self: &Checker, pattern: Type, concrete: Type, params: Vec<str>, bindings: &Map<Type>) {
+        match pattern {
+            Type::Named(name) => {
+                if contains_str(params, name) && !bindings.contains(name) && !is_infer(concrete) {
+                    bindings.insert(name, concrete);
+                }
+            },
+            Type::Ptr(p) => {
+                match concrete {
+                    Type::Ptr(c) => { self.unify(p, c, params, bindings); },
+                    _ => {},
+                }
+            },
+            Type::Array(p, _) => {
+                match concrete {
+                    Type::Array(c, _) => { self.unify(p, c, params, bindings); },
+                    _ => {},
+                }
+            },
+            Type::Generic(name, pargs) => {
+                match self.instances.get(named_of(concrete)) {
+                    Option::Some(inst) => {
+                        if str_eq(inst.generic, name) {
+                            var i = 0;
+                            while i < pargs.len && i < inst.args.len {
+                                self.unify(pargs.get(i), inst.args.get(i), params, bindings);
+                                i = i + 1;
+                            }
+                        }
+                    },
+                    Option::None => {},
+                }
+            },
+            _ => {},
+        }
+    }
+
+    // Work out the type arguments for generic `name`: from the expected type if
+    // that is an instance of the same generic, otherwise by matching `patterns`
+    // against the types of `args`.
+    func infer_type_args(self: &Checker, name: str, params: Vec<str>, expected: Type, patterns: Vec<Type>, args: Vec<&Expr>, pos: int): Vec<Type> {
+        match self.instances.get(named_of(expected)) {
+            Option::Some(inst) => {
+                if str_eq(inst.generic, name) {
+                    return inst.args;
+                }
+            },
+            Option::None => {},
+        }
+        var bindings: Map<Type> = Map::new();
+        var i = 0;
+        while i < patterns.len && i < args.len {
+            self.unify(patterns.get(i), self.peek_type(args.get(i)), params, &bindings);
+            i = i + 1;
+        }
+        var result: Vec<Type> = Vec::new();
+        i = 0;
+        while i < params.len {
+            match bindings.get(params.get(i)) {
+                Option::Some(t) => { result.push(t); },
+                Option::None => {
+                    self.fail(pos, concat3("cannot infer type parameter ", params.get(i), concat3(" of `", name, "`; give it explicitly like Name::<Type>")));
+                },
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    // The type of an expression if it can be known without checking it (used for
+    // inferring type arguments; Infer when unknown)
+    func peek_type(self: &Checker, e: &Expr): Type {
+        return match e.kind {
+            ExprKind::IntLit(_) => Type::Int,
+            ExprKind::FloatLit(_) => Type::Float,
+            ExprKind::BoolLit(_) => Type::Bool,
+            ExprKind::StrLit(_) => Type::Str,
+            ExprKind::Ident(name) => {
+                match self.lookup_var(name) {
+                    Option::Some(v) => { return v.typ; },
+                    Option::None => {},
+                }
+                self.globals.get(name).unwrap_or(Type::Infer)
+            },
+            ExprKind::AddrOf(x) => {
+                var inner = self.peek_type(x);
+                if is_infer(inner) {
+                    return inner;
+                }
+                Type::Ptr(inner)
+            },
+            ExprKind::Field(x, name) => {
+                var info = self.struct_of(self.peek_type(x));
+                if info == null {
+                    return Type::Infer;
+                }
+                var i = 0;
+                while i < info.fields.len {
+                    if str_eq(info.fields.get(i).name, name) {
+                        return info.fields.get(i).typ;
+                    }
+                    i = i + 1;
+                }
+                Type::Infer
+            },
+            ExprKind::Index(a, _) => match self.peek_type(a) {
+                Type::Ptr(inner) => inner,
+                Type::Array(inner, _) => inner,
+                Type::Str => Type::SInt(8),
+                _ => Type::Infer,
+            },
+            ExprKind::Cast(_, t) => self.resolve_type(t, e.pos),
+            ExprKind::SizeOf(_) => Type::Int,
+            ExprKind::StructLit(name, _) => match name.kind {
+                ExprKind::Ident(n) => {
+                    if self.structs.contains(n) {
+                        return Type::Named(n);
+                    }
+                    Type::Infer
+                },
+                _ => Type::Infer,
+            },
+            ExprKind::Call(f, _) => match f.kind {
+                ExprKind::Ident(name) => match self.funcs.get(name) {
+                    Option::Some(sig) => sig.ret,
+                    Option::None => Type::Infer,
+                },
+                ExprKind::Field(obj, method) => {
+                    var t = self.peek_type(obj);
+                    var type_name = named_of(t);
+                    match t {
+                        Type::Ptr(inner) => { type_name = named_of(inner); },
+                        _ => {},
+                    }
+                    match self.funcs.get(concat3(type_name, ".", method)) {
+                        Option::Some(sig) => sig.ret,
+                        Option::None => Type::Infer,
+                    }
+                },
+                ExprKind::Path(ns, member) => match ns.kind {
+                    ExprKind::Ident(type_name) => {
+                        if self.enums.contains(type_name) {
+                            return Type::Named(type_name);
+                        }
+                        match self.funcs.get(concat3(type_name, ".", member)) {
+                            Option::Some(sig) => sig.ret,
+                            Option::None => Type::Infer,
+                        }
+                    },
+                    _ => Type::Infer,
+                },
+                _ => Type::Infer,
+            },
+            ExprKind::Path(ns, _) => match ns.kind {
+                ExprKind::Ident(type_name) => {
+                    if self.enums.contains(type_name) {
+                        return Type::Named(type_name);
+                    }
+                    Type::Infer
+                },
+                _ => Type::Infer,
+            },
+            _ => Type::Infer,
+        };
+    }
+
+    // The struct a value of type `t` (or a pointer to it) is, or null
+    func struct_of(self: &Checker, t: Type): &StructInfo {
+        var name = named_of(t);
+        match t {
+            Type::Ptr(inner) => { name = named_of(inner); },
+            _ => {},
+        }
+        var found = self.structs.get(name);
+        if found.is_none() {
+            return null;
+        }
+        return found.unwrap();
+    }
+
+    // Resolve the `ns` of `ns::member` to a concrete type name, instantiating
+    // generics (explicitly or by inference from `args` and `expected`)
+    func resolve_namespace(self: &Checker, ns: &Expr, member: str, args: Vec<&Expr>, expected: Type): str {
+        return match ns.kind {
+            ExprKind::Turbofish(name, targs) => {
+                var resolved: Vec<Type> = Vec::new();
+                var i = 0;
+                while i < targs.len {
+                    resolved.push(self.resolve_type(targs.get(i), ns.pos));
+                    i = i + 1;
+                }
+                named_of(self.instantiate_type(name, resolved, ns.pos))
+            },
+            ExprKind::Ident(name) => {
+                match self.aliases.get(name) {
+                    Option::Some(target) => { return named_of(self.resolve_type(target, ns.pos)); },
+                    Option::None => {},
+                }
+                if !self.generic_structs.contains(name) && !self.generic_enums.contains(name) {
+                    return name;
+                }
+                var params = self.type_params_of(name);
+                var patterns: Vec<Type> = Vec::new();
+                match self.generic_enums.get(name) {
+                    Option::Some(decl) => {
+                        var i = 0;
+                        while i < decl.variants.len {
+                            if str_eq(decl.variants.get(i).name, member) {
+                                patterns = decl.variants.get(i).payload;
+                            }
+                            i = i + 1;
+                        }
+                    },
+                    Option::None => {},
+                }
+                var methods = self.generic_methods.get(name).unwrap_or(Vec::new());
+                var i = 0;
+                while i < methods.len {
+                    var m = methods.get(i);
+                    if str_eq(m.decl.name, member) {
+                        // Rename the impl's type parameters to the type's own
+                        var own: Vec<Type> = Vec::new();
+                        var j = 0;
+                        while j < params.len {
+                            own.push(Type::Named(params.get(j)));
+                            j = j + 1;
+                        }
+                        j = 0;
+                        while j < m.decl.params.len {
+                            patterns.push(subst_type(m.decl.params.get(j).typ, m.params, own));
+                            j = j + 1;
+                        }
+                    }
+                    i = i + 1;
+                }
+                var targs = self.infer_type_args(name, params, expected, patterns, args, ns.pos);
+                named_of(self.instantiate_type(name, targs, ns.pos))
+            },
+            _ => {
+                self.fail(ns.pos, "expected a type name before `::`");
+                ""
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Variables
+    // -----------------------------------------------------------------------
+
+    func push_scope(self: &Checker) {
+        self.scopes.push(Map::new());
+    }
+
+    func pop_scope(self: &Checker) {
+        self.scopes.pop();
+    }
+
+    func declare_var(self: &Checker, name: str, typ: Type, mutable: bool): str {
+        self.var_counter = self.var_counter + 1;
+        var ir = concat3(name, ".", int_to_str(self.var_counter));
+        self.scopes.data[self.scopes.len - 1].insert(name, VarInfo { typ: typ, mutable: mutable, ir: ir });
+        return ir;
+    }
+
+    func lookup_var(self: &Checker, name: str): Option<VarInfo> {
+        var i = self.scopes.len - 1;
+        while i >= 0 {
+            var found = self.scopes.get(i).get(name);
+            if found.is_some() {
+                return found;
+            }
+            i = i - 1;
+        }
+        return Option::None;
+    }
+
+    // -----------------------------------------------------------------------
+    // Functions and statements
+    // -----------------------------------------------------------------------
+
+    func check_function(self: &Checker, f: &FuncDecl) {
+        self.scopes = Vec::new();
+        self.push_scope();
+        self.var_counter = 0;
+        self.loop_depth = 0;
+        f.params = self.resolve_params(f.params, f.pos);
+        f.ret = self.resolve_type(f.ret, f.pos);
+        self.current_return = f.ret;
+        var i = 0;
+        while i < f.params.len {
+            var p = f.params.get(i);
+            self.scopes.data[self.scopes.len - 1].insert(p.name, VarInfo { typ: p.typ, mutable: false, ir: concat("p.", p.name) });
+            i = i + 1;
+        }
+        self.check_block(f.body);
+        if !is_void(f.ret) && !always_returns(f.body) {
+            self.fail(f.pos, concat3("function `", f.name, "` might not return a value"));
+        }
+        self.out_funcs.push(f);
+    }
+
+    func check_block(self: &Checker, body: Vec<&Stmt>) {
+        self.push_scope();
+        var i = 0;
+        while i < body.len {
+            self.check_stmt(body.get(i));
+            i = i + 1;
+        }
+        self.pop_scope();
+    }
+
+    func check_stmt(self: &Checker, s: &Stmt) {
+        match s.kind {
+            StmtKind::VarDecl(name, mutable, annotation, value) => {
+                var declared = self.resolve_type(annotation, s.pos);
+                var t = self.check_expr(value, declared);
+                if is_void(t) {
+                    self.fail(value.pos, "this expression has no value");
+                }
+                if !is_infer(declared) {
+                    self.expect_assignable(declared, t, value);
+                    t = declared;
+                }
+                s.typ = t;
+                s.ir_name = self.declare_var(name, t, mutable);
+            },
+            StmtKind::Assign(target, value) => {
+                match target.kind {
+                    ExprKind::Ident(name) => {
+                        match self.lookup_var(name) {
+                            Option::Some(info) => {
+                                if !info.mutable {
+                                    self.fail(target.pos, "cannot assign to a constant or parameter");
+                                }
+                            },
+                            Option::None => {},
+                        }
+                    },
+                    _ => {},
+                }
+                var t = self.check_expr(target, Type::Infer);
+                match target.kind {
+                    ExprKind::Local(_) => {},
+                    ExprKind::FieldAt(_, _) => {},
+                    ExprKind::Index(_, _) => {},
+                    ExprKind::Deref(_) => {},
+                    _ => { self.fail(target.pos, "cannot assign to this expression"); },
+                }
+                var vt = self.check_expr(value, t);
+                self.expect_assignable(t, vt, value);
+            },
+            StmtKind::ExprStmt(e) => { self.check_expr(e, Type::Infer); },
+            StmtKind::Return(value) => {
+                match value {
+                    Option::None => {
+                        if !is_void(self.current_return) {
+                            self.fail(s.pos, concat("missing return value of type ", mangle(self.current_return)));
+                        }
+                    },
+                    Option::Some(v) => {
+                        if is_void(self.current_return) {
+                            self.fail(s.pos, "this function doesn't return a value");
+                        }
+                        var t = self.check_expr(v, self.current_return);
+                        self.expect_assignable(self.current_return, t, v);
+                    },
+                }
+            },
+            StmtKind::If(cond, then_body, else_body) => {
+                self.check_condition(cond);
+                self.check_block(then_body);
+                self.check_block(else_body);
+            },
+            StmtKind::Loop(cond, body) => {
+                match cond {
+                    Option::Some(c) => { self.check_condition(c); },
+                    Option::None => {},
+                }
+                self.loop_depth = self.loop_depth + 1;
+                self.check_block(body);
+                self.loop_depth = self.loop_depth - 1;
+            },
+            StmtKind::Break => {
+                if self.loop_depth == 0 {
+                    self.fail(s.pos, "`break` outside a loop");
+                }
+            },
+            StmtKind::Continue => {
+                if self.loop_depth == 0 {
+                    self.fail(s.pos, "`continue` outside a loop");
+                }
+            },
+        }
+    }
+
+    func check_condition(self: &Checker, cond: &Expr) {
+        var t = self.check_expr(cond, Type::Bool);
+        if !is_bool(t) {
+            self.fail(cond.pos, concat("condition must be a bool, found ", mangle(t)));
+        }
+    }
+
+    func expect_assignable(self: &Checker, expected: Type, got: Type, e: &Expr) {
+        if !assignable(expected, got, e) {
+            self.fail(e.pos, concat3("expected ", mangle(expected), concat(", found ", mangle(got))));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Expressions
+    // -----------------------------------------------------------------------
+
+    // Check `e`, which should have type `expected` if that isn't Infer, and
+    // return its type
+    func check_expr(self: &Checker, e: &Expr, expected: Type): Type {
+        var t = self.check_expr_kind(e, expected);
+        e.typ = t;
+        return t;
+    }
+
+    func check_expr_kind(self: &Checker, e: &Expr, expected: Type): Type {
+        match e.kind {
+            ExprKind::IntLit(_) => {
+                if is_integer(expected) {
+                    return expected;
+                }
+                return Type::Int;
+            },
+            ExprKind::FloatLit(_) => {
+                if is_float(expected) {
+                    return expected;
+                }
+                return Type::Float;
+            },
+            ExprKind::BoolLit(_) => { return Type::Bool; },
+            ExprKind::StrLit(_) => { return Type::Str; },
+            ExprKind::Null => { return Type::Str; },
+            ExprKind::Ident(name) => {
+                match self.lookup_var(name) {
+                    Option::Some(v) => {
+                        e.kind = ExprKind::Local(v.ir);
+                        return v.typ;
+                    },
+                    Option::None => {},
+                }
+                match self.globals.get(name) {
+                    Option::Some(t) => {
+                        e.kind = ExprKind::Global(name);
+                        return t;
+                    },
+                    Option::None => {},
+                }
+                self.fail(e.pos, concat3("unknown variable `", name, "`"));
+                return Type::Infer;
+            },
+            ExprKind::Binary(op, l, r) => { return self.check_binary(e, op, l, r, expected); },
+            ExprKind::Unary(op, x) => {
+                if op == UnOp::Not {
+                    var t = self.check_expr(x, Type::Bool);
+                    if !is_bool(t) {
+                        self.fail(x.pos, "`!` needs a bool");
+                    }
+                    return Type::Bool;
+                }
+                var t = self.check_expr(x, expected);
+                if op == UnOp::Neg && !is_integer(t) && !is_float(t) {
+                    self.fail(x.pos, "`-` needs a number");
+                }
+                if op == UnOp::BitNot && !is_integer(t) {
+                    self.fail(x.pos, "`~` needs an integer");
+                }
+                return t;
+            },
+            ExprKind::AddrOf(x) => {
+                var inner_expected = match expected {
+                    Type::Ptr(inner) => inner,
+                    _ => Type::Infer,
+                };
+                return Type::Ptr(self.check_expr(x, inner_expected));
+            },
+            ExprKind::Call(callee, args) => { return self.check_call(e, callee, args, expected); },
+            ExprKind::Index(a, i) => {
+                var at = self.check_expr(a, Type::Infer);
+                var it = self.check_expr(i, Type::Int);
+                if !is_integer(it) {
+                    self.fail(i.pos, "index must be an integer");
+                }
+                return match at {
+                    Type::Ptr(inner) => inner,
+                    Type::Array(inner, _) => inner,
+                    Type::Str => Type::SInt(8),
+                    _ => {
+                        self.fail(a.pos, concat("cannot index a value of type ", mangle(at)));
+                        Type::Infer
+                    },
+                };
+            },
+            ExprKind::Field(obj, name) => {
+                var t = self.check_expr(obj, Type::Infer);
+                var info = self.struct_of(t);
+                if info == null {
+                    self.fail(e.pos, concat3("type ", mangle(t), concat3(" has no field `", name, "`")));
+                }
+                var i = 0;
+                while i < info.fields.len {
+                    if str_eq(info.fields.get(i).name, name) {
+                        e.kind = ExprKind::FieldAt(obj, i);
+                        return info.fields.get(i).typ;
+                    }
+                    i = i + 1;
+                }
+                self.fail(e.pos, concat3(info.name, " has no field ", name));
+                return Type::Infer;
+            },
+            ExprKind::Path(ns, member) => {
+                var type_name = self.resolve_namespace(ns, member, Vec::new(), expected);
+                var info = self.enum_named(type_name);
+                if info == null {
+                    self.fail(e.pos, concat3("`", type_name, "` is not an enum"));
+                }
+                var tag = self.variant_tag(info, member, e.pos);
+                if info.payloads.get(tag).len > 0 {
+                    self.fail(e.pos, concat3("variant `", member, "` needs a payload"));
+                }
+                e.kind = ExprKind::EnumValue(type_name, tag, Vec::new());
+                return Type::Named(type_name);
+            },
+            ExprKind::Turbofish(_, _) => {
+                self.fail(e.pos, "type arguments must be followed by a call, `::` or `{`");
+                return Type::Infer;
+            },
+            ExprKind::StructLit(name, fields) => { return self.check_struct_lit(e, name, fields, expected); },
+            ExprKind::ArrayLit(items) => {
+                if items.len == 0 {
+                    self.fail(e.pos, "empty array literals are not supported");
+                }
+                var elem_expected = match expected {
+                    Type::Array(inner, _) => inner,
+                    _ => Type::Infer,
+                };
+                var first = self.check_expr(items.get(0), elem_expected);
+                var i = 1;
+                while i < items.len {
+                    var t = self.check_expr(items.get(i), first);
+                    self.expect_assignable(first, t, items.get(i));
+                    i = i + 1;
+                }
+                return Type::Array(first, items.len);
+            },
+            ExprKind::Cast(x, t) => {
+                self.check_expr(x, Type::Infer);
+                var target = self.resolve_type(t, e.pos);
+                e.kind = ExprKind::Cast(x, target);
+                return target;
+            },
+            ExprKind::SizeOf(t) => {
+                var target = self.resolve_type(t, e.pos);
+                e.kind = ExprKind::SizeOf(target);
+                return Type::Int;
+            },
+            ExprKind::Alloc(x) => {
+                if !is_struct_lit(x) {
+                    self.fail(e.pos, "alloc needs a struct literal");
+                }
+                var inner_expected = match expected {
+                    Type::Ptr(inner) => inner,
+                    _ => Type::Infer,
+                };
+                return Type::Ptr(self.check_expr(x, inner_expected));
+            },
+            ExprKind::Match(scrutinee, arms) => { return self.check_match(e, scrutinee, arms, expected); },
+            ExprKind::Block(stmts, value) => {
+                self.push_scope();
+                var i = 0;
+                while i < stmts.len {
+                    self.check_stmt(stmts.get(i));
+                    i = i + 1;
+                }
+                var t = match value {
+                    Option::Some(v) => self.check_expr(v, expected),
+                    Option::None => Type::Void,
+                };
+                self.pop_scope();
+                return t;
+            },
+            _ => {
+                // Already resolved (shared nodes such as `[x; n]` elements)
+                return e.typ;
+            },
+        }
+    }
+
+    func check_binary(self: &Checker, e: &Expr, op: BinOp, l: &Expr, r: &Expr, expected: Type): Type {
+        if op == BinOp::And || op == BinOp::Or {
+            var lt = self.check_expr(l, Type::Bool);
+            var rt = self.check_expr(r, Type::Bool);
+            if !is_bool(lt) || !is_bool(rt) {
+                self.fail(e.pos, "`&&` and `||` need bools");
+            }
+            return Type::Bool;
+        }
+        var arithmetic = op == BinOp::Add || op == BinOp::Sub || op == BinOp::Mul || op == BinOp::Div || op == BinOp::Mod;
+        var bitwise = op == BinOp::BitAnd || op == BinOp::BitOr || op == BinOp::BitXor || op == BinOp::Shl || op == BinOp::Shr;
+
+        // Integer literals take the type of the other operand
+        var lt = Type::Infer;
+        var rt = Type::Infer;
+        var hint = Type::Infer;
+        if arithmetic || bitwise {
+            hint = expected;
+        }
+        if is_int_literal(l) && !is_int_literal(r) {
+            rt = self.check_expr(r, hint);
+            lt = self.check_expr(l, rt);
+        } else {
+            lt = self.check_expr(l, hint);
+            rt = self.check_expr(r, lt);
+        }
+
+        if arithmetic || bitwise {
+            var ok = is_integer(lt) || (arithmetic && is_float(lt));
+            if !ok {
+                self.fail(e.pos, concat("cannot use this operator on ", mangle(lt)));
+            }
+            if !type_eq(lt, rt) {
+                self.fail(e.pos, concat3("mismatched types ", mangle(lt), concat(" and ", mangle(rt))));
+            }
+            return lt;
+        }
+
+        // Comparisons
+        var comparable = is_integer(lt) || is_float(lt) || is_pointer_like(lt);
+        if op == BinOp::Eq || op == BinOp::Ne {
+            if is_bool(lt) {
+                comparable = true;
+            }
+            var info = self.enum_named(named_of(lt));
+            if info != null && !info.boxed {
+                comparable = true;
+            }
+        }
+        if !comparable {
+            self.fail(e.pos, concat("cannot compare values of type ", mangle(lt)));
+        }
+        var same = type_eq(lt, rt) || (is_pointer_like(lt) && is_pointer_like(rt)) || (is_integer(lt) && is_integer(rt));
+        if !same {
+            self.fail(e.pos, concat3("mismatched types ", mangle(lt), concat(" and ", mangle(rt))));
+        }
+        return Type::Bool;
+    }
+
+    func enum_named(self: &Checker, name: str): &EnumInfo {
+        var found = self.enums.get(name);
+        if found.is_none() {
+            return null;
+        }
+        return found.unwrap();
+    }
+
+    // The signature for `symbol`, or an error mentioning `what`
+    func sig_for(self: &Checker, symbol: str, what: str, pos: int): &FuncSig {
+        var found = self.funcs.get(symbol);
+        if found.is_none() {
+            self.fail(pos, what);
+        }
+        return found.unwrap();
+    }
+
+    func variant_tag(self: &Checker, info: &EnumInfo, variant: str, pos: int): int {
+        var i = 0;
+        while i < info.variants.len {
+            if str_eq(info.variants.get(i), variant) {
+                return i;
+            }
+            i = i + 1;
+        }
+        self.fail(pos, concat3(info.name, " has no variant ", variant));
+        return 0;
+    }
+
+    func check_args(self: &Checker, sig: &FuncSig, args: Vec<&Expr>, first_param: int, pos: int) {
+        var expected_count = sig.params.len - first_param;
+        if args.len < expected_count || (!sig.is_varargs && args.len != expected_count) {
+            self.fail(pos, concat3("`", sig.symbol, concat3("` takes ", int_to_str(expected_count), concat(" arguments, got ", int_to_str(args.len)))));
+        }
+        var i = 0;
+        while i < args.len {
+            var arg = args.get(i);
+            if first_param + i < sig.params.len {
+                var param = sig.params.get(first_param + i);
+                var t = self.check_expr(arg, param);
+                self.expect_assignable(param, t, arg);
+            } else {
+                var t = self.check_expr(arg, Type::Infer);
+                if is_void(t) {
+                    self.fail(arg.pos, "this expression has no value");
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    func check_call(self: &Checker, e: &Expr, callee: &Expr, args: Vec<&Expr>, expected: Type): Type {
+        match callee.kind {
+            ExprKind::Ident(name) => {
+                var symbol = name;
+                if self.generic_funcs.contains(name) && self.lookup_var(name).is_none() {
+                    var decl = self.generic_funcs.get(name).unwrap();
+                    var patterns: Vec<Type> = Vec::new();
+                    var i = 0;
+                    while i < decl.params.len {
+                        patterns.push(decl.params.get(i).typ);
+                        i = i + 1;
+                    }
+                    var targs = self.infer_type_args(name, decl.type_params, Type::Infer, patterns, args, e.pos);
+                    symbol = self.instantiate_function(name, targs, e.pos);
+                }
+                var sig = self.sig_for(symbol, concat3("unknown function `", name, "`"), callee.pos);
+                self.check_args(sig, args, 0, e.pos);
+                e.kind = ExprKind::CallFn(sig.symbol, args);
+                return sig.ret;
+            },
+            ExprKind::Turbofish(name, targs) => {
+                if !self.generic_funcs.contains(name) {
+                    self.fail(callee.pos, concat3("`", name, "` is not a generic function"));
+                }
+                var resolved: Vec<Type> = Vec::new();
+                var i = 0;
+                while i < targs.len {
+                    resolved.push(self.resolve_type(targs.get(i), callee.pos));
+                    i = i + 1;
+                }
+                var sig = self.funcs.get(self.instantiate_function(name, resolved, e.pos)).unwrap();
+                self.check_args(sig, args, 0, e.pos);
+                e.kind = ExprKind::CallFn(sig.symbol, args);
+                return sig.ret;
+            },
+            ExprKind::Path(ns, member) => {
+                var type_name = self.resolve_namespace(ns, member, args, expected);
+                var info = self.enum_named(type_name);
+                if info != null {
+                    // Constructing an enum variant with a payload
+                    var tag = self.variant_tag(info, member, e.pos);
+                    var payload = info.payloads.get(tag);
+                    if payload.len != args.len {
+                        self.fail(e.pos, concat3("variant `", member, concat3("` takes ", int_to_str(payload.len), " values")));
+                    }
+                    var i = 0;
+                    while i < args.len {
+                        var t = self.check_expr(args.get(i), payload.get(i));
+                        self.expect_assignable(payload.get(i), t, args.get(i));
+                        i = i + 1;
+                    }
+                    e.kind = ExprKind::EnumValue(type_name, tag, args);
+                    return Type::Named(type_name);
+                }
+                self.instantiate_method(type_name, member);
+                var symbol = concat3(type_name, ".", member);
+                var sig = self.sig_for(symbol, concat3("unknown function `", concat3(type_name, "::", member), "`"), callee.pos);
+                self.check_args(sig, args, 0, e.pos);
+                e.kind = ExprKind::CallFn(symbol, args);
+                return sig.ret;
+            },
+            ExprKind::Field(obj, method) => {
+                var t = self.check_expr(obj, Type::Infer);
+                var receiver_is_ptr = false;
+                var type_name = named_of(t);
+                match t {
+                    Type::Ptr(inner) => {
+                        receiver_is_ptr = true;
+                        type_name = named_of(inner);
+                    },
+                    _ => {},
+                }
+                self.instantiate_method(type_name, method);
+                var symbol = concat3(type_name, ".", method);
+                var sig = self.sig_for(symbol, concat3("no method `", method, concat("` on ", mangle(t))), callee.pos);
+                if sig.params.len == 0 {
+                    self.fail(callee.pos, concat3("`", method, "` is not a method"));
+                }
+                // Pass the receiver by pointer or by value, as the method wants
+                var receiver = obj;
+                var self_is_ptr = match sig.params.get(0) {
+                    Type::Ptr(_) => true,
+                    _ => false,
+                };
+                if self_is_ptr && !receiver_is_ptr {
+                    receiver = new_expr(ExprKind::AddrOf(obj), obj.pos);
+                    receiver.typ = Type::Ptr(t);
+                } else if !self_is_ptr && receiver_is_ptr {
+                    receiver = new_expr(ExprKind::Deref(obj), obj.pos);
+                    receiver.typ = Type::Named(type_name);
+                }
+                self.check_args(sig, args, 1, e.pos);
+                var all_args: Vec<&Expr> = Vec::new();
+                all_args.push(receiver);
+                var i = 0;
+                while i < args.len {
+                    all_args.push(args.get(i));
+                    i = i + 1;
+                }
+                e.kind = ExprKind::CallFn(symbol, all_args);
+                return sig.ret;
+            },
+            _ => {
+                self.fail(callee.pos, "this can't be called");
+                return Type::Infer;
+            },
+        }
+    }
+
+    func check_struct_lit(self: &Checker, e: &Expr, name_expr: &Expr, fields: Vec<FieldInit>, expected: Type): Type {
+        var name = match name_expr.kind {
+            ExprKind::Ident(n) => n,
+            ExprKind::Turbofish(n, _) => n,
+            _ => "",
+        };
+        match name_expr.kind {
+            ExprKind::Turbofish(_, targs) => {
+                var resolved: Vec<Type> = Vec::new();
+                var i = 0;
+                while i < targs.len {
+                    resolved.push(self.resolve_type(targs.get(i), name_expr.pos));
+                    i = i + 1;
+                }
+                name = named_of(self.instantiate_type(name, resolved, name_expr.pos));
+            },
+            _ => {
+                match self.generic_structs.get(name) {
+                    Option::Some(decl) => {
+                        var patterns: Vec<Type> = Vec::new();
+                        var values: Vec<&Expr> = Vec::new();
+                        var i = 0;
+                        while i < fields.len {
+                            var f = fields.get(i);
+                            var j = 0;
+                            while j < decl.fields.len {
+                                if str_eq(decl.fields.get(j).name, f.name) {
+                                    patterns.push(decl.fields.get(j).typ);
+                                    values.push(f.value);
+                                }
+                                j = j + 1;
+                            }
+                            i = i + 1;
+                        }
+                        var targs = self.infer_type_args(name, decl.type_params, expected, patterns, values, e.pos);
+                        name = named_of(self.instantiate_type(name, targs, e.pos));
+                    },
+                    Option::None => {
+                        match self.aliases.get(name) {
+                            Option::Some(target) => { name = named_of(self.resolve_type(target, e.pos)); },
+                            Option::None => {},
+                        }
+                    },
+                }
+            },
+        }
+        var found = self.structs.get(name);
+        if found.is_none() {
+            self.fail(e.pos, concat3("unknown struct `", name, "`"));
+        }
+        var info = found.unwrap();
+        var i = 0;
+        while i < fields.len {
+            var f = fields.get(i);
+            var known = false;
+            var j = 0;
+            while j < info.fields.len {
+                if str_eq(info.fields.get(j).name, f.name) {
+                    known = true;
+                }
+                j = j + 1;
+            }
+            if !known {
+                self.fail(f.pos, concat3(name, " has no field ", f.name));
+            }
+            i = i + 1;
+        }
+        // Fields are evaluated in declaration order
+        var values: Vec<&Expr> = Vec::new();
+        i = 0;
+        while i < info.fields.len {
+            var field = info.fields.get(i);
+            var value: &Expr = null;
+            var j = 0;
+            while j < fields.len {
+                if str_eq(fields.get(j).name, field.name) {
+                    value = fields.get(j).value;
+                }
+                j = j + 1;
+            }
+            if value == null {
+                self.fail(e.pos, concat3("missing field `", field.name, concat3("` in ", name, "")));
+            }
+            var t = self.check_expr(value, field.typ);
+            self.expect_assignable(field.typ, t, value);
+            values.push(value);
+            i = i + 1;
+        }
+        e.kind = ExprKind::StructValue(name, values);
+        return Type::Named(name);
+    }
+
+    func check_match(self: &Checker, e: &Expr, scrutinee: &Expr, arms: Vec<&MatchArm>, expected: Type): Type {
+        var st = self.check_expr(scrutinee, Type::Infer);
+        var enum_name = named_of(st);
+        var info = self.enum_named(enum_name);
+        var is_int = is_integer(st);
+        if !is_int && info == null {
+            self.fail(scrutinee.pos, concat("cannot match on a value of type ", mangle(st)));
+        }
+        var generic_name = match self.instances.get(enum_name) {
+            Option::Some(inst) => inst.generic,
+            Option::None => "",
+        };
+
+        var result = Type::Infer;
+        var has_wildcard = false;
+        var covered: Map<bool> = Map::new();
+        var i = 0;
+        while i < arms.len {
+            var arm = arms.get(i);
+            self.push_scope();
+            match arm.pattern {
+                Pattern::Wildcard => { has_wildcard = true; },
+                Pattern::IntValue(value) => {
+                    if !is_int {
+                        self.fail(arm.pos, "integer pattern on a non-integer value");
+                    }
+                    arm.tag = value;
+                },
+                Pattern::Variant(pat_enum, variant, bindings) => {
+                    if info == null || (!str_eq(pat_enum, enum_name) && !str_eq(pat_enum, generic_name)) {
+                        self.fail(arm.pos, concat3("pattern doesn't match a value of type ", mangle(st), ""));
+                    }
+                    var tag = self.variant_tag(info, variant, arm.pos);
+                    covered.insert(variant, true);
+                    arm.enum_name = enum_name;
+                    arm.tag = tag;
+                    var payload = info.payloads.get(tag);
+                    if bindings.len > 0 && bindings.len != payload.len {
+                        self.fail(arm.pos, concat3("variant `", variant, concat3("` has ", int_to_str(payload.len), " values")));
+                    }
+                    var names: Vec<str> = Vec::new();
+                    var j = 0;
+                    while j < bindings.len {
+                        var b = bindings.get(j);
+                        if str_eq(b, "_") {
+                            names.push("_");
+                        } else {
+                            names.push(self.declare_var(b, payload.get(j), false));
+                        }
+                        j = j + 1;
+                    }
+                    arm.bindings = names;
+                },
+            }
+            var t = self.check_expr(arm.body, expected);
+            self.pop_scope();
+            // Arms that always return don't produce a value; arms of different
+            // types make the match a statement
+            if !arm_diverges(arm) {
+                if is_infer(result) {
+                    result = t;
+                } else if !type_eq(result, t) {
+                    result = Type::Void;
+                }
+            }
+            i = i + 1;
+        }
+        if info != null && !has_wildcard {
+            i = 0;
+            while i < info.variants.len {
+                if !covered.contains(info.variants.get(i)) {
+                    self.fail(e.pos, concat3("match doesn't cover variant `", info.variants.get(i), "`"));
+                }
+                i = i + 1;
+            }
+        }
+        if is_infer(result) {
+            result = Type::Void;
+        }
+        return result;
+    }
+}
+
+func arm_diverges(arm: &MatchArm): bool {
+    return match arm.body.kind {
+        ExprKind::Block(stmts, value) => value.is_none() && always_returns(stmts),
+        _ => false,
+    };
+}
+
+func is_struct_lit(e: &Expr): bool {
+    return match e.kind {
+        ExprKind::StructLit(_, _) => true,
+        _ => false,
+    };
+}

@@ -1,0 +1,343 @@
+// Syntax tree and types.
+//
+// Expression, statement and declaration nodes are heap allocated and mutable:
+// the checker annotates each expression with its type and rewrites nodes into
+// simpler, fully resolved forms for the code generator.
+
+enum Type {
+    Int,
+    SInt(int),
+    UInt(int),
+    Float,
+    SFloat(int),
+    Bool,
+    Str,
+    Void,
+    Infer,
+    Ptr(Type),
+    // Element type and size (-1 when not given)
+    Array(Type, int),
+    // A struct or enum (or a type parameter before substitution)
+    Named(str),
+    Generic(str, Vec<Type>),
+}
+
+enum BinOp { Add, Sub, Mul, Div, Mod, Pow, And, Or, Eq, Ne, Lt, Le, Gt, Ge, BitAnd, BitOr, BitXor, Shl, Shr }
+
+enum UnOp { Neg, Not, BitNot }
+
+struct Expr {
+    kind: ExprKind,
+    typ: Type,
+    pos: int,
+}
+
+struct FieldInit {
+    name: str,
+    value: &Expr,
+    pos: int,
+}
+
+enum ExprKind {
+    IntLit(int),
+    FloatLit(str),
+    BoolLit(bool),
+    StrLit(str),
+    Null,
+    Ident(str),
+    Binary(BinOp, &Expr, &Expr),
+    Unary(UnOp, &Expr),
+    AddrOf(&Expr),
+    Call(&Expr, Vec<&Expr>),
+    Index(&Expr, &Expr),
+    Field(&Expr, str),
+    // `ns::member`, where ns is an Ident or Turbofish
+    Path(&Expr, str),
+    // `Name::<Types>`
+    Turbofish(str, Vec<Type>),
+    StructLit(&Expr, Vec<FieldInit>),
+    ArrayLit(Vec<&Expr>),
+    Cast(&Expr, Type),
+    SizeOf(Type),
+    Alloc(&Expr),
+    Match(&Expr, Vec<&MatchArm>),
+    Block(Vec<&Stmt>, Option<&Expr>),
+
+    // Resolved forms produced by the checker
+    Local(str),
+    Global(str),
+    // Load through a pointer
+    Deref(&Expr),
+    // Call of a function by its symbol name
+    CallFn(str, Vec<&Expr>),
+    // Field by index
+    FieldAt(&Expr, int),
+    // Struct literal with its fields in declaration order
+    StructValue(str, Vec<&Expr>),
+    // Enum value: enum name, variant tag, payload
+    EnumValue(str, int, Vec<&Expr>),
+}
+
+enum Pattern {
+    Wildcard,
+    IntValue(int),
+    // Enum name, variant name, names bound to the payload ("_" ignores one)
+    Variant(str, str, Vec<str>),
+}
+
+struct MatchArm {
+    pattern: Pattern,
+    body: &Expr,
+    pos: int,
+    // Filled in by the checker
+    enum_name: str,
+    tag: int,
+    bindings: Vec<str>,
+}
+
+struct Stmt {
+    kind: StmtKind,
+    pos: int,
+    // For variable declarations: the unique name and type assigned by the checker
+    ir_name: str,
+    typ: Type,
+}
+
+enum StmtKind {
+    // name, mutable, type annotation (Infer if none), value
+    VarDecl(str, bool, Type, &Expr),
+    Assign(&Expr, &Expr),
+    ExprStmt(&Expr),
+    Return(Option<&Expr>),
+    If(&Expr, Vec<&Stmt>, Vec<&Stmt>),
+    // A `while` or `for` loop; no condition loops forever
+    Loop(Option<&Expr>, Vec<&Stmt>),
+    Break,
+    Continue,
+}
+
+struct Param {
+    name: str,
+    typ: Type,
+}
+
+struct FuncDecl {
+    name: str,
+    type_params: Vec<str>,
+    params: Vec<Param>,
+    ret: Type,
+    body: Vec<&Stmt>,
+    pos: int,
+    is_extern: bool,
+    is_varargs: bool,
+    // The symbol this function is emitted as (set by the checker)
+    symbol: str,
+}
+
+struct StructDecl {
+    name: str,
+    type_params: Vec<str>,
+    fields: Vec<Param>,
+    pos: int,
+}
+
+struct Variant {
+    name: str,
+    payload: Vec<Type>,
+}
+
+struct EnumDecl {
+    name: str,
+    type_params: Vec<str>,
+    variants: Vec<Variant>,
+    pos: int,
+}
+
+struct ImplDecl {
+    target: Type,
+    type_params: Vec<str>,
+    methods: Vec<&FuncDecl>,
+    pos: int,
+}
+
+struct GlobalDecl {
+    name: str,
+    typ: Type,
+    value: &Expr,
+    pos: int,
+}
+
+struct AliasDecl {
+    name: str,
+    typ: Type,
+    pos: int,
+}
+
+struct Program {
+    funcs: Vec<&FuncDecl>,
+    structs: Vec<&StructDecl>,
+    enums: Vec<&EnumDecl>,
+    impls: Vec<&ImplDecl>,
+    globals: Vec<&GlobalDecl>,
+    aliases: Vec<&AliasDecl>,
+}
+
+func new_expr(kind: ExprKind, pos: int): &Expr {
+    return alloc(Expr { kind: kind, typ: Type::Infer, pos: pos });
+}
+
+func new_stmt(kind: StmtKind, pos: int): &Stmt {
+    return alloc(Stmt { kind: kind, pos: pos, ir_name: "", typ: Type::Infer });
+}
+
+// ---------------------------------------------------------------------------
+// Type helpers
+// ---------------------------------------------------------------------------
+
+func type_from_name(name: str): Type {
+    if str_eq(name, "int") { return Type::Int; }
+    if str_eq(name, "i8") { return Type::SInt(8); }
+    if str_eq(name, "i16") { return Type::SInt(16); }
+    if str_eq(name, "i32") { return Type::SInt(32); }
+    if str_eq(name, "i64") { return Type::SInt(64); }
+    if str_eq(name, "u8") { return Type::UInt(8); }
+    if str_eq(name, "u16") { return Type::UInt(16); }
+    if str_eq(name, "u32") { return Type::UInt(32); }
+    if str_eq(name, "u64") { return Type::UInt(64); }
+    if str_eq(name, "float") { return Type::Float; }
+    if str_eq(name, "f32") { return Type::SFloat(32); }
+    if str_eq(name, "f64") { return Type::SFloat(64); }
+    if str_eq(name, "bool") { return Type::Bool; }
+    if str_eq(name, "str") { return Type::Str; }
+    if str_eq(name, "void") { return Type::Void; }
+    return Type::Named(name);
+}
+
+func mangle_into(t: Type, sb: &StringBuilder) {
+    match t {
+        Type::Int => { sb.append("int"); },
+        Type::SInt(bits) => {
+            sb.append("i");
+            sb.append_int(bits);
+        },
+        Type::UInt(bits) => {
+            sb.append("u");
+            sb.append_int(bits);
+        },
+        Type::Float => { sb.append("float"); },
+        Type::SFloat(bits) => {
+            sb.append("f");
+            sb.append_int(bits);
+        },
+        Type::Bool => { sb.append("bool"); },
+        Type::Str => { sb.append("str"); },
+        Type::Void => { sb.append("void"); },
+        Type::Infer => { sb.append("_"); },
+        Type::Ptr(inner) => {
+            sb.append("&");
+            mangle_into(inner, sb);
+        },
+        Type::Array(inner, size) => {
+            sb.append("[");
+            mangle_into(inner, sb);
+            if size >= 0 {
+                sb.append(";");
+                sb.append_int(size);
+            }
+            sb.append("]");
+        },
+        Type::Named(name) => { sb.append(name); },
+        Type::Generic(name, args) => {
+            sb.append(name);
+            sb.append("<");
+            var i = 0;
+            while i < args.len {
+                if i > 0 {
+                    sb.append(",");
+                }
+                mangle_into(args.get(i), sb);
+                i = i + 1;
+            }
+            sb.append(">");
+        },
+    }
+}
+
+// A unique readable name for a type: `int`, `&Node`, `Vec<Map<str>>`
+func mangle(t: Type): str {
+    var sb = StringBuilder::new();
+    mangle_into(t, &sb);
+    return sb.to_str();
+}
+
+func type_eq(a: Type, b: Type): bool {
+    return match a {
+        Type::Int => match b { Type::Int => true, _ => false, },
+        Type::SInt(x) => match b { Type::SInt(y) => x == y, _ => false, },
+        Type::UInt(x) => match b { Type::UInt(y) => x == y, _ => false, },
+        Type::Float => match b { Type::Float => true, _ => false, },
+        Type::SFloat(x) => match b { Type::SFloat(y) => x == y, _ => false, },
+        Type::Bool => match b { Type::Bool => true, _ => false, },
+        Type::Str => match b { Type::Str => true, _ => false, },
+        Type::Void => match b { Type::Void => true, _ => false, },
+        Type::Infer => match b { Type::Infer => true, _ => false, },
+        Type::Ptr(x) => match b { Type::Ptr(y) => type_eq(x, y), _ => false, },
+        Type::Array(x, n) => match b { Type::Array(y, m) => n == m && type_eq(x, y), _ => false, },
+        Type::Named(x) => match b { Type::Named(y) => str_eq(x, y), _ => false, },
+        Type::Generic(_, _) => str_eq(mangle(a), mangle(b)),
+    };
+}
+
+func is_integer(t: Type): bool {
+    return match t {
+        Type::Int => true,
+        Type::SInt(_) => true,
+        Type::UInt(_) => true,
+        _ => false,
+    };
+}
+
+func is_float(t: Type): bool {
+    return match t {
+        Type::Float => true,
+        Type::SFloat(_) => true,
+        _ => false,
+    };
+}
+
+func is_void(t: Type): bool {
+    return match t { Type::Void => true, _ => false, };
+}
+
+func is_infer(t: Type): bool {
+    return match t { Type::Infer => true, _ => false, };
+}
+
+func is_bool(t: Type): bool {
+    return match t { Type::Bool => true, _ => false, };
+}
+
+func is_pointer_like(t: Type): bool {
+    return match t {
+        Type::Ptr(_) => true,
+        Type::Str => true,
+        _ => false,
+    };
+}
+
+// Width in bits of an integer type
+func int_bits(t: Type): int {
+    return match t {
+        Type::SInt(bits) => bits,
+        Type::UInt(bits) => bits,
+        Type::Bool => 1,
+        _ => 64,
+    };
+}
+
+func named_of(t: Type): str {
+    return match t {
+        Type::Named(name) => name,
+        _ => "",
+    };
+}

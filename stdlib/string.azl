@@ -27,6 +27,7 @@ impl String {
     func substr(self: String, start: int, len: int): String {
         var buf = malloc(len + 1);
         memcpy(buf, ptr_add(self.data, start), len);
+        buf[len] = 0;
         return String { data: buf, len: len };
     }
 }
@@ -38,6 +39,7 @@ func read_file(path: str): String {
     fseek(f, 0, 0);
     var buf = malloc(size + 1);
     fread(buf, 1, size, f);
+    buf[size] = 0;
     fclose(f);
     return String { data: buf, len: size };
 }

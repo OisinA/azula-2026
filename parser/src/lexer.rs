@@ -30,6 +30,16 @@ impl<'a> Lexer<'a> {
 
     fn next_token(&mut self) -> Option<Token<'a>> {
         self.skip_whitespace();
+        // Skip comments (and any whitespace after them)
+        while self.input[self.index..].starts_with("//") {
+            while let Some(val) = self.peekable.peek() {
+                if *val == '\n' {
+                    break;
+                }
+                self.next();
+            }
+            self.skip_whitespace();
+        }
         let start = self.index;
         if let Some(char) = self.next() {
             return Some(match char {
@@ -412,7 +422,7 @@ mod tests {
             // a comment
             test
             ",
-            vec![Token::new(TokenKind::Comment, 13, 25), Token::new(TokenKind::Identifier("test"), 38, 42)],
+            vec![Token::new(TokenKind::Identifier("test"), 38, 42)],
         ),
         identifier: (
             "identifier_test",
