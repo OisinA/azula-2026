@@ -1,0 +1,5 @@
+// error: expected `}` to end the interpolated expression
+func main() {
+    var n = 1;
+    printf("%s\n", "n=${n n}");
+}

@@ -64,6 +64,8 @@ enum ExprKind {
     AllocIn(&Expr, &Expr);
     Match(&Expr, Vec<&MatchArm>);
     Block(Vec<&Stmt>, Option<&Expr>);
+    // `"a ${x} b"`: string literals and interpolated expressions
+    Interpolate(Vec<&Expr>);
 
     // Resolved forms produced by the checker
     Local(str);
@@ -202,21 +204,21 @@ func new_stmt(kind: StmtKind, pos: int): &Stmt {
 // ---------------------------------------------------------------------------
 
 func type_from_name(name: str): Type {
-    if str_eq(name, "int") { return Type::Int; }
-    if str_eq(name, "i8") { return Type::SInt(8); }
-    if str_eq(name, "i16") { return Type::SInt(16); }
-    if str_eq(name, "i32") { return Type::SInt(32); }
-    if str_eq(name, "i64") { return Type::SInt(64); }
-    if str_eq(name, "u8") { return Type::UInt(8); }
-    if str_eq(name, "u16") { return Type::UInt(16); }
-    if str_eq(name, "u32") { return Type::UInt(32); }
-    if str_eq(name, "u64") { return Type::UInt(64); }
-    if str_eq(name, "float") { return Type::Float; }
-    if str_eq(name, "f32") { return Type::SFloat(32); }
-    if str_eq(name, "f64") { return Type::SFloat(64); }
-    if str_eq(name, "bool") { return Type::Bool; }
-    if str_eq(name, "str") { return Type::Str; }
-    if str_eq(name, "void") { return Type::Void; }
+    if name == "int" { return Type::Int; }
+    if name == "i8" { return Type::SInt(8); }
+    if name == "i16" { return Type::SInt(16); }
+    if name == "i32" { return Type::SInt(32); }
+    if name == "i64" { return Type::SInt(64); }
+    if name == "u8" { return Type::UInt(8); }
+    if name == "u16" { return Type::UInt(16); }
+    if name == "u32" { return Type::UInt(32); }
+    if name == "u64" { return Type::UInt(64); }
+    if name == "float" { return Type::Float; }
+    if name == "f32" { return Type::SFloat(32); }
+    if name == "f64" { return Type::SFloat(64); }
+    if name == "bool" { return Type::Bool; }
+    if name == "str" { return Type::Str; }
+    if name == "void" { return Type::Void; }
     return Type::Named(name);
 }
 
@@ -290,8 +292,8 @@ func type_eq(a: Type, b: Type): bool {
         Type::Infer => match b { Type::Infer => true, _ => false, },
         Type::Ptr(x) => match b { Type::Ptr(y) => type_eq(x, y), _ => false, },
         Type::Array(x, n) => match b { Type::Array(y, m) => n == m && type_eq(x, y), _ => false, },
-        Type::Named(x) => match b { Type::Named(y) => str_eq(x, y), _ => false, },
-        Type::Generic(_, _) => str_eq(mangle(a), mangle(b)),
+        Type::Named(x) => match b { Type::Named(y) => x == y, _ => false, },
+        Type::Generic(_, _) => mangle(a) == mangle(b),
     };
 }
 

@@ -186,6 +186,10 @@ impl<'a> Lexer<'a> {
                                 self.next();
                                 self.next()
                             }
+                            '$' if self.input[self.index..].starts_with("${") => {
+                                self.skip_interpolation();
+                                None
+                            }
                             _ => self.next(),
                         };
                     }
@@ -260,6 +264,41 @@ impl<'a> Lexer<'a> {
         }
 
         None
+    }
+
+    /// Skip a `${ ... }` inside a string literal (which may itself contain
+    /// braces and string literals)
+    fn skip_interpolation(&mut self) {
+        self.next(); // $
+        self.next(); // {
+        let mut depth = 1;
+        while depth > 0 {
+            match self.next() {
+                Some('{') => depth += 1,
+                Some('}') => depth -= 1,
+                Some('"') => {
+                    while let Some(c) = self.next() {
+                        if c == '\\' {
+                            self.next();
+                        } else if c == '"' {
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+    }
+
+    /// A lexer over `input` starting at byte `offset` (so token positions
+    /// are relative to the whole input)
+    pub fn at(input: &'a str, offset: usize) -> Self {
+        Self {
+            input,
+            peekable: input[offset..].chars().peekable(),
+            index: offset,
+        }
     }
 
     fn skip_whitespace(&mut self) {

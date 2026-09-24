@@ -73,7 +73,7 @@ func main {
 func first_index(list: Vec<str>, word: str): int {
     var i = 0;
     while i < list.length() {
-        if strcmp(list.get(i), word) == 0 {
+        if list.get(i) == word {
             return i;
         }
         i += 1;

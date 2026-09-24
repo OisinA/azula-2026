@@ -984,6 +984,7 @@ impl<'a> Typechecker<'a> {
                     return Err("invalid assignment target".to_string());
                 }
             }
+            let original_target = target.clone();
             let combined = ExpressionNode {
                 expression: Expression::Infix(Rc::new(target), op, Rc::new(value)),
                 typed: AzulaType::Infer,
@@ -1004,6 +1005,9 @@ impl<'a> Typechecker<'a> {
                     AzulaType::Void,
                 ));
             }
+            // `s += t` on strings: the checker rewrote the operator into a call
+            let (checked_target, _) = self.typecheck_expression(original_target, env)?;
+            return Ok((Statement::Reassign(checked_target, checked, span), AzulaType::Void));
         }
         unreachable!()
     }
@@ -1111,6 +1115,7 @@ impl<'a> Typechecker<'a> {
         let expected = self.expected.take();
         match expr.expression {
             Expression::Infix(..) => self.typecheck_infix_expression(expr, env),
+            Expression::Interpolation(parts) => self.typecheck_interpolation(parts, expr.span, env),
             Expression::Integer(_) => {
                 expr.typed = AzulaType::Int;
                 Ok((expr.clone(), AzulaType::Int))
@@ -2126,14 +2131,171 @@ impl<'a> Typechecker<'a> {
         unreachable!()
     }
 
+    /// Typecheck a call to a stdlib helper on unchecked arguments
+    fn typecheck_helper_call(
+        &mut self,
+        name: &str,
+        args: Vec<ExpressionNode<'a>>,
+        span: &Span,
+        env: &Environment<'a>,
+    ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
+        let call = ExpressionNode {
+            expression: Expression::FunctionCall {
+                function: Rc::new(ExpressionNode {
+                    expression: Expression::Identifier(name.to_string()),
+                    typed: AzulaType::Infer,
+                    span: span.clone(),
+                }),
+                args,
+            },
+            typed: AzulaType::Infer,
+            span: span.clone(),
+        };
+        self.typecheck_expression(call, env)
+    }
+
+    /// `"a ${x} b"` joins its parts with str_concat, converting each
+    /// interpolated value to a string first
+    fn typecheck_interpolation(
+        &mut self,
+        parts: Vec<ExpressionNode<'a>>,
+        span: Span,
+        env: &Environment<'a>,
+    ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
+        let mut result: Option<ExpressionNode<'a>> = None;
+        for part in parts {
+            let part_span = part.span.clone();
+            let (_, typ) = self.typecheck_expression(part.clone(), env)?;
+            let converted = match &typ {
+                AzulaType::Str => part,
+                AzulaType::Bool => self.helper_call_node("str_from_bool", part),
+                t if is_float_type(t) => self.helper_call_node(
+                    "str_from_float",
+                    ExpressionNode { expression: Expression::Cast(Rc::new(part), AzulaType::Float), typed: AzulaType::Infer, span: part_span.clone() },
+                ),
+                t if is_integer_type(t) => self.helper_call_node(
+                    "str_from_int",
+                    ExpressionNode { expression: Expression::Cast(Rc::new(part), AzulaType::Int), typed: AzulaType::Infer, span: part_span.clone() },
+                ),
+                _ => {
+                    let has_to_str = self.type_has_method(&typ, "to_str");
+                    if !has_to_str {
+                        self.error(
+                            format!("Can't interpolate a value of type {}; it needs a `to_str()` method", typ.mangle()),
+                            &part_span,
+                        );
+                        return Err("can't interpolate".to_string());
+                    }
+                    ExpressionNode {
+                        expression: Expression::FunctionCall {
+                            function: Rc::new(ExpressionNode {
+                                expression: Expression::StructAccess(
+                                    Rc::new(part),
+                                    Rc::new(ExpressionNode {
+                                        expression: Expression::Identifier("to_str".to_string()),
+                                        typed: AzulaType::Infer,
+                                        span: part_span.clone(),
+                                    }),
+                                ),
+                                typed: AzulaType::Infer,
+                                span: part_span.clone(),
+                            }),
+                            args: vec![],
+                        },
+                        typed: AzulaType::Infer,
+                        span: part_span.clone(),
+                    }
+                }
+            };
+            result = Some(match result {
+                None => converted,
+                Some(acc) => self.helper_call_node_2("str_concat", acc, converted, &span),
+            });
+        }
+        let node = result.unwrap_or(ExpressionNode { expression: Expression::String(String::new()), typed: AzulaType::Infer, span: span.clone() });
+        let (checked, typ) = self.typecheck_expression(node, env)?;
+        if typ != AzulaType::Str {
+            self.error(format!("`to_str()` must return str, not {}", typ.mangle()), &span);
+            return Err("bad to_str".to_string());
+        }
+        Ok((checked, typ))
+    }
+
+    fn type_has_method(&self, typ: &AzulaType<'a>, method: &str) -> bool {
+        let typ = match typ {
+            AzulaType::Pointer(inner) => inner.as_ref(),
+            t => t,
+        };
+        self.namespaces.get(&typ.to_string()).map(|n| n.funcs.contains_key(method)).unwrap_or(false)
+    }
+
+    fn helper_call_node(&self, name: &str, arg: ExpressionNode<'a>) -> ExpressionNode<'a> {
+        let span = arg.span.clone();
+        ExpressionNode {
+            expression: Expression::FunctionCall {
+                function: Rc::new(ExpressionNode {
+                    expression: Expression::Identifier(name.to_string()),
+                    typed: AzulaType::Infer,
+                    span: span.clone(),
+                }),
+                args: vec![arg],
+            },
+            typed: AzulaType::Infer,
+            span,
+        }
+    }
+
+    fn helper_call_node_2(&self, name: &str, a: ExpressionNode<'a>, b: ExpressionNode<'a>, span: &Span) -> ExpressionNode<'a> {
+        ExpressionNode {
+            expression: Expression::FunctionCall {
+                function: Rc::new(ExpressionNode {
+                    expression: Expression::Identifier(name.to_string()),
+                    typed: AzulaType::Infer,
+                    span: span.clone(),
+                }),
+                args: vec![a, b],
+            },
+            typed: AzulaType::Infer,
+            span: span.clone(),
+        }
+    }
+
     fn typecheck_infix_expression(
         &mut self,
         expr: ExpressionNode<'a>,
         env: &Environment<'a>,
     ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
         if let Expression::Infix(ref left, ref operator, ref right) = expr.expression {
+            let (original_left, original_right) = (left.deref().clone(), right.deref().clone());
             let (mut left, mut left_typ) = self.typecheck_expression(left.deref().clone(), env)?;
             let (mut right, mut right_typ) = self.typecheck_expression(right.deref().clone(), env)?;
+
+            // Operators on strings compare and join contents, via stdlib helpers
+            let is_null = |e: &ExpressionNode<'a>| matches!(e.expression, Expression::Null);
+            if left_typ == AzulaType::Str && right_typ == AzulaType::Str && !is_null(&left) && !is_null(&right) {
+                let span = expr.span.clone();
+                let args = vec![original_left, original_right];
+                match operator {
+                    Operator::Add => return self.typecheck_helper_call("str_concat", args, &span, env),
+                    Operator::Eq => return self.typecheck_helper_call("str_equals", args, &span, env),
+                    Operator::Neq => {
+                        let (call, _) = self.typecheck_helper_call("str_equals", args, &span, env)?;
+                        let node = ExpressionNode { expression: Expression::Not(Rc::new(call)), typed: AzulaType::Bool, span };
+                        return Ok((node, AzulaType::Bool));
+                    }
+                    Operator::Lt | Operator::Lte | Operator::Gt | Operator::Gte => {
+                        let (call, _) = self.typecheck_helper_call("str_compare", args, &span, env)?;
+                        let zero = ExpressionNode { expression: Expression::Integer(0), typed: AzulaType::Int, span: span.clone() };
+                        let node = ExpressionNode {
+                            expression: Expression::Infix(Rc::new(call), operator.clone(), Rc::new(zero)),
+                            typed: AzulaType::Bool,
+                            span,
+                        };
+                        return Ok((node, AzulaType::Bool));
+                    }
+                    _ => {}
+                }
+            }
 
             // Integer literals take on the integer type of the other operand.
             if is_integer_type(&left_typ) && is_integer_literal(&right) {
@@ -2294,7 +2456,7 @@ impl<'a> Typechecker<'a> {
                             name: s,
                             args: vec![(AzulaType::Str, "a".to_string()), (AzulaType::Str, "b".to_string())],
                             varargs: false,
-                            returns: AzulaType::Int,
+                            returns: AzulaType::from("i32"),
                         })
                     } else if s == "malloc" {
                         Ok(FunctionDefinition {

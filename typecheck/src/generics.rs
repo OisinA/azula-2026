@@ -101,6 +101,9 @@ pub fn subst_expr<'a>(expr: &ExpressionNode<'a>, map: &Substitution<'a>) -> Expr
         Expression::Pointer(e) => Expression::Pointer(sub(e)),
         Expression::Deref(e) => Expression::Deref(sub(e)),
         Expression::Array(items) => Expression::Array(items.iter().map(|a| subst_expr(a, map)).collect()),
+        Expression::Interpolation(parts) => {
+            Expression::Interpolation(parts.iter().map(|a| subst_expr(a, map)).collect())
+        }
         Expression::ArrayAccess(a, i) => Expression::ArrayAccess(sub(a), sub(i)),
         Expression::StructInitialisation(s, fields) => Expression::StructInitialisation(
             sub(s),

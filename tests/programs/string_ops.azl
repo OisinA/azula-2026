@@ -1,0 +1,60 @@
+// String operators compare and join contents; "${...}" interpolates values.
+
+struct Point {
+    x: int;
+    y: int;
+
+    func to_str(): str {
+        return "(${self.x}, ${self.y})";
+    }
+}
+
+enum Colour {
+    Red;
+    Green;
+
+    func to_str(): str {
+        return match self {
+            Colour::Red => "red",
+            Colour::Green => "green",
+        };
+    }
+}
+
+func greet(name: str): str {
+    return "Hello, " + name + "!";
+}
+
+func main() {
+    // Equality compares contents, not pointers
+    var built = StringBuilder::new();
+    built.append("ab");
+    built.append("c");
+    var a = "abc";
+    var b = built.to_str();
+    printf("%d %d\n", a == b, a != b);
+    printf("%d %d %d %d\n", "apple" < "banana", "b" <= "a", "pear" > "peach", "x" >= "x");
+
+    // Concatenation
+    printf("%s\n", greet("world"));
+    var s = "";
+    for i in 0..5 {
+        s += "${i}";
+    }
+    printf("%s\n", s);
+
+    // Interpolating ints of any width, floats, bools, strings and to_str()
+    var small: u8 = 7;
+    var wide: i32 = -12;
+    var ratio = 0.25;
+    var p = Point { x: 3, y: 4 };
+    var q = &p;
+    printf("%s\n", "small=${small} wide=${wide} ratio=${ratio} ok=${1 < 2}");
+    printf("%s\n", "p=${p} via pointer=${q} colour=${Colour::Green}");
+    printf("%s\n", "expr=${p.x * p.y + 1} call=${greet("you")} nested=${"a${1}b"}");
+    printf("%s\n", "escaped: \${not interpolated} and a lone $ sign");
+
+    // null is still compared by pointer
+    var nothing: str = null;
+    printf("%d %d\n", nothing == null, a == null);
+}

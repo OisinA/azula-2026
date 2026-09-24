@@ -1,0 +1,9 @@
+1 0
+1 0 1 1
+Hello, world!
+01234
+small=7 wide=-12 ratio=0.25 ok=true
+p=(3, 4) via pointer=(3, 4) colour=green
+expr=13 call=Hello, you! nested=a1b
+escaped: ${not interpolated} and a lone $ sign
+1 0

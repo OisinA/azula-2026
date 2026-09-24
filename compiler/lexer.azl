@@ -108,31 +108,31 @@ func hex_value(c: int): int {
 }
 
 func keyword_kind(word: str): Tok {
-    if str_eq(word, "func") { return Tok::KwFunc; }
-    if str_eq(word, "return") { return Tok::KwReturn; }
-    if str_eq(word, "var") { return Tok::KwVar; }
-    if str_eq(word, "const") { return Tok::KwConst; }
-    if str_eq(word, "true") { return Tok::KwTrue; }
-    if str_eq(word, "false") { return Tok::KwFalse; }
-    if str_eq(word, "if") { return Tok::KwIf; }
-    if str_eq(word, "else") { return Tok::KwElse; }
-    if str_eq(word, "break") { return Tok::KwBreak; }
-    if str_eq(word, "continue") { return Tok::KwContinue; }
-    if str_eq(word, "extern") { return Tok::KwExtern; }
-    if str_eq(word, "varargs") { return Tok::KwVarargs; }
-    if str_eq(word, "while") { return Tok::KwWhile; }
-    if str_eq(word, "struct") { return Tok::KwStruct; }
-    if str_eq(word, "impl") { return Tok::KwImpl; }
-    if str_eq(word, "for") { return Tok::KwFor; }
-    if str_eq(word, "enum") { return Tok::KwEnum; }
-    if str_eq(word, "match") { return Tok::KwMatch; }
-    if str_eq(word, "as") { return Tok::KwAs; }
-    if str_eq(word, "null") { return Tok::KwNull; }
-    if str_eq(word, "type") { return Tok::KwType; }
-    if str_eq(word, "import") { return Tok::KwImport; }
-    if str_eq(word, "sizeof") { return Tok::KwSizeof; }
-    if str_eq(word, "extend") { return Tok::KwExtend; }
-    if str_eq(word, "in") { return Tok::KwIn; }
+    if word == "func" { return Tok::KwFunc; }
+    if word == "return" { return Tok::KwReturn; }
+    if word == "var" { return Tok::KwVar; }
+    if word == "const" { return Tok::KwConst; }
+    if word == "true" { return Tok::KwTrue; }
+    if word == "false" { return Tok::KwFalse; }
+    if word == "if" { return Tok::KwIf; }
+    if word == "else" { return Tok::KwElse; }
+    if word == "break" { return Tok::KwBreak; }
+    if word == "continue" { return Tok::KwContinue; }
+    if word == "extern" { return Tok::KwExtern; }
+    if word == "varargs" { return Tok::KwVarargs; }
+    if word == "while" { return Tok::KwWhile; }
+    if word == "struct" { return Tok::KwStruct; }
+    if word == "impl" { return Tok::KwImpl; }
+    if word == "for" { return Tok::KwFor; }
+    if word == "enum" { return Tok::KwEnum; }
+    if word == "match" { return Tok::KwMatch; }
+    if word == "as" { return Tok::KwAs; }
+    if word == "null" { return Tok::KwNull; }
+    if word == "type" { return Tok::KwType; }
+    if word == "import" { return Tok::KwImport; }
+    if word == "sizeof" { return Tok::KwSizeof; }
+    if word == "extend" { return Tok::KwExtend; }
+    if word == "in" { return Tok::KwIn; }
     return Tok::Ident;
 }
 
@@ -140,13 +140,45 @@ func make_token(kind: Tok, pos: int): Token {
     return Token { kind: kind, text: "", value: 0, pos: pos };
 }
 
+// The index just past the `}` closing the `${` at text[i]
+func skip_interpolation(src: &Source, text: str, start: int): int {
+    var i = start + 2;
+    var depth = 1;
+    while depth > 0 {
+        var c: int = text[i];
+        if c == 0 || c == '\n' {
+            src.fail(start, "unterminated interpolation");
+        }
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth -= 1;
+        } else if c == '"' {
+            i += 1;
+            while text[i] != '"' && text[i] != 0 && text[i] != '\n' {
+                if text[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    return i;
+}
+
 func lex(src: &Source): Vec<Token> {
+    return lex_range(src, 0, -1);
+}
+
+// Tokens from text[start] up to text[stop] (or the end when stop is -1)
+func lex_range(src: &Source, start_at: int, stop: int): Vec<Token> {
     var text = src.text.to_str();
     var tokens: Vec<Token> = Vec::new();
-    var i = 0;
+    var i = start_at;
     while true {
         var c: int = text[i];
-        if c == 0 {
+        if c == 0 || i == stop {
             tokens.push(make_token(Tok::Eof, i));
             return tokens;
         }
@@ -217,6 +249,9 @@ func lex(src: &Source): Vec<Token> {
                 }
                 if text[i] == '\\' {
                     i += 1;
+                } else if c == '"' && text[i] == '$' && text[i + 1] == '{' {
+                    i = skip_interpolation(src, text, i);
+                    continue;
                 }
                 i += 1;
             }

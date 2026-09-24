@@ -88,6 +88,8 @@ pub enum Expression<'a> {
     Pointer(Rc<ExpressionNode<'a>>),
     /// `*pointer`
     Deref(Rc<ExpressionNode<'a>>),
+    /// `"text ${expr} text"`: the pieces to convert to strings and join
+    Interpolation(Vec<ExpressionNode<'a>>),
     Array(Vec<ExpressionNode<'a>>),
     ArrayAccess(Rc<ExpressionNode<'a>>, Rc<ExpressionNode<'a>>),
     StructInitialisation(Rc<ExpressionNode<'a>>, Vec<(&'a str, ExpressionNode<'a>)>),

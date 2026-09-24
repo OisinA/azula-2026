@@ -676,6 +676,7 @@ impl<'a> Codegen<'a> {
                 func.sub(zero, val)
             }
             Expression::Pointer(expr) => self.codegen_address(expr.deref().clone(), func),
+            Expression::Interpolation(_) => unreachable!("interpolation is rewritten by the typechecker"),
             Expression::Deref(pointer) => {
                 let ptr = self.codegen_expr(pointer.deref().clone(), func, true);
                 let zero = func.const_int(0);

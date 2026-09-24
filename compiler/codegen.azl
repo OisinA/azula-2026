@@ -339,7 +339,7 @@ struct Gen {
         self.label_count = 0;
         self.terminated = false;
         self.ret = f.ret;
-        self.is_main = str_eq(f.symbol, "main");
+        self.is_main = f.symbol == "main";
 
         if self.is_main {
             out.append("define ");
@@ -786,16 +786,16 @@ struct Gen {
         } else if is_float(from) && tw > 0 {
             conversion = "fptosi";
         } else if is_float(from) && is_float(to) {
-            if str_eq(from_ll, to_ll) {
+            if from_ll == to_ll {
                 return v;
             }
             conversion = "fpext";
-            if str_eq(to_ll, "float") {
+            if to_ll == "float" {
                 conversion = "fptrunc";
             }
-        } else if fw > 0 && str_eq(to_ll, "ptr") {
+        } else if fw > 0 && to_ll == "ptr" {
             conversion = "inttoptr";
-        } else if str_eq(from_ll, "ptr") && tw > 0 {
+        } else if from_ll == "ptr" && tw > 0 {
             conversion = "ptrtoint";
         } else {
             return v;
@@ -804,17 +804,17 @@ struct Gen {
     }
 
     func call(e: &Expr, symbol: str, args: Vec<&Expr>): str {
-        if str_eq(symbol, "gc_state") {
+        if symbol == "gc_state" {
             return "@__azula_gc_state";
         }
-        if str_eq(symbol, "gc_stack_pointer") {
+        if symbol == "gc_stack_pointer" {
             return self.value("call ptr @llvm.stacksave.p0()");
         }
-        if str_eq(symbol, "gc_spill_registers") {
+        if symbol == "gc_spill_registers" {
             self.emit("call void @llvm.eh.unwind.init()");
             return "";
         }
-        if str_eq(symbol, "ptr_add") {
+        if symbol == "ptr_add" {
             var base = self.expr(args.get(0));
             var offset = self.coerce(self.expr(args.get(1)), args.get(1).typ, Type::Int);
             return self.value(concat3("getelementptr i8, ptr ", base, concat(", i64 ", offset)));
@@ -946,7 +946,7 @@ struct Gen {
             var j = 0;
             while j < arm.bindings.len {
                 var binding = arm.bindings.get(j);
-                if !str_eq(binding, "_") {
+                if binding != "_" {
                     var field_type = info.payloads.get(arm.tag).get(j);
                     var layout = quote_local(concat3(arm.enum_name, ".", info.variants.get(arm.tag)));
                     var field_ptr = self.value(concat3("getelementptr ", layout, concat3(", ptr ", v, concat(", i32 0, i32 ", int_to_str(j + 1)))));
@@ -1022,13 +1022,13 @@ func llvm_escape(s: str, sb: &StringBuilder) {
 
 // Builtins the code generator implements itself rather than calling
 func is_intrinsic(symbol: str): bool {
-    return str_eq(symbol, "ptr_add") || str_eq(symbol, "gc_state") || str_eq(symbol, "gc_stack_pointer")
-        || str_eq(symbol, "gc_spill_registers") || !str_eq(link_name(symbol), symbol);
+    return symbol == "ptr_add" || symbol == "gc_state" || symbol == "gc_stack_pointer"
+        || symbol == "gc_spill_registers" || link_name(symbol) != symbol;
 }
 
 // The symbol a call to `symbol` links against (c_malloc calls C's malloc, ...)
 func link_name(symbol: str): str {
-    if str_eq(symbol, "c_malloc") || str_eq(symbol, "c_calloc") || str_eq(symbol, "c_realloc") || str_eq(symbol, "c_free") {
+    if symbol == "c_malloc" || symbol == "c_calloc" || symbol == "c_realloc" || symbol == "c_free" {
         return substring(symbol, 2, strlen(symbol) - 2);
     }
     return symbol;

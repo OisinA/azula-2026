@@ -96,3 +96,51 @@ struct StringBuilder {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Support for string operators: the compilers turn `a == b` on strings into
+// str_equals(a, b), `a < b` into str_compare(a, b) < 0, `a + b` into
+// str_concat(a, b), and "x = ${x}" into concatenations using str_from_*.
+// ---------------------------------------------------------------------------
+
+func str_equals(a: str, b: str): bool {
+    if a as int == b as int {
+        return true;
+    }
+    if a as int == 0 || b as int == 0 {
+        return false;
+    }
+    return strcmp(a, b) == 0;
+}
+
+func str_compare(a: str, b: str): int {
+    return strcmp(a, b) as int;
+}
+
+func str_concat(a: str, b: str): str {
+    var n = strlen(a);
+    var m = strlen(b);
+    var result: str = malloc((n + m + 1) * sizeof(u8));
+    memcpy(result, a, n);
+    memcpy(ptr_add(result, n), b, m + 1);
+    return result;
+}
+
+func str_from_int(n: int): str {
+    var buf: str = malloc(24 * sizeof(u8));
+    snprintf(buf, 24, "%ld", n);
+    return buf;
+}
+
+func str_from_float(f: float): str {
+    var buf: str = malloc(32 * sizeof(u8));
+    snprintf(buf, 32, "%g", f);
+    return buf;
+}
+
+func str_from_bool(b: bool): str {
+    if b {
+        return "true";
+    }
+    return "false";
+}

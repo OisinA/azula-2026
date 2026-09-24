@@ -155,6 +155,10 @@ Other things to know:
   and `get(i)` methods; `break` and `continue` work in all of them.
 - Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`) and
   `*pointer` to read or write through a pointer.
+- Strings: `==`, `!=`, `<`, `<=`, `>`, `>=` compare contents (comparing with `null`
+  compares the pointer), `+` and `+=` concatenate, and `"x = ${expr}"` interpolates
+  strings, integers, floats, bools and any value with a `to_str()` method (`\$` is a
+  literal `$`).
 - `match` works on enums and integers (including character literals); arms can be
   blocks, and a `match` can be used as a statement or an expression.
 - Methods are declared in a type's body and receive `self` implicitly (a reference for

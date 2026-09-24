@@ -297,7 +297,7 @@ struct Parser {
                 var i = 0;
                 while i < args.len {
                     var name = named_of(args.get(i));
-                    if !str_eq(name, "") && !contains_str(type_params, name) {
+                    if name != "" && !contains_str(type_params, name) {
                         type_params.push(name);
                     }
                     i += 1;
@@ -339,7 +339,7 @@ struct Parser {
             },
             Tok::Ident => {
                 var base = type_from_name(tok.text);
-                if !str_eq(named_of(base), "") && self.at(Tok::Lt) {
+                if named_of(base) != "" && self.at(Tok::Lt) {
                     return Type::Generic(tok.text, self.parse_type_args());
                 }
                 return base;
@@ -515,6 +515,44 @@ struct Parser {
     // Expressions
     // -----------------------------------------------------------------------
 
+    // A string literal, which may interpolate expressions with `${...}`
+    func parse_string(raw: str, pos: int): &Expr {
+        var base = pos + 1;
+        var parts: Vec<&Expr> = Vec::new();
+        var literal_start = 0;
+        var i = 0;
+        while raw[i] != 0 {
+            if raw[i] == '\\' {
+                i += 2;
+                continue;
+            }
+            if raw[i] == '$' && raw[i + 1] == '{' {
+                if literal_start < i {
+                    var text = unescape(self.src, substring(raw, literal_start, i - literal_start), base + literal_start);
+                    parts.push(new_expr(ExprKind::StrLit(text), base + literal_start));
+                }
+                var close = skip_interpolation(self.src, self.src.text.to_str(), base + i) - 1;
+                var sub = Parser { tokens: lex_range(self.src, base + i + 2, close), index: 0, src: self.src, pending_gt: false };
+                parts.push(sub.parse_expr(PREC_LOWEST, true));
+                if !sub.at(Tok::Eof) {
+                    self.src.fail(sub.peek().pos, "expected `}` to end the interpolated expression");
+                }
+                i = close - base + 1;
+                literal_start = i;
+                continue;
+            }
+            i += 1;
+        }
+        if literal_start == 0 {
+            return new_expr(ExprKind::StrLit(unescape(self.src, raw, base)), pos);
+        }
+        if raw[literal_start] != 0 {
+            var text = unescape(self.src, substring(raw, literal_start, strlen(raw) - literal_start), base + literal_start);
+            parts.push(new_expr(ExprKind::StrLit(text), base + literal_start));
+        }
+        return new_expr(ExprKind::Interpolate(parts), pos);
+    }
+
     func parse_expr(precedence: int, allow_struct: bool): &Expr {
         var left = self.parse_prefix(allow_struct);
         while precedence < infix_precedence(self.peek().kind, allow_struct) {
@@ -530,7 +568,7 @@ struct Parser {
             Tok::Int => { return new_expr(ExprKind::IntLit(tok.value), pos); },
             Tok::Float => { return new_expr(ExprKind::FloatLit(tok.text), pos); },
             Tok::Char => { return new_expr(ExprKind::IntLit(char_value(tok.text)), pos); },
-            Tok::Str => { return new_expr(ExprKind::StrLit(unescape(self.src, tok.text, pos + 1)), pos); },
+            Tok::Str => { return self.parse_string(tok.text, pos); },
             Tok::KwTrue => { return new_expr(ExprKind::BoolLit(true), pos); },
             Tok::KwFalse => { return new_expr(ExprKind::BoolLit(false), pos); },
             Tok::KwNull => { return new_expr(ExprKind::Null, pos); },
@@ -558,7 +596,7 @@ struct Parser {
             Tok::KwMatch => { return self.parse_match(pos); },
             Tok::Ident => {
                 // `new Type { ... }` allocates a struct on the heap
-                if !str_eq(tok.text, "new") || !self.at(Tok::Ident) {
+                if tok.text != "new" || !self.at(Tok::Ident) {
                     return new_expr(ExprKind::Ident(tok.text), pos);
                 }
                 var inner = self.parse_expr(PREC_PREFIX, true);
@@ -715,7 +753,7 @@ struct Parser {
             Tok::Char => { return Pattern::IntValue(char_value(tok.text)); },
             Tok::Minus => { return Pattern::IntValue(0 - self.expect(Tok::Int, "integer").value); },
             Tok::Ident => {
-                if str_eq(tok.text, "_") {
+                if tok.text == "_" {
                     return Pattern::Wildcard;
                 }
                 self.expect(Tok::ColonColon, "`::`");
@@ -812,6 +850,7 @@ func unescape(src: &Source, raw: str, pos: int): str {
             else if e == '\\' { sb.append_char('\\'); }
             else if e == '"' { sb.append_char('"'); }
             else if e == '\'' { sb.append_char('\''); }
+            else if e == '$' { sb.append_char('$'); }
             else if e == 'x' {
                 sb.append_char(hex_value(raw[i + 1] as int) * 16 + hex_value(raw[i + 2] as int));
                 i += 2;
@@ -877,15 +916,15 @@ func infix_precedence(kind: Tok, allow_struct: bool): int {
 
 // The operator of a compound assignment token (`+` for `+=`)
 func binop_for_text(text: str): BinOp {
-    if str_eq(text, "+") { return BinOp::Add; }
-    if str_eq(text, "-") { return BinOp::Sub; }
-    if str_eq(text, "*") { return BinOp::Mul; }
-    if str_eq(text, "/") { return BinOp::Div; }
-    if str_eq(text, "%") { return BinOp::Mod; }
-    if str_eq(text, "&") { return BinOp::BitAnd; }
-    if str_eq(text, "|") { return BinOp::BitOr; }
-    if str_eq(text, "^") { return BinOp::BitXor; }
-    if str_eq(text, "<<") { return BinOp::Shl; }
+    if text == "+" { return BinOp::Add; }
+    if text == "-" { return BinOp::Sub; }
+    if text == "*" { return BinOp::Mul; }
+    if text == "/" { return BinOp::Div; }
+    if text == "%" { return BinOp::Mod; }
+    if text == "&" { return BinOp::BitAnd; }
+    if text == "|" { return BinOp::BitOr; }
+    if text == "^" { return BinOp::BitXor; }
+    if text == "<<" { return BinOp::Shl; }
     return BinOp::Shr;
 }
 
@@ -923,7 +962,7 @@ func is_match_expr(e: &Expr): bool {
 func contains_str(list: Vec<str>, s: str): bool {
     var i = 0;
     while i < list.len {
-        if str_eq(list.get(i), s) {
+        if list.get(i) == s {
             return true;
         }
         i += 1;
@@ -978,7 +1017,7 @@ func stmt_mentions_self(s: &Stmt): bool {
 
 func expr_mentions_self(e: &Expr): bool {
     return match e.kind {
-        ExprKind::Ident(name) => str_eq(name, "self"),
+        ExprKind::Ident(name) => name == "self",
         ExprKind::Binary(_, l, r) => expr_mentions_self(l) || expr_mentions_self(r),
         ExprKind::Unary(_, x) => expr_mentions_self(x),
         ExprKind::AddrOf(x) => expr_mentions_self(x),
@@ -1015,6 +1054,16 @@ func expr_mentions_self(e: &Expr): bool {
             false
         },
         ExprKind::Block(stmts, value) => stmts_mention_self(stmts) || opt_mentions_self(value),
+        ExprKind::Interpolate(parts) => {
+            var i = 0;
+            while i < parts.len {
+                if expr_mentions_self(parts.get(i)) {
+                    return true;
+                }
+                i += 1;
+            }
+            false
+        },
         _ => false,
     };
 }

@@ -1,0 +1,9 @@
+// error: can't interpolate a value of type Box; it needs a `to_str()` method
+struct Box {
+    value: int;
+}
+
+func main() {
+    var b = Box { value: 1 };
+    printf("%s\n", "b=${b}");
+}

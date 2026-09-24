@@ -661,6 +661,91 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// A string literal containing `${expr}`s. `raw` is its contents, which
+    /// start at byte `base` of the source.
+    fn parse_interpolation(&mut self, raw: &'a str, base: usize) -> Option<ExpressionNode<'a>> {
+        let bytes = raw.as_bytes();
+        let mut parts = vec![];
+        let mut literal_start = 0;
+        let mut i = 0;
+        let literal = |parser: &mut Parser<'a>, start: usize, end: usize| -> Option<ExpressionNode<'a>> {
+            let text = match string_transform(&raw[start..end]) {
+                Ok(text) => text,
+                Err(index) => {
+                    parser.errors.push(AzulaError::new(ErrorType::InvalidEscape, base + start + index, base + start + index + 1));
+                    String::new()
+                }
+            };
+            Some(ExpressionNode {
+                expression: Expression::String(text),
+                typed: AzulaType::Str,
+                span: Span { start: base + start, end: base + end },
+            })
+        };
+        while i < bytes.len() {
+            if bytes[i] == b'\\' {
+                i += 2;
+                continue;
+            }
+            if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                if literal_start < i {
+                    parts.push(literal(self, literal_start, i)?);
+                }
+                // Find the `}` ending the expression
+                let expr_start = i + 2;
+                let mut depth = 1;
+                let mut j = expr_start;
+                while j < bytes.len() {
+                    match bytes[j] {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        b'"' => {
+                            j += 1;
+                            while j < bytes.len() && bytes[j] != b'"' {
+                                if bytes[j] == b'\\' {
+                                    j += 1;
+                                }
+                                j += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                let mut sub = Parser::new(self.source, Lexer::at(self.source, base + expr_start));
+                let expr = sub.parse_expression(LOWEST, true);
+                let ended = sub.lexer.peek().map(|t| t.kind == TokenKind::BraceClose && t.span.start == base + j);
+                self.errors.append(&mut sub.errors);
+                if ended != Some(true) {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::Custom("expected `}` to end the interpolated expression".to_string()),
+                        base + expr_start,
+                        base + j,
+                    ));
+                    return None;
+                }
+                parts.push(expr?);
+                i = j + 1;
+                literal_start = i;
+                continue;
+            }
+            i += 1;
+        }
+        if literal_start < bytes.len() {
+            parts.push(literal(self, literal_start, bytes.len())?);
+        }
+        Some(ExpressionNode {
+            expression: Expression::Interpolation(parts),
+            typed: AzulaType::Str,
+            span: Span { start: base - 1, end: base + bytes.len() + 1 },
+        })
+    }
+
     fn parse_compound_assign(&mut self, target: ExpressionNode<'a>, op: Operator) -> Option<Statement<'a>> {
         self.lexer.next(); // the operator
         let value = self.parse_expression(LOWEST, true)?;
@@ -1189,6 +1274,7 @@ impl<'a> Parser<'a> {
                     span: Span { start: tok.span.start, end: tok.span.end },
                 })
             }
+            TokenKind::String(val) if val.contains("${") => self.parse_interpolation(val, tok.span.start + 1),
             TokenKind::String(val) => {
                 let transformed = match string_transform(val) {
                     Ok(str) => str,
@@ -2094,7 +2180,7 @@ fn expression_mentions_self(expr: &ExpressionNode) -> bool {
         | Expression::Deref(x)
         | Expression::Alloc(x) => e(x),
         Expression::Cast(x, _) => e(x),
-        Expression::Array(items) => items.iter().any(expression_mentions_self),
+        Expression::Array(items) | Expression::Interpolation(items) => items.iter().any(expression_mentions_self),
         Expression::ArrayAccess(a, i) => e(a) || e(i),
         Expression::StructInitialisation(_, fields) => fields.iter().any(|(_, v)| expression_mentions_self(v)),
         // Only the object of a field access or path can be `self`
@@ -2144,6 +2230,10 @@ fn string_transform(str: &str) -> Result<String, usize> {
                 Some((_, '"')) => {
                     chars.next();
                     result.push('"');
+                }
+                Some((_, '$')) => {
+                    chars.next();
+                    result.push('$');
                 }
                 Some((_, '\'')) => {
                     chars.next();

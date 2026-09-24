@@ -4,10 +4,6 @@ extern func realpath(str, str): str;
 extern func fputc(i32, str): i32;
 extern func strtod(str, str): float;
 
-func str_eq(a: str, b: str): bool {
-    return strcmp(a, b) == 0;
-}
-
 func concat(a: str, b: str): str {
     var sb = StringBuilder::new();
     sb.append(a);

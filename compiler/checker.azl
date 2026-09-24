@@ -385,7 +385,7 @@ struct Checker {
             ret: f.ret,
             is_varargs: f.is_varargs,
             is_extern: f.is_extern,
-            is_method: f.params.len > 0 && str_eq(f.params.get(0).name, "self"),
+            is_method: f.params.len > 0 && f.params.get(0).name == "self",
         });
     }
 
@@ -537,7 +537,7 @@ struct Checker {
                 ret: self.resolve_type(subst_type(m.decl.ret, m.params, args), m.decl.pos),
                 is_varargs: false,
                 is_extern: false,
-                is_method: m.decl.params.len > 0 && str_eq(m.decl.params.get(0).name, "self"),
+                is_method: m.decl.params.len > 0 && m.decl.params.get(0).name == "self",
             });
             i += 1;
         }
@@ -558,7 +558,7 @@ struct Checker {
         var i = 0;
         while i < methods.len {
             var m = methods.get(i);
-            if str_eq(m.decl.name, method) {
+            if m.decl.name == method {
                 self.instantiated.insert(symbol, true);
                 var copier = Copier { params: m.params, args: instance.args };
                 self.pending.push(copier.copy_func(m.decl, symbol));
@@ -609,7 +609,7 @@ struct Checker {
             Type::Generic(name, pargs) => {
                 match self.instances.get(named_of(concrete)) {
                     Option::Some(inst) => {
-                        if str_eq(inst.generic, name) {
+                        if inst.generic == name {
                             var i = 0;
                             while i < pargs.len && i < inst.args.len {
                                 self.unify(pargs.get(i), inst.args.get(i), params, bindings);
@@ -630,7 +630,7 @@ struct Checker {
     func infer_type_args(name: str, params: Vec<str>, expected: Type, patterns: Vec<Type>, args: Vec<&Expr>, pos: int): Vec<Type> {
         match self.instances.get(named_of(expected)) {
             Option::Some(inst) => {
-                if str_eq(inst.generic, name) {
+                if inst.generic == name {
                     return inst.args;
                 }
             },
@@ -715,7 +715,7 @@ struct Checker {
                 }
                 var i = 0;
                 while i < info.fields.len {
-                    if str_eq(info.fields.get(i).name, name) {
+                    if info.fields.get(i).name == name {
                         return info.fields.get(i).typ;
                     }
                     i += 1;
@@ -829,7 +829,7 @@ struct Checker {
                     Option::Some(decl) => {
                         var i = 0;
                         while i < decl.variants.len {
-                            if str_eq(decl.variants.get(i).name, member) {
+                            if decl.variants.get(i).name == member {
                                 patterns = decl.variants.get(i).payload;
                             }
                             i += 1;
@@ -841,7 +841,7 @@ struct Checker {
                 var i = 0;
                 while i < methods.len {
                     var m = methods.get(i);
-                    if str_eq(m.decl.name, member) {
+                    if m.decl.name == member {
                         // Rename the impl's type parameters to the type's own
                         var own: Vec<Type> = Vec::new();
                         var j = 0;
@@ -1026,6 +1026,14 @@ struct Checker {
                 // Checked as `target op value`, which must fit back into the target
                 var combined = new_expr(ExprKind::Binary(op, target, value), s.pos);
                 var t = self.check_binary(combined, op, target, value, Type::Infer);
+                match combined.kind {
+                    // `s += t` on strings became a call
+                    ExprKind::CallFn(_, _) => {
+                        combined.typ = t;
+                        s.kind = StmtKind::Assign(target, combined);
+                    },
+                    _ => {},
+                }
                 match target.kind {
                     ExprKind::Local(_) => {},
                     ExprKind::FieldAt(_, _) => {},
@@ -1171,6 +1179,7 @@ struct Checker {
             },
             ExprKind::BoolLit(_) => { return Type::Bool; },
             ExprKind::StrLit(_) => { return Type::Str; },
+            ExprKind::Interpolate(parts) => { return self.check_interpolation(e, parts); },
             ExprKind::Null => { return Type::Str; },
             ExprKind::Ident(name) => {
                 match self.lookup_var(name) {
@@ -1255,7 +1264,7 @@ struct Checker {
                 }
                 var i = 0;
                 while i < info.fields.len {
-                    if str_eq(info.fields.get(i).name, name) {
+                    if info.fields.get(i).name == name {
                         e.kind = ExprKind::FieldAt(obj, i);
                         return info.fields.get(i).typ;
                     }
@@ -1325,9 +1334,9 @@ struct Checker {
                     self.fail(e.pos, "alloc needs a struct literal");
                 }
                 var arena_type = self.check_expr(arena, Type::Infer);
-                var is_arena = str_eq(named_of(arena_type), "Arena");
+                var is_arena = named_of(arena_type) == "Arena";
                 match arena_type {
-                    Type::Ptr(inner) => { is_arena = str_eq(named_of(inner), "Arena"); },
+                    Type::Ptr(inner) => { is_arena = named_of(inner) == "Arena"; },
                     _ => {
                         // Pass the arena by pointer so allocation updates it
                         if is_arena {
@@ -1369,6 +1378,54 @@ struct Checker {
         }
     }
 
+    // `"a ${x} b"` joins its parts with str_concat, converting each
+    // interpolated value to a string first
+    func check_interpolation(e: &Expr, parts: Vec<&Expr>): Type {
+        var joined: &Expr = null;
+        var i = 0;
+        while i < parts.len {
+            var part = parts.get(i);
+            // Work out the conversion from the type (checking a copy of the part)
+            var copier = Copier { params: Vec::new(), args: Vec::new() };
+            var t = self.check_expr(copier.expr(part), Type::Infer);
+            var converted = part;
+            if type_eq(t, Type::Str) {
+                converted = part;
+            } else if is_bool(t) {
+                converted = call_named("str_from_bool", part, part.pos);
+            } else if is_integer(t) {
+                converted = call_named("str_from_int", part, part.pos);
+            } else if is_float(t) {
+                converted = call_named("str_from_float", part, part.pos);
+            } else {
+                var type_name = named_of(t);
+                match t {
+                    Type::Ptr(inner) => { type_name = named_of(inner); },
+                    _ => {},
+                }
+                if !self.funcs.contains(concat(type_name, ".to_str")) {
+                    self.fail(part.pos, concat3("can't interpolate a value of type ", mangle(t), "; it needs a `to_str()` method"));
+                }
+                converted = new_expr(ExprKind::Call(new_expr(ExprKind::Field(part, "to_str"), part.pos), Vec::new()), part.pos);
+            }
+            if joined == null {
+                joined = converted;
+            } else {
+                var args: Vec<&Expr> = Vec::new();
+                args.push(joined);
+                args.push(converted);
+                joined = new_expr(ExprKind::Call(new_expr(ExprKind::Ident("str_concat"), e.pos), args), e.pos);
+            }
+            i += 1;
+        }
+        var t = self.check_expr(joined, Type::Infer);
+        if !type_eq(t, Type::Str) {
+            self.fail(e.pos, concat("`to_str()` must return str, not ", mangle(t)));
+        }
+        e.kind = joined.kind;
+        return t;
+    }
+
     func check_binary(e: &Expr, op: BinOp, l: &Expr, r: &Expr, expected: Type): Type {
         if op == BinOp::And || op == BinOp::Or {
             var lt = self.check_expr(l, Type::Bool);
@@ -1394,6 +1451,13 @@ struct Checker {
         } else {
             lt = self.check_expr(l, hint);
             rt = self.check_expr(r, lt);
+        }
+
+        // Operators on strings compare and join contents, via stdlib helpers
+        if type_eq(lt, Type::Str) && type_eq(rt, Type::Str) && !is_null_expr(l) && !is_null_expr(r) {
+            if op == BinOp::Add || op == BinOp::Eq || op == BinOp::Ne || op == BinOp::Lt || op == BinOp::Le || op == BinOp::Gt || op == BinOp::Ge {
+                return string_op(e, op, l, r);
+            }
         }
 
         if arithmetic || bitwise {
@@ -1448,7 +1512,7 @@ struct Checker {
     func variant_tag(info: &EnumInfo, variant: str, pos: int): int {
         var i = 0;
         while i < info.variants.len {
-            if str_eq(info.variants.get(i), variant) {
+            if info.variants.get(i) == variant {
                 return i;
             }
             i += 1;
@@ -1614,7 +1678,7 @@ struct Checker {
                             var f = fields.get(i);
                             var j = 0;
                             while j < decl.fields.len {
-                                if str_eq(decl.fields.get(j).name, f.name) {
+                                if decl.fields.get(j).name == f.name {
                                     patterns.push(decl.fields.get(j).typ);
                                     values.push(f.value);
                                 }
@@ -1645,7 +1709,7 @@ struct Checker {
             var known = false;
             var j = 0;
             while j < info.fields.len {
-                if str_eq(info.fields.get(j).name, f.name) {
+                if info.fields.get(j).name == f.name {
                     known = true;
                 }
                 j += 1;
@@ -1663,7 +1727,7 @@ struct Checker {
             var value: &Expr = null;
             var j = 0;
             while j < fields.len {
-                if str_eq(fields.get(j).name, field.name) {
+                if fields.get(j).name == field.name {
                     value = fields.get(j).value;
                 }
                 j += 1;
@@ -1709,7 +1773,7 @@ struct Checker {
                     arm.tag = value;
                 },
                 Pattern::Variant(pat_enum, variant, bindings) => {
-                    if info == null || (!str_eq(pat_enum, enum_name) && !str_eq(pat_enum, generic_name)) {
+                    if info == null || (pat_enum != enum_name && pat_enum != generic_name) {
                         self.fail(arm.pos, concat3("pattern doesn't match a value of type ", mangle(st), ""));
                     }
                     var tag = self.variant_tag(info, variant, arm.pos);
@@ -1724,7 +1788,7 @@ struct Checker {
                     var j = 0;
                     while j < bindings.len {
                         var b = bindings.get(j);
-                        if str_eq(b, "_") {
+                        if b == "_" {
                             names.push("_");
                         } else {
                             names.push(self.declare_var(b, payload.get(j), false));
@@ -1768,22 +1832,22 @@ struct Checker {
         if !self.has_gc {
             return symbol;
         }
-        if str_eq(symbol, "malloc") {
+        if symbol == "malloc" {
             if self.pointer_free_size(args.get(0)) {
                 return "gc_malloc_atomic";
             }
             return "gc_malloc";
         }
-        if str_eq(symbol, "calloc") {
+        if symbol == "calloc" {
             if self.pointer_free_size(args.get(0)) || self.pointer_free_size(args.get(1)) {
                 return "gc_calloc_atomic";
             }
             return "gc_calloc";
         }
-        if str_eq(symbol, "realloc") {
+        if symbol == "realloc" {
             return "gc_realloc";
         }
-        if str_eq(symbol, "free") {
+        if symbol == "free" {
             return "gc_free";
         }
         return symbol;
@@ -1890,7 +1954,7 @@ func subst_type(t: Type, params: Vec<str>, args: Vec<Type>): Type {
         Type::Named(name) => {
             var i = 0;
             while i < params.len {
-                if str_eq(params.get(i), name) {
+                if params.get(i) == name {
                     return args.get(i);
                 }
                 i += 1;
@@ -2003,6 +2067,7 @@ struct Copier {
                 ExprKind::Match(self.expr(scrutinee), out)
             },
             ExprKind::Block(stmts, value) => ExprKind::Block(self.stmts(stmts), self.opt_expr(value)),
+            ExprKind::Interpolate(parts) => ExprKind::Interpolate(self.exprs(parts)),
             _ => e.kind,
         };
         return new_expr(kind, e.pos);
@@ -2083,10 +2148,10 @@ func always_returns(body: Vec<&Stmt>): bool {
                 all
             },
             ExprKind::Call(f, _) => match f.kind {
-                ExprKind::Ident(name) => str_eq(name, "exit") || str_eq(name, "abort"),
+                ExprKind::Ident(name) => name == "exit" || name == "abort",
                 _ => false,
             },
-            ExprKind::CallFn(name, _) => str_eq(name, "exit") || str_eq(name, "abort"),
+            ExprKind::CallFn(name, _) => name == "exit" || name == "abort",
             _ => false,
         },
         _ => false,
@@ -2163,4 +2228,43 @@ func is_struct_lit(e: &Expr): bool {
         ExprKind::StructLit(_, _) => true,
         _ => false,
     };
+}
+
+func is_null_expr(e: &Expr): bool {
+    return match e.kind {
+        ExprKind::Null => true,
+        _ => false,
+    };
+}
+
+// An unchecked call of the function `name` with one argument
+func call_named(name: str, arg: &Expr, pos: int): &Expr {
+    var args: Vec<&Expr> = Vec::new();
+    args.push(arg);
+    return new_expr(ExprKind::Call(new_expr(ExprKind::Ident(name), pos), args), pos);
+}
+
+// Rewrite a (checked) operator on two strings into calls of the stdlib helpers
+func string_op(e: &Expr, op: BinOp, l: &Expr, r: &Expr): Type {
+    var args: Vec<&Expr> = Vec::new();
+    args.push(l);
+    args.push(r);
+    if op == BinOp::Add {
+        e.kind = ExprKind::CallFn("str_concat", args);
+        return Type::Str;
+    }
+    var call = new_expr(ExprKind::CallFn("str_equals", args), e.pos);
+    call.typ = Type::Bool;
+    if op == BinOp::Eq {
+        e.kind = call.kind;
+    } else if op == BinOp::Ne {
+        e.kind = ExprKind::Unary(UnOp::Not, call);
+    } else {
+        call.kind = ExprKind::CallFn("str_compare", args);
+        call.typ = Type::Int;
+        var zero = new_expr(ExprKind::IntLit(0), e.pos);
+        zero.typ = Type::Int;
+        e.kind = ExprKind::Binary(op, call, zero);
+    }
+    return Type::Bool;
 }

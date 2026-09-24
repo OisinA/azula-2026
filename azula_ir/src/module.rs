@@ -46,7 +46,7 @@ impl<'a> Module<'a> {
             ExternFunction {
                 varargs: false,
                 arguments: vec![AzulaType::Str, AzulaType::Str],
-                returns: AzulaType::Int,
+                returns: AzulaType::SizedSignedInt(32),
             },
         );
         extern_functions.insert(
