@@ -618,6 +618,7 @@ struct Checker {
         var expected = self.resolve_type(g.typ, g.pos);
         var valid = match g.value.kind {
             ExprKind::IntLit(_) => true,
+            ExprKind::CharLit(_) => true,
             ExprKind::FloatLit(_) => true,
             ExprKind::BoolLit(_) => true,
             ExprKind::StrLit(_) => true,
@@ -1144,6 +1145,7 @@ struct Checker {
     func peek_type(e: &Expr): Type {
         return match e.kind {
             ExprKind::IntLit(_) => Type::Int,
+            ExprKind::CharLit(_) => Type::Char,
             ExprKind::FloatLit(_) => Type::Float,
             ExprKind::BoolLit(_) => Type::Bool,
             ExprKind::StrLit(_) => Type::Str,
@@ -1199,7 +1201,7 @@ struct Checker {
             ExprKind::Index(a, _) => match self.peek_type(a) {
                 Type::Ptr(inner) => inner,
                 Type::Array(inner, _) => inner,
-                Type::Str => Type::SInt(8),
+                Type::Str => Type::Char,
                 _ => Type::Infer,
             },
             ExprKind::Cast(_, t) => self.resolve_type(t, e.pos),
@@ -1240,7 +1242,7 @@ struct Checker {
                 },
                 ExprKind::Field(obj, method) => {
                     var t = self.peek_type(obj);
-                    var type_name = named_of(t);
+                    var type_name = type_key(t);
                     match t {
                         Type::Ptr(inner) => { type_name = named_of(inner); },
                         _ => {},
@@ -1733,6 +1735,12 @@ struct Checker {
                 }
                 return Type::Int;
             },
+            ExprKind::CharLit(_) => {
+                if is_integer(expected) {
+                    return expected;
+                }
+                return Type::Char;
+            },
             ExprKind::FloatLit(_) => {
                 if is_float(expected) {
                     return expected;
@@ -1808,7 +1816,7 @@ struct Checker {
                 var t = self.check_expr(x, Type::Infer);
                 return match t {
                     Type::Ptr(inner) => inner,
-                    Type::Str => Type::SInt(8),
+                    Type::Str => Type::Char,
                     _ => {
                         self.fail(e.pos, concat("cannot dereference a value of type ", mangle(t)));
                         Type::Infer
@@ -1832,7 +1840,7 @@ struct Checker {
                 return match at {
                     Type::Ptr(inner) => inner,
                     Type::Array(inner, _) => inner,
-                    Type::Str => Type::SInt(8),
+                    Type::Str => Type::Char,
                     _ => {
                         self.fail(a.pos, concat("cannot index a value of type ", mangle(at)));
                         Type::Infer
@@ -2084,6 +2092,8 @@ struct Checker {
                 converted = part;
             } else if is_bool(t) {
                 converted = call_named("str_from_bool", part, part.pos);
+            } else if type_eq(t, Type::Char) {
+                converted = call_named("str_from_char", part, part.pos);
             } else if is_integer(t) {
                 converted = call_named("str_from_int", part, part.pos);
             } else if is_float(t) {
@@ -2175,6 +2185,17 @@ struct Checker {
         if type_eq(lt, Type::Str) && type_eq(rt, Type::Str) && !is_null_expr(l) && !is_null_expr(r) {
             if op == BinOp::Add || op == BinOp::Eq || op == BinOp::Ne || op == BinOp::Lt || op == BinOp::Le || op == BinOp::Gt || op == BinOp::Ge {
                 return string_op(e, op, l, r);
+            }
+        }
+
+        // Arithmetic between int and a narrower integer (such as a char) is done in int
+        if (arithmetic || bitwise) && is_integer(lt) && is_integer(rt) && !type_eq(lt, rt) {
+            if type_eq(lt, Type::Int) {
+                e.kind = ExprKind::Binary(op, l, widen_to_int(r));
+                rt = Type::Int;
+            } else if type_eq(rt, Type::Int) {
+                e.kind = ExprKind::Binary(op, widen_to_int(l), r);
+                lt = Type::Int;
             }
         }
 
@@ -3128,6 +3149,7 @@ struct Checker {
             Type::Int => false,
             Type::SInt(_) => false,
             Type::UInt(_) => false,
+            Type::Char => false,
             Type::Float => false,
             Type::SFloat(_) => false,
             Type::Bool => false,
@@ -3516,6 +3538,13 @@ func format_argument(name: str): int {
     return -1;
 }
 
+// A (checked) integer expression converted to int
+func widen_to_int(x: &Expr): &Expr {
+    var cast = new_expr(ExprKind::Cast(x, Type::Int), x.pos);
+    cast.typ = Type::Int;
+    return cast;
+}
+
 // An unchecked match arm
 func new_arm(pattern: Pattern, body: &Expr, pos: int): &MatchArm {
     return new MatchArm {
@@ -3825,6 +3854,7 @@ func contains_break(body: Vec<&Stmt>): bool {
 func is_int_literal(e: &Expr): bool {
     return match e.kind {
         ExprKind::IntLit(_) => true,
+        ExprKind::CharLit(_) => true,
         ExprKind::Unary(op, inner) => op == UnOp::Neg && is_int_literal(inner),
         _ => false,
     };
@@ -3837,7 +3867,9 @@ func assignable(expected: Type, got: Type, e: &Expr): bool {
         return true;
     }
     if is_integer(expected) && is_integer(got) {
-        return is_int_literal(e) || type_eq(got, Type::Int) || type_eq(expected, Type::Int);
+        // chars and other 8-bit integers convert freely
+        var bytes = int_bits(expected) == 8 && int_bits(got) == 8;
+        return is_int_literal(e) || type_eq(got, Type::Int) || type_eq(expected, Type::Int) || bytes;
     }
     if is_pointer_like(expected) && is_pointer_like(got) {
         return type_eq(expected, Type::Str) || type_eq(got, Type::Str);

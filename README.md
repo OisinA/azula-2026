@@ -147,7 +147,7 @@ func main {
 
 Other things to know:
 
-- Types: `int` (64-bit), `i8`–`i64`, `u8`–`u64`, `float`, `f32`, `bool`, `str`
+- Types: `int` (64-bit), `i8`–`i64`, `u8`–`u64`, `float`, `f32`, `bool`, `char`, `str`
   (a C string), `&T` pointers, arrays `[T; n]`, structs, enums and generic instances.
 - Variables are declared with `var` (mutable) or `const`; parameters are immutable.
 - Loops are `while cond { }`, `for cond { }`, `for { }`, `for i in 0..n { }` (or `0..=n`)
@@ -155,6 +155,14 @@ Other things to know:
   and `get(i)` methods; `break` and `continue` work in all of them.
 - Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`) and
   `*pointer` to read or write through a pointer.
+- `char` is a byte of text: `'a'` literals and `s[i]` are chars, which work like 8-bit
+  integers (`c - '0'`) but print as characters, with `is_digit`, `is_alpha`, `is_space`,
+  `to_upper` and friends.
+- Strings are C strings with methods: `len`, `is_empty`, `find` (an `Option<int>`),
+  `contains`, `starts_with`, `ends_with`, `slice(start, end)`, `trim`, `split`, `lines`,
+  `replace`, `repeat`, `to_upper`, `to_lower`, `join` (`", ".join(names)`), and
+  `parse_int`/`parse_float` returning a `Result`.
+- Arithmetic between `int` and a narrower integer type (such as a char) is done in `int`.
 - Strings: `==`, `!=`, `<`, `<=`, `>`, `>=` compare contents (comparing with `null`
   compares the pointer), `+` and `+=` concatenate, and `"x = ${expr}"` interpolates
   strings, integers, floats, bools and any value with a `to_str()` method (`\$` is a

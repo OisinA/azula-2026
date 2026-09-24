@@ -5,6 +5,8 @@ pub enum AzulaType<'a> {
     Int,
     SizedSignedInt(usize),
     SizedUnsignedInt(usize),
+    /// A byte of text: an 8-bit integer that prints as a character
+    Char,
     Str,
     Float,
     SizedFloat(usize),
@@ -36,6 +38,7 @@ impl<'a> From<&'a str> for AzulaType<'a> {
             "i32" => Self::SizedSignedInt(32),
             "i64" => Self::SizedSignedInt(64),
             "u8" => Self::SizedUnsignedInt(8),
+            "char" => Self::Char,
             "u16" => Self::SizedUnsignedInt(16),
             "u32" => Self::SizedUnsignedInt(32),
             "u64" => Self::SizedUnsignedInt(64),
@@ -71,6 +74,7 @@ impl<'a> ToString for AzulaType<'a> {
             }
             .to_string(),
             AzulaType::Str => "str".to_string(),
+            AzulaType::Char => "char".to_string(),
             AzulaType::Float => "float".to_string(),
             AzulaType::SizedFloat(size) => match size {
                 8 => "f8",

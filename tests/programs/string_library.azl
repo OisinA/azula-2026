@@ -1,0 +1,42 @@
+// The char type and the string library.
+
+func main() {
+    var s = "  Hello, World  ";
+    println("[${s.trim()}] [${s.trim_start()}] [${s.trim_end()}]");
+    var t = s.trim();
+    println(t.len());
+    println(t.find("World").unwrap_or(-1));
+    println(t.find("xyz").unwrap_or(-1));
+    println(t.contains("lo, W"));
+    println(t.starts_with("Hell"));
+    println(t.ends_with("ld"));
+    println(t.slice(7, 100));
+    println(t.to_upper() + " " + t.to_lower());
+    var parts = "a,b,,c".split(",");
+    println(parts.len);
+    println("|".join(parts));
+    println("one\ntwo\nthree\n".lines().len);
+    println("banana".replace("an", "AN"));
+    println("ab".repeat(3));
+    println("-42".parse_int().unwrap() + 2);
+    println("4x2".parse_int().is_err());
+    println("2.5".parse_float().unwrap() * 2.0);
+    var c = t[0];
+    println("${c} ${c.is_upper()} ${c.to_lower()} ${'7'.is_digit()}");
+    var n = 0;
+    for ch in "a1b2c3" {
+        if ch.is_digit() {
+            n = n * 10 + (ch - '0');
+        }
+    }
+    println(n);
+    var counts: Map<char, int> = Map::new();
+    for ch in "hello" {
+        counts.insert(ch, counts.get(ch).unwrap_or(0) + 1);
+    }
+    println(counts.get('l').unwrap());
+    match "x.y".parse_int() {
+        Result::Ok(v) => println(v),
+        Result::Err(e) => println(e),
+    }
+}

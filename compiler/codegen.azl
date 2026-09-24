@@ -33,6 +33,7 @@ struct Gen {
             Type::Int => "i64",
             Type::SInt(bits) => concat("i", int_to_str(bits)),
             Type::UInt(bits) => concat("i", int_to_str(bits)),
+            Type::Char => "i8",
             Type::Float => "double",
             Type::SFloat(bits) => {
                 if bits == 32 {
@@ -71,6 +72,7 @@ struct Gen {
             Type::Int => 64,
             Type::SInt(bits) => bits,
             Type::UInt(bits) => bits,
+            Type::Char => 8,
             Type::Bool => 1,
             Type::Named(_) => {
                 if self.c.enum_named(named_of(t)) != null && !self.is_boxed_enum(t) {
@@ -318,6 +320,7 @@ struct Gen {
     func constant(e: &Expr, t: Type): str {
         return match e.kind {
             ExprKind::IntLit(v) => int_to_str(v),
+            ExprKind::CharLit(v) => int_to_str(v),
             ExprKind::Unary(_, inner) => concat("-", self.constant(inner, t)),
             ExprKind::BoolLit(b) => {
                 if b {
@@ -550,6 +553,7 @@ struct Gen {
     func expr(e: &Expr): str {
         match e.kind {
             ExprKind::IntLit(v) => { return self.int_constant(v, e.typ); },
+            ExprKind::CharLit(v) => { return self.int_constant(v, e.typ); },
             ExprKind::FloatLit(text) => {
                 if type_eq(e.typ, Type::SFloat(32)) {
                     return self.value(concat3("fptrunc double ", double_bits(text), " to float"));

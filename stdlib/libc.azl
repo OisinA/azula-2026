@@ -19,6 +19,7 @@ extern func getenv(str): str;
 extern func system(str): i32;
 extern func atoi(str): i32;
 extern func strtol(str, str, i32): int;
+extern func strtod(str, &str): float;
 extern func strncmp(str, str, int): i32;
 extern func strcpy(str, str): str;
 extern func strcat(str, str): str;

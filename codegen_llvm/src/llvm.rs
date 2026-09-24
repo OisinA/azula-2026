@@ -1325,6 +1325,7 @@ impl<'a> LLVMCodegen<'a> {
                 64 => self.context.i64_type().as_basic_type_enum(),
                 _ => unreachable!(),
             },
+            AzulaType::Char => self.context.i8_type().as_basic_type_enum(),
             AzulaType::SizedUnsignedInt(size) => match size {
                 8 => self.context.i8_type().as_basic_type_enum(),
                 16 => self.context.i16_type().as_basic_type_enum(),

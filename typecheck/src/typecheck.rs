@@ -1859,8 +1859,12 @@ impl<'a> Typechecker<'a> {
             Expression::Tuple(items) => self.typecheck_tuple(items, expr.span, env, expected),
             Expression::Try(inner) => self.typecheck_try(inner.as_ref().clone(), expr.span, env),
             Expression::Integer(_) => {
-                expr.typed = AzulaType::Int;
-                Ok((expr.clone(), AzulaType::Int))
+                // Character literals are chars; other integer literals are ints
+                if expr.typed != AzulaType::Char {
+                    expr.typed = AzulaType::Int;
+                }
+                let typ = expr.typed.clone();
+                Ok((expr, typ))
             }
             Expression::Float(_) => {
                 expr.typed = AzulaType::Float;
@@ -2016,7 +2020,7 @@ impl<'a> Typechecker<'a> {
                 let (node, typ) = self.typecheck_expression(exp.deref().clone(), env)?;
                 let target = match &typ {
                     AzulaType::Pointer(inner) => inner.as_ref().clone(),
-                    AzulaType::Str => AzulaType::SizedSignedInt(8),
+                    AzulaType::Str => AzulaType::Char,
                     _ => {
                         self.error(format!("Can't dereference a value of type {}", typ.mangle()), &expr.span);
                         return Err("deref of non-pointer".to_string());
@@ -2119,7 +2123,7 @@ impl<'a> Typechecker<'a> {
                 let return_typ = if array_typ.is_indexable() {
                     match array_typ {
                         AzulaType::Array(nested, _) => nested.deref().clone(),
-                        AzulaType::Str => AzulaType::SizedSignedInt(8),
+                        AzulaType::Str => AzulaType::Char,
                         AzulaType::Pointer(nested) => nested.deref().clone(),
                         _ => unreachable!(),
                     }
@@ -2474,7 +2478,7 @@ impl<'a> Typechecker<'a> {
         };
 
         // Dispatch based on scrutinee type: enum match or integer match
-        let is_integer_match = matches!(scrut_type, AzulaType::Int | AzulaType::SizedSignedInt(_) | AzulaType::SizedUnsignedInt(_));
+        let is_integer_match = is_integer_type(&scrut_type);
 
         let tuple_types = self.tuple_items(&scrut_type);
         let (enum_name, variants) = if is_integer_match {
@@ -3274,6 +3278,7 @@ impl<'a> Typechecker<'a> {
                     "str_from_float",
                     ExpressionNode { expression: Expression::Cast(Rc::new(part), AzulaType::Float), typed: AzulaType::Infer, span: part_span.clone() },
                 ),
+                AzulaType::Char => self.helper_call_node("str_from_char", part),
                 t if is_integer_type(t) => self.helper_call_node(
                     "str_from_int",
                     ExpressionNode { expression: Expression::Cast(Rc::new(part), AzulaType::Int), typed: AzulaType::Infer, span: part_span.clone() },
@@ -3451,6 +3456,26 @@ impl<'a> Typechecker<'a> {
             } else if is_integer_type(&right_typ) && is_integer_literal(&left) {
                 left.typed = right_typ.clone();
                 left_typ = right_typ.clone();
+            }
+
+            // Arithmetic between int and a narrower integer (such as a char) is done in int
+            let widen = |node: ExpressionNode<'a>| {
+                let span = node.span.clone();
+                ExpressionNode { expression: Expression::Cast(Rc::new(node), AzulaType::Int), typed: AzulaType::Int, span }
+            };
+            let arithmetic = matches!(
+                operator,
+                Operator::Add | Operator::Sub | Operator::Mul | Operator::Div | Operator::Mod
+                    | Operator::BitAnd | Operator::BitOr | Operator::BitXor | Operator::Shl | Operator::Shr
+            );
+            if arithmetic && is_integer_type(&left_typ) && is_integer_type(&right_typ) && left_typ != right_typ {
+                if left_typ == AzulaType::Int {
+                    right = widen(right);
+                    right_typ = AzulaType::Int;
+                } else if right_typ == AzulaType::Int {
+                    left = widen(left);
+                    left_typ = AzulaType::Int;
+                }
             }
 
             // Only plain (payload-free) enums can be compared
@@ -3987,7 +4012,7 @@ fn contains_break(body: &[Statement]) -> bool {
 }
 
 fn is_integer_type(t: &AzulaType) -> bool {
-    matches!(t, AzulaType::Int | AzulaType::SizedSignedInt(_) | AzulaType::SizedUnsignedInt(_))
+    matches!(t, AzulaType::Int | AzulaType::SizedSignedInt(_) | AzulaType::SizedUnsignedInt(_) | AzulaType::Char)
 }
 
 fn is_float_type(t: &AzulaType) -> bool {
@@ -4011,9 +4036,12 @@ fn assignable(expected: &AzulaType, got: &AzulaType, expr: &ExpressionNode) -> b
     if is_integer_type(expected) && is_integer_type(got) {
         // Literals fit any integer type; otherwise only int <-> sized conversions
         // that the old compiler allowed.
+        // chars and other 8-bit integers convert freely
+        let byte = |t: &AzulaType| matches!(t, AzulaType::Char | AzulaType::SizedSignedInt(8) | AzulaType::SizedUnsignedInt(8));
         return is_integer_literal(expr)
             || matches!(got, AzulaType::Int)
-            || matches!(expected, AzulaType::Int);
+            || matches!(expected, AzulaType::Int)
+            || (byte(expected) && byte(got));
     }
     let pointer_like = |t: &AzulaType| matches!(t, AzulaType::Pointer(_) | AzulaType::Str);
     pointer_like(expected) && pointer_like(got) && (matches!(got, AzulaType::Str) || matches!(expected, AzulaType::Str))

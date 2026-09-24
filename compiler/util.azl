@@ -2,7 +2,6 @@
 
 extern func realpath(str, str): str;
 extern func fputc(i32, str): i32;
-extern func strtod(str, str): float;
 
 func concat(a: str, b: str): str {
     var sb = StringBuilder::new();

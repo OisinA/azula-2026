@@ -73,6 +73,24 @@ extend str is Eq, Ord, Hash, Show {
     }
 }
 
+extend char is Eq, Ord, Hash, Show {
+    func equals(other: char): bool {
+        return self == other;
+    }
+
+    func compare(other: char): int {
+        return (self as int) - (other as int);
+    }
+
+    func hash(): int {
+        return self as int & 255;
+    }
+
+    func to_str(): str {
+        return str_from_char(self);
+    }
+}
+
 extend bool is Eq, Hash, Show {
     func equals(other: bool): bool {
         return self == other;

@@ -8,6 +8,8 @@ enum Type {
     Int;
     SInt(int);
     UInt(int);
+    // A byte of text: an 8-bit integer that prints as a character
+    Char;
     Float;
     SFloat(int);
     Bool;
@@ -46,6 +48,8 @@ struct FieldInit {
 
 enum ExprKind {
     IntLit(int);
+    // 'a': an integer literal whose type is char unless the context wants another integer
+    CharLit(int);
     FloatLit(str);
     BoolLit(bool);
     StrLit(str);
@@ -285,6 +289,7 @@ func type_from_name(name: str): Type {
     if name == "i32" { return Type::SInt(32); }
     if name == "i64" { return Type::SInt(64); }
     if name == "u8" { return Type::UInt(8); }
+    if name == "char" { return Type::Char; }
     if name == "u16" { return Type::UInt(16); }
     if name == "u32" { return Type::UInt(32); }
     if name == "u64" { return Type::UInt(64); }
@@ -308,6 +313,7 @@ func mangle_into(t: Type, sb: &StringBuilder) {
             sb.append("u");
             sb.append_int(bits);
         },
+        Type::Char => { sb.append("char"); },
         Type::Float => { sb.append("float"); },
         Type::SFloat(bits) => {
             sb.append("f");
@@ -385,6 +391,7 @@ func type_eq(a: Type, b: Type): bool {
         Type::Int => match b { Type::Int => true, _ => false, },
         Type::SInt(x) => match b { Type::SInt(y) => x == y, _ => false, },
         Type::UInt(x) => match b { Type::UInt(y) => x == y, _ => false, },
+        Type::Char => match b { Type::Char => true, _ => false, },
         Type::Float => match b { Type::Float => true, _ => false, },
         Type::SFloat(x) => match b { Type::SFloat(y) => x == y, _ => false, },
         Type::Bool => match b { Type::Bool => true, _ => false, },
@@ -406,6 +413,7 @@ func is_integer(t: Type): bool {
         Type::Int => true,
         Type::SInt(_) => true,
         Type::UInt(_) => true,
+        Type::Char => true,
         _ => false,
     };
 }
@@ -447,6 +455,7 @@ func int_bits(t: Type): int {
     return match t {
         Type::SInt(bits) => bits,
         Type::UInt(bits) => bits,
+        Type::Char => 8,
         Type::Bool => 1,
         _ => 64,
     };

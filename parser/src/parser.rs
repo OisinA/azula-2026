@@ -1588,7 +1588,7 @@ impl<'a> Parser<'a> {
                 };
                 Some(ExpressionNode {
                     expression: Expression::Integer(ascii),
-                    typed: AzulaType::Int,
+                    typed: AzulaType::Char,
                     span: Span { start: tok.span.start, end: tok.span.end },
                 })
             }

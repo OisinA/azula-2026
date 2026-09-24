@@ -724,7 +724,7 @@ struct Parser {
         match tok.kind {
             Tok::Int => { return new_expr(ExprKind::IntLit(tok.value), pos); },
             Tok::Float => { return new_expr(ExprKind::FloatLit(tok.text), pos); },
-            Tok::Char => { return new_expr(ExprKind::IntLit(char_value(tok.text)), pos); },
+            Tok::Char => { return new_expr(ExprKind::CharLit(char_value(tok.text)), pos); },
             Tok::Str => { return self.parse_string(tok.text, pos); },
             Tok::KwTrue => { return new_expr(ExprKind::BoolLit(true), pos); },
             Tok::KwFalse => { return new_expr(ExprKind::BoolLit(false), pos); },

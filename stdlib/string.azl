@@ -138,9 +138,264 @@ func str_from_float(f: float): str {
     return buf;
 }
 
+func str_from_char(c: char): str {
+    var buf: str = malloc(2 * sizeof(u8));
+    buf[0] = c;
+    buf[1] = 0;
+    return buf;
+}
+
 func str_from_bool(b: bool): str {
     if b {
         return "true";
     }
     return "false";
+}
+
+// ---------------------------------------------------------------------------
+// Characters
+// ---------------------------------------------------------------------------
+
+extend char {
+    func is_digit(): bool {
+        return self >= '0' && self <= '9';
+    }
+
+    func is_alpha(): bool {
+        return (self >= 'a' && self <= 'z') || (self >= 'A' && self <= 'Z');
+    }
+
+    func is_alnum(): bool {
+        return self.is_alpha() || self.is_digit();
+    }
+
+    func is_space(): bool {
+        return self == ' ' || self == '\t' || self == '\n' || self == '\r';
+    }
+
+    func is_upper(): bool {
+        return self >= 'A' && self <= 'Z';
+    }
+
+    func is_lower(): bool {
+        return self >= 'a' && self <= 'z';
+    }
+
+    func to_upper(): char {
+        if self.is_lower() {
+            return self - 32;
+        }
+        return self;
+    }
+
+    func to_lower(): char {
+        if self.is_upper() {
+            return self + 32;
+        }
+        return self;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// String methods. Strings are C strings: methods that make a new string
+// allocate it, and never change the original.
+// ---------------------------------------------------------------------------
+
+extend str {
+    func len(): int {
+        return strlen(self);
+    }
+
+    func is_empty(): bool {
+        return self[0] == 0;
+    }
+
+    // The index of the first `needle`, if there is one
+    func find(needle: str): Option<int> {
+        var found = strstr(self, needle);
+        if found == null {
+            return Option::None;
+        }
+        return Option::Some(found as int - self as int);
+    }
+
+    func contains(needle: str): bool {
+        return strstr(self, needle) != null;
+    }
+
+    func starts_with(prefix: str): bool {
+        return strncmp(self, prefix, strlen(prefix)) == 0;
+    }
+
+    func ends_with(suffix: str): bool {
+        var n = strlen(self);
+        var m = strlen(suffix);
+        return m <= n && strcmp(ptr_add(self, n - m), suffix) == 0;
+    }
+
+    // The characters from `start` up to (not including) `end`, which are
+    // clamped to the string
+    func slice(start: int, end: int): str {
+        var n = strlen(self);
+        var from = start;
+        var to = end;
+        if from < 0 {
+            from = 0;
+        }
+        if to > n {
+            to = n;
+        }
+        if to < from {
+            to = from;
+        }
+        var out: str = malloc((to - from + 1) * sizeof(u8));
+        memcpy(out, ptr_add(self, from), to - from);
+        out[to - from] = 0;
+        return out;
+    }
+
+    func trim_start(): str {
+        var i = 0;
+        while self[i] != 0 && self[i].is_space() {
+            i += 1;
+        }
+        return self.slice(i, strlen(self));
+    }
+
+    func trim_end(): str {
+        var n = strlen(self);
+        while n > 0 && self[n - 1].is_space() {
+            n -= 1;
+        }
+        return self.slice(0, n);
+    }
+
+    func trim(): str {
+        return self.trim_start().trim_end();
+    }
+
+    // The pieces between occurrences of `separator` (which must not be empty)
+    func split(separator: str): Vec<str> {
+        var parts: Vec<str> = Vec::new();
+        var sep_len = strlen(separator);
+        var rest = self;
+        while true {
+            var found = strstr(rest, separator);
+            if found == null {
+                parts.push(rest.slice(0, strlen(rest)));
+                return parts;
+            }
+            parts.push(rest.slice(0, found as int - rest as int));
+            rest = ptr_add(found, sep_len);
+        }
+        return parts;
+    }
+
+    func lines(): Vec<str> {
+        var parts = self.split("\n");
+        // A final newline doesn't start another line
+        if parts.len > 0 && parts.get(parts.len - 1) == "" {
+            parts.pop();
+        }
+        return parts;
+    }
+
+    // A copy with each `from` replaced by `to`
+    func replace(from: str, to: str): str {
+        if from == "" {
+            return self.slice(0, strlen(self));
+        }
+        var out = StringBuilder::new();
+        var from_len = strlen(from);
+        var rest = self;
+        while true {
+            var found = strstr(rest, from);
+            if found == null {
+                out.append(rest);
+                return out.to_str();
+            }
+            out.append(rest.slice(0, found as int - rest as int));
+            out.append(to);
+            rest = ptr_add(found, from_len);
+        }
+        return out.to_str();
+    }
+
+    func repeat(count: int): str {
+        var out = StringBuilder::new();
+        var i = 0;
+        while i < count {
+            out.append(self);
+            i += 1;
+        }
+        return out.to_str();
+    }
+
+    func to_upper(): str {
+        var out = self.slice(0, strlen(self));
+        var i = 0;
+        while out[i] != 0 {
+            out[i] = out[i].to_upper();
+            i += 1;
+        }
+        return out;
+    }
+
+    func to_lower(): str {
+        var out = self.slice(0, strlen(self));
+        var i = 0;
+        while out[i] != 0 {
+            out[i] = out[i].to_lower();
+            i += 1;
+        }
+        return out;
+    }
+
+    // The parts joined with this string between them: ", ".join(names)
+    func join(parts: Vec<str>): str {
+        var out = StringBuilder::new();
+        var i = 0;
+        while i < parts.len {
+            if i > 0 {
+                out.append(self);
+            }
+            out.append(parts.get(i));
+            i += 1;
+        }
+        return out.to_str();
+    }
+
+    // The whole string as a decimal integer (optionally signed)
+    func parse_int(): Result<int, str> {
+        var i = 0;
+        var negative = false;
+        if self[0] == '-' || self[0] == '+' {
+            negative = self[0] == '-';
+            i = 1;
+        }
+        if !self[i].is_digit() {
+            return Result::Err("not a number: \"${self}\"");
+        }
+        var value = 0;
+        while self[i].is_digit() {
+            value = value * 10 + (self[i] - '0');
+            i += 1;
+        }
+        if self[i] != 0 {
+            return Result::Err("not a number: \"${self}\"");
+        }
+        if negative {
+            return Result::Ok(-value);
+        }
+        return Result::Ok(value);
+    }
+
+    func parse_float(): Result<float, str> {
+        var end: str = null;
+        var value = strtod(self, &end);
+        if end as int == self as int || end[0] != 0 {
+            return Result::Err("not a number: \"${self}\"");
+        }
+        return Result::Ok(value);
+    }
 }
