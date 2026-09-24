@@ -398,11 +398,6 @@ struct Checker {
                         }
                         program.impls.push(new ImplDecl { target: claim.target, type_params: type_params, methods: methods, pos: claim.pos });
                     }
-                    // Methods implementing interface methods that take `self`
-                    // take it too, even if they don't use it
-                    if m.params.len > 0 && m.params.get(0).name == "self" {
-                        add_self_param(program, key, m.name);
-                    }
                     k += 1;
                 }
                 j += 1;
@@ -435,10 +430,10 @@ struct Checker {
             var takes_self = m.params.len > 0 && m.params.get(0).name == "self";
             var what = concat3("`", mangle(self_type), concat3(".", m.name, "` "));
             if takes_self && !sig.is_method {
-                self.fail(pos, concat3(what, "doesn't use `self`, but interface `", concat(name, "` needs it to be a method")));
+                self.fail(pos, concat3(what, "is static, but interface `", concat(name, "` needs it to be a method")));
             }
             if !takes_self && sig.is_method {
-                self.fail(pos, concat3(what, "uses `self`, but interface `", concat(name, "` needs it to be static")));
+                self.fail(pos, concat3(what, "is a method, but interface `", concat(name, "` needs it to be static")));
             }
             var expected: Vec<Type> = Vec::new();
             var j = 0;
@@ -516,7 +511,7 @@ struct Checker {
 
     // Give methods their receiver type and resolve `Self`: in a type's methods,
     // `self` is a reference (`&T`) for structs and a value for other types
-    func resolve_receivers(program: &Program) {
+    static func resolve_receivers(program: &Program) {
         var structs: Map<str, bool> = Map::new();
         var i = 0;
         while i < program.structs.len {
@@ -2310,6 +2305,9 @@ struct Checker {
                     symbol = generic_symbol;
                 }
                 var sig = self.sig_for(symbol, concat3("unknown function `", concat3(type_name, "::", member), "`"), callee.pos);
+                if sig.is_method {
+                    self.fail(callee.pos, concat3("`", member, concat3("` is a method: call it on a value, like value.", member, "()")));
+                }
                 self.check_args(sig, args, 0, e.pos);
                 e.kind = ExprKind::CallFn(symbol, args);
                 return sig.ret;
@@ -2346,7 +2344,7 @@ struct Checker {
         }
         var sig = self.sig_for(symbol, concat3("no method `", method, concat("` on ", mangle(t))), callee.pos);
         if !sig.is_method {
-            self.fail(callee.pos, concat3("`", method, concat3("` doesn't use `self`, so it's a static function: call it as ", type_name, concat3("::", method, "()"))));
+            self.fail(callee.pos, concat3("`", method, concat3("` is a static function: call it as ", type_name, concat3("::", method, "()"))));
         }
         // Pass the receiver by pointer or by value, as the method wants
         var receiver = obj;
@@ -3420,32 +3418,6 @@ func type_key(t: Type): str {
         Type::Generic(name, _) => name,
         _ => mangle(t),
     };
-}
-
-// Make type `key`'s method `name` take `self` if it doesn't already
-func add_self_param(program: &Program, key: str, name: str) {
-    var i = 0;
-    while i < program.impls.len {
-        var imp = program.impls.get(i);
-        if type_key(imp.target) == key {
-            var j = 0;
-            while j < imp.methods.len {
-                var f = imp.methods.get(j);
-                if f.name == name && (f.params.len == 0 || f.params.get(0).name != "self") {
-                    var params: Vec<Param> = Vec::new();
-                    params.push(Param { name: "self", typ: Type::Named("__self") });
-                    var k = 0;
-                    while k < f.params.len {
-                        params.push(f.params.get(k));
-                        k += 1;
-                    }
-                    f.params = params;
-                }
-                j += 1;
-            }
-        }
-        i += 1;
-    }
 }
 
 // Does `program` give the type `key` a method called `name`?

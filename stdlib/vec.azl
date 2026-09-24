@@ -4,11 +4,11 @@ struct Vec<T> {
     len: int;
     cap: int;
 
-    func new(): Vec<T> {
+    static func new(): Vec<T> {
         return Vec::<T>::with_capacity(8);
     }
 
-    func with_capacity(capacity: int): Vec<T> {
+    static func with_capacity(capacity: int): Vec<T> {
         var cap = capacity;
         if cap < 1 {
             cap = 1;

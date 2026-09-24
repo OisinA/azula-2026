@@ -188,8 +188,9 @@ Other things to know:
 - `match` works on enums and integers (including character literals); arms can be
   blocks, and a `match` can be used as a statement or an expression.
 - Methods are declared in a type's body and receive `self` implicitly (a reference for
-  structs, the value for enums); a function there that doesn't use `self` is static and is
-  called as `Type::name()`. `extend Type { ... }` adds methods to a type from elsewhere.
+  structs, the value for enums and built-in types); `static func` declares a function
+  called as `Type::name()` instead. `extend Type { ... }` adds methods to a type from
+  elsewhere.
 - Struct fields and enum variants end with `;`, and `new Type { ... }` allocates on the heap.
 - `extern func name(types): type;` (optionally `extern varargs func`) declares C functions;
   `stdlib/libc.azl` declares the common ones.

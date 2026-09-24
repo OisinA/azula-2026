@@ -874,50 +874,7 @@ impl<'a> Typechecker<'a> {
         }
         out.extend(defaults);
 
-        // Methods implementing interface methods that take `self` take it too,
-        // even if they don't use it
-        let mut needs_self: HashMap<String, HashSet<String>> = HashMap::new();
-        for (key, claims) in &self.conformances {
-            for (interface, _) in claims {
-                for (method, _) in self.interfaces.get(interface).cloned().unwrap_or_default() {
-                    if let Statement::Function { name, args, .. } = method {
-                        if args.first().map(|(_, n)| *n == "self").unwrap_or(false) {
-                            needs_self.entry(key.clone()).or_default().insert(name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        let add_self = |imp: Statement<'a>| -> Statement<'a> {
-            if let Statement::Impl { struct_impl, trait_impl, funcs, span } = imp {
-                let wanted = needs_self.get(&type_key(&struct_impl));
-                let funcs = funcs
-                    .into_iter()
-                    .map(|f| match f {
-                        Statement::Function { name, mut args, returns, body, span }
-                            if wanted.map(|w| w.contains(name)).unwrap_or(false)
-                                && args.first().map(|(_, n)| *n != "self").unwrap_or(true) =>
-                        {
-                            args.insert(0, (AzulaType::Named("__self".to_string()), "self"));
-                            Statement::Function { name, args, returns, body, span }
-                        }
-                        other => other,
-                    })
-                    .collect();
-                Statement::Impl { struct_impl, trait_impl, funcs, span }
-            } else {
-                imp
-            }
-        };
-        out.into_iter()
-            .map(|stmt| match stmt {
-                Statement::Impl { .. } => add_self(stmt),
-                Statement::Generic(params, bounds, inner) if matches!(inner.as_ref(), Statement::Impl { .. }) => {
-                    Statement::Generic(params, bounds, Rc::new(add_self(inner.as_ref().clone())))
-                }
-                other => other,
-            })
-            .collect()
+        out
     }
 
     /// Check that `type_name` has the methods of `interface`, with matching signatures
@@ -955,7 +912,7 @@ impl<'a> Typechecker<'a> {
                 let self_matches = takes_self(&args) == found.args.first().map(|(_, n)| n == "self").unwrap_or(false);
                 let skip = if takes_self(&args) { 1 } else { 0 };
                 if !self_matches {
-                    let problem = if takes_self(&args) { "doesn't use `self`" } else { "uses `self`" };
+                    let problem = if takes_self(&args) { "is static" } else { "is a method" };
                     let wanted = if takes_self(&args) { "a method" } else { "static" };
                     self.error(
                         format!("`{}.{}` {}, but interface `{}` needs it to be {}", self_type.mangle(), name, problem, interface, wanted),
@@ -2795,10 +2752,17 @@ impl<'a> Typechecker<'a> {
         let is_method = matches!(function.expression, Expression::StructAccess(..));
         if is_method && func.args.first().map(|(_, name)| name != "self").unwrap_or(true) {
             self.error(
-                format!("`{}` doesn't use `self`, so it's a static function: call it as Type::{}()", func.name, func.name),
+                format!("`{}` is a static function: call it as Type::{}()", func.name, func.name),
                 &span,
             );
             return Err("static function called as a method".to_string());
+        }
+        if let Expression::NamespaceAccess(ns, _) = &function.expression {
+            let is_type = matches!(&ns.expression, Expression::Identifier(n) if self.namespaces.contains_key(n.as_str()));
+            if is_type && func.args.first().map(|(_, name)| name == "self").unwrap_or(false) {
+                self.error(format!("`{}` is a method: call it on a value, like value.{}()", func.name, func.name), &span);
+                return Err("method called as a static function".to_string());
+            }
         }
         let function = self.typecheck_function_def(function, env);
         let params: Vec<AzulaType<'a>> = func

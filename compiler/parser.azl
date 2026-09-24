@@ -175,7 +175,7 @@ struct Parser {
     }
 
     // Record that the type `name<type_params>` implements `interfaces`
-    func add_conformance(program: &Program, name: str, type_params: Vec<str>, interfaces: Vec<str>, pos: int) {
+    static func add_conformance(program: &Program, name: str, type_params: Vec<str>, interfaces: Vec<str>, pos: int) {
         if interfaces.len == 0 {
             return;
         }
@@ -201,7 +201,7 @@ struct Parser {
         var has_body: Vec<bool> = Vec::new();
         self.expect(Tok::LBrace, "`{`");
         while !self.accept(Tok::RBrace) {
-            if !self.at(Tok::KwFunc) {
+            if !self.at_method() {
                 self.src.fail(self.peek().pos, "expected a method");
             }
             var f = self.parse_method_or_signature(true);
@@ -299,7 +299,7 @@ struct Parser {
         var methods: Vec<&FuncDecl> = Vec::new();
         self.expect(Tok::LBrace, "`{`");
         while !self.accept(Tok::RBrace) {
-            if self.at(Tok::KwFunc) {
+            if self.at_method() {
                 methods.push(self.parse_method());
                 continue;
             }
@@ -321,10 +321,11 @@ struct Parser {
     // A method, or (with `allow_signature`) an interface method signature,
     // which always takes `self`
     func parse_method_or_signature(allow_signature: bool): &FuncDecl {
+        var is_static = self.accept(Tok::KwStatic);
         var f = self.parse_func_or_signature(allow_signature);
         // Bounds on a method's own type parameters aren't checked
         self.bounds = Vec::new();
-        if !self.last_had_body || stmts_mention_self(f.body) {
+        if !is_static {
             var params: Vec<Param> = Vec::new();
             params.push(Param { name: "self", typ: Type::Named("__self") });
             var i = 0;
@@ -337,8 +338,13 @@ struct Parser {
         return f;
     }
 
+    // Does a method (`func` or `static func`) start here?
+    func at_method(): bool {
+        return self.at(Tok::KwFunc) || self.at(Tok::KwStatic);
+    }
+
     // Record the methods declared in the body of type `name`
-    func add_methods(program: &Program, name: str, type_params: Vec<str>, methods: Vec<&FuncDecl>, pos: int) {
+    static func add_methods(program: &Program, name: str, type_params: Vec<str>, methods: Vec<&FuncDecl>, pos: int) {
         if methods.len == 0 {
             return;
         }
@@ -366,7 +372,7 @@ struct Parser {
         var methods: Vec<&FuncDecl> = Vec::new();
         self.expect(Tok::LBrace, "`{`");
         while !self.accept(Tok::RBrace) {
-            if self.at(Tok::KwFunc) {
+            if self.at_method() {
                 methods.push(self.parse_method());
                 continue;
             }
@@ -418,7 +424,7 @@ struct Parser {
             if self.accept(Tok::Semi) {
                 continue;
             }
-            if !self.at(Tok::KwFunc) {
+            if !self.at_method() {
                 self.src.fail(self.peek().pos, "expected a method");
             }
             methods.push(self.parse_method());

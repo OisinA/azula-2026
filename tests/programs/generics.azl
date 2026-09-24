@@ -3,7 +3,7 @@ struct Stack<T> {
     len: int;
     cap: int;
 
-    func new(): Stack<T> {
+    static func new(): Stack<T> {
         return Stack { data: malloc(4 * sizeof(T)), len: 0, cap: 4 };
     }
 

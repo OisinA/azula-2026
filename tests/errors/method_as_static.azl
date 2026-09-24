@@ -1,0 +1,12 @@
+// error: `area` is a method: call it on a value, like value.area()
+struct Square {
+    side: int;
+
+    func area(): int {
+        return self.side * self.side;
+    }
+}
+
+func main() {
+    var n = Square::area();
+}

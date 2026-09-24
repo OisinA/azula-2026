@@ -6,7 +6,7 @@ const RATIO: float = 2.5;
 
 struct Counter { count: int; label: str;
 
-    func new(label: str): Counter {
+    static func new(label: str): Counter {
         return Counter { count: 0, label: label };
     }
 

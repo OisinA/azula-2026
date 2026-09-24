@@ -2,7 +2,7 @@ struct String {
     data: str;
     len: int;
 
-    func new(s: str): String {
+    static func new(s: str): String {
         return String { data: s, len: strlen(s) };
     }
 
@@ -48,7 +48,7 @@ struct StringBuilder {
     len: int;
     cap: int;
 
-    func new(): StringBuilder {
+    static func new(): StringBuilder {
         var data: str = malloc(64 * sizeof(u8));
         data[0] = 0;
         return StringBuilder { data: data, len: 0, cap: 64 };

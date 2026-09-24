@@ -80,6 +80,7 @@ pub enum TokenKind<'a> {
     SizeOf,   // sizeof
     Extend,   // extend
     Interface, // interface
+    Static,    // static
     In,       // in
 
     Import, // import

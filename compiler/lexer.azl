@@ -66,6 +66,7 @@ enum Tok {
     KwSizeof;
     KwExtend;
     KwInterface;
+    KwStatic;
     KwIn;
     DotDot;
     DotDotEq;
@@ -135,6 +136,7 @@ func keyword_kind(word: str): Tok {
     if word == "sizeof" { return Tok::KwSizeof; }
     if word == "extend" { return Tok::KwExtend; }
     if word == "interface" { return Tok::KwInterface; }
+    if word == "static" { return Tok::KwStatic; }
     if word == "in" { return Tok::KwIn; }
     return Tok::Ident;
 }

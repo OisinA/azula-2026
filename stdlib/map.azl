@@ -8,11 +8,11 @@ struct Map<K is Hash + Eq, V> {
     cap: int;
     count: int;
 
-    func new(): Map<K, V> {
+    static func new(): Map<K, V> {
         return Map::<K, V>::with_capacity(16);
     }
 
-    func with_capacity(cap: int): Map<K, V> {
+    static func with_capacity(cap: int): Map<K, V> {
         return Map {
             keys: malloc(cap * sizeof(K)),
             values: malloc(cap * sizeof(V)),

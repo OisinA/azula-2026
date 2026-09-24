@@ -5,7 +5,7 @@ struct Counter {
     count: int;
     step: int;
 
-    func new(step: int): Counter {
+    static func new(step: int): Counter {
         return Counter { count: 0, step: step };
     }
 
@@ -23,7 +23,7 @@ struct Counter {
         return self[0];
     }
 
-    func describe(): str {
+    static func describe(): str {
         return "counter";
     }
 }
@@ -46,7 +46,7 @@ enum Shape {
         return self.area() > other.area();
     }
 
-    func unit(): Self {
+    static func unit(): Self {
         return Shape::Square(1);
     }
 }
@@ -54,7 +54,7 @@ enum Shape {
 struct Stack<T> {
     items: Vec<T>;
 
-    func new(): Stack<T> {
+    static func new(): Stack<T> {
         return Stack { items: Vec::new() };
     }
 

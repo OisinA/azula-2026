@@ -23,7 +23,7 @@ struct Arena {
     chunks: &ArenaChunk;
     bytes: int;
 
-    func new(): Arena {
+    static func new(): Arena {
         return Arena { chunks: null, bytes: 0 };
     }
 

@@ -1,8 +1,8 @@
-// error: doesn't use `self`, so it's a static function
+// error: is a static function: call it as Point::origin()
 struct Point {
     x: int;
 
-    func origin(): Point {
+    static func origin(): Point {
         return Point { x: 0 };
     }
 }

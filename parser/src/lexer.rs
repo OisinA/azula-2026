@@ -337,6 +337,7 @@ impl<'a> Lexer<'a> {
             "sizeof" => Token::new(TokenKind::SizeOf, start, self.index),
             "extend" => Token::new(TokenKind::Extend, start, self.index),
             "interface" => Token::new(TokenKind::Interface, start, self.index),
+            "static" => Token::new(TokenKind::Static, start, self.index),
             "in" => Token::new(TokenKind::In, start, self.index),
             "import" => Token::new(TokenKind::Import, start, self.index),
             _ => Token::new(TokenKind::Identifier(value), start, self.index),

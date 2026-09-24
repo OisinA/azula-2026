@@ -380,7 +380,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.lexer.peek().map(|t| t.kind.clone()) {
                 Some(TokenKind::BraceClose) => break,
-                Some(TokenKind::Function) => methods.push(self.parse_method()?),
+                Some(TokenKind::Function) | Some(TokenKind::Static) => methods.push(self.parse_method()?),
                 Some(TokenKind::Identifier(_)) => {
                     let field = self.parse_typed_identifier()?;
                     if !self.expect_peek(TokenKind::SemiColon) {
@@ -422,13 +422,13 @@ impl<'a> Parser<'a> {
     }
 
     /// A function in a type's body. It's a method, receiving `self`, if its body uses `self`.
+    /// A function in a type's body: a method, receiving `self`, or with
+    /// `static func`, a function called as `Type::name()`
     fn parse_method(&mut self) -> Option<Statement<'a>> {
         fn add_self<'a>(func: Statement<'a>) -> Statement<'a> {
             match func {
                 Statement::Function { name, mut args, returns, body, span } => {
-                    if statement_mentions_self(&body) {
-                        args.insert(0, (AzulaType::Named("__self".to_string()), "self"));
-                    }
+                    args.insert(0, (AzulaType::Named("__self".to_string()), "self"));
                     Statement::Function { name, args, returns, body, span }
                 }
                 // A generic method: `func map<U>(...)`
@@ -436,7 +436,19 @@ impl<'a> Parser<'a> {
                 other => other,
             }
         }
+        if self.lexer.peek().map(|t| t.kind == TokenKind::Static).unwrap_or(false) {
+            self.lexer.next();
+            if !self.expect_peek(TokenKind::Function) {
+                return None;
+            }
+            return self.parse_function();
+        }
         Some(add_self(self.parse_function()?))
+    }
+
+    /// Whether the next token starts a method (`func` or `static func`)
+    fn at_method(&mut self) -> bool {
+        self.lexer.peek().map(|t| t.kind == TokenKind::Function || t.kind == TokenKind::Static).unwrap_or(false)
     }
 
     /// Record the methods declared in the body of type `name` as an impl block.
@@ -486,7 +498,8 @@ impl<'a> Parser<'a> {
         self.lexer.next();
         let mut methods = vec![];
         while self.lexer.peek().map(|t| t.kind != TokenKind::BraceClose).unwrap_or(false) {
-            if !self.expect_peek(TokenKind::Function) {
+            if !self.at_method() {
+                self.expect_peek(TokenKind::Function);
                 return None;
             }
             methods.push(self.parse_method()?);
@@ -575,7 +588,7 @@ impl<'a> Parser<'a> {
             if tok.kind == TokenKind::BraceClose {
                 break;
             }
-            if tok.kind == TokenKind::Function {
+            if tok.kind == TokenKind::Function || tok.kind == TokenKind::Static {
                 methods.push(self.parse_method()?);
                 continue;
             }
@@ -1281,9 +1294,11 @@ impl<'a> Parser<'a> {
         self.lexer.next();
         let mut methods = vec![];
         while self.lexer.peek().map(|t| t.kind != TokenKind::BraceClose).unwrap_or(false) {
-            if !self.expect_peek(TokenKind::Function) {
+            if !self.at_method() {
+                self.expect_peek(TokenKind::Function);
                 return None;
             }
+            let is_static = self.lexer.peek().map(|t| t.kind == TokenKind::Static).unwrap_or(false);
             // Look ahead for a body
             let mut look = self.lexer.clone();
             let mut has_body = false;
@@ -1302,11 +1317,17 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let fstart = self.lexer.next()?.span.start;
+            if is_static {
+                self.lexer.next(); // func
+            }
             let fname = match self.lexer.next()?.kind {
                 TokenKind::Identifier(n) => n,
                 _ => return None,
             };
-            let mut args = vec![(AzulaType::Named("__self".to_string()), "self")];
+            let mut args = vec![];
+            if !is_static {
+                args.push((AzulaType::Named("__self".to_string()), "self"));
+            }
             if self.lexer.peek().map(|t| t.kind == TokenKind::BracketOpen).unwrap_or(false) {
                 args.extend(self.parse_typed_identifier_list(TokenKind::BracketOpen));
             }
@@ -3126,7 +3147,7 @@ mod tests {
 
     #[test]
     fn test_parse_extend() {
-        let input = "extend Test { func test { } func get(): int { return self.x; } }";
+        let input = "extend Test { static func test { } func get(): int { return 1; } }";
         let lexer: Lexer = input.into();
         let mut parser = Parser::new(input, lexer);
 
@@ -3134,7 +3155,7 @@ mod tests {
         if let Statement::Impl { struct_impl, funcs, .. } = stmt {
             assert_eq!(struct_impl, AzulaType::Named("Test".to_string()));
             assert_eq!(funcs.len(), 2);
-            // Only the method that uses `self` receives it
+            // Methods receive `self`; static functions don't
             match (&funcs[0], &funcs[1]) {
                 (Statement::Function { args: a, .. }, Statement::Function { args: b, .. }) => {
                     assert!(a.is_empty());

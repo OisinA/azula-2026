@@ -6,7 +6,7 @@ const HEIGHT: int = 8;
 struct Grid {
     cells: &bool;
 
-    func new(): Grid {
+    static func new(): Grid {
         var cells: &bool = calloc(WIDTH * HEIGHT, sizeof(bool));
         return Grid { cells: cells };
     }

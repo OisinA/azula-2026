@@ -30,7 +30,7 @@ struct Counter {
         return (self.n, value);
     }
 
-    func boxed<T>(value: T): Box<T> {
+    static func boxed<T>(value: T): Box<T> {
         return Box { value: value };
     }
 }
