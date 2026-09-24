@@ -1,0 +1,65 @@
+// Lots of short-lived trees, lists and strings alongside long-lived data
+enum Tree {
+    Leaf(int),
+    Node(Tree, Tree),
+}
+
+func build(depth: int, value: int): Tree {
+    if depth == 0 {
+        return Tree::Leaf(value);
+    }
+    return Tree::Node(build(depth - 1, value * 2), build(depth - 1, value * 2 + 1));
+}
+
+func sum(t: Tree): int {
+    return match t {
+        Tree::Leaf(v) => v,
+        Tree::Node(l, r) => sum(l) + sum(r),
+    };
+}
+
+struct Item { name: str, value: int, next: &Item, }
+
+func main {
+    // Keep one long-lived tree while churning through lots of short-lived ones
+    var keep = build(12, 1);
+    var total = 0;
+    var round = 0;
+    while round < 200 {
+        var t = build(10, round);
+        total = total + sum(t);
+        round = round + 1;
+    }
+    printf("total %ld, kept tree sums to %ld\n", total, sum(keep));
+
+    // Linked list, strings and vectors
+    var head: &Item = null;
+    var i = 0;
+    while i < 20000 {
+        var sb = StringBuilder::new();
+        sb.append("item");
+        sb.append_int(i);
+        head = alloc(Item { name: sb.build(), value: i, next: head });
+        if i % 1000 == 999 {
+            head = null;
+        }
+        i = i + 1;
+    }
+    var v: Vec<str> = Vec::new();
+    i = 0;
+    while i < 50000 {
+        v.push(int_to_string(i));
+        i = i + 1;
+    }
+    printf("%s %s %ld\n", v.get(0), v.get(49999), v.length());
+    // Most of what was allocated must have been reclaimed
+    if gc_heap_bytes() > 64 * 1024 * 1024 {
+        printf("heap too big: %ld KB\n", gc_heap_bytes() / 1024);
+    }
+}
+
+func int_to_string(n: int): str {
+    var sb = StringBuilder::new();
+    sb.append_int(n);
+    return sb.build();
+}

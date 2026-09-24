@@ -58,6 +58,20 @@ func llvm_escape(s: str, sb: &StringBuilder) {
     }
 }
 
+// Builtins the code generator implements itself rather than calling
+func is_intrinsic(symbol: str): bool {
+    return str_eq(symbol, "ptr_add") || str_eq(symbol, "gc_state") || str_eq(symbol, "gc_stack_pointer")
+        || str_eq(symbol, "gc_spill_registers") || !str_eq(link_name(symbol), symbol);
+}
+
+// The symbol a call to `symbol` links against (c_malloc calls C's malloc, ...)
+func link_name(symbol: str): str {
+    if str_eq(symbol, "c_malloc") || str_eq(symbol, "c_calloc") || str_eq(symbol, "c_realloc") || str_eq(symbol, "c_free") {
+        return substring(symbol, 2, strlen(symbol) - 2);
+    }
+    return symbol;
+}
+
 func quote_global(name: str): str {
     return concat3("@\"", name, "\"");
 }
@@ -68,10 +82,10 @@ func quote_local(name: str): str {
 
 // The bit pattern of a double, in LLVM's hexadecimal float syntax
 func double_bits(text: str): str {
-    var cell: &float = malloc(8);
+    var cell: &float = malloc(sizeof(float));
     cell[0] = strtod(text, null);
     var bits = (cell as &int)[0];
-    var buf: str = malloc(24);
+    var buf: str = malloc(24 * sizeof(u8));
     snprintf(buf, 24, "0x%016lX", bits);
     return buf;
 }
@@ -244,8 +258,17 @@ impl Gen {
         return self.value(concat3("ptrtoint ptr ", p, " to i64"));
     }
 
-    func malloc(self: &Gen, size: str): str {
-        return self.value(concat3("call ptr @\"malloc\"(i64 ", size, ")"));
+    // Allocate `size` bytes to hold a value of type `t`: from the collected heap
+    // when the program has the GC (unscanned if `t` holds no pointers), else malloc
+    func allocate(self: &Gen, size: str, t: Type): str {
+        var function = "malloc";
+        if self.c.has_gc {
+            function = "gc_malloc";
+            if !self.c.has_pointers(t) {
+                function = "gc_malloc_atomic";
+            }
+        }
+        return self.value(concat3("call ptr ", quote_global(function), concat3("(i64 ", size, ")")));
     }
 
     // -----------------------------------------------------------------------
@@ -318,7 +341,7 @@ impl Gen {
         i = 0;
         while i < symbols.len {
             var sig = self.c.funcs.get(symbols.get(i)).unwrap();
-            if sig.is_extern && !str_eq(sig.symbol, "ptr_add") {
+            if sig.is_extern && !is_intrinsic(sig.symbol) {
                 out.append("declare ");
                 out.append(self.llvm_type(sig.ret));
                 out.append(" ");
@@ -342,6 +365,11 @@ impl Gen {
             }
             i = i + 1;
         }
+        // Intrinsics used by the garbage collector
+        out.append("@__azula_gc_state = internal global [512 x i8] zeroinitializer, align 16\n");
+        out.append("declare ptr @llvm.stacksave.p0()\n");
+        out.append("declare void @llvm.eh.unwind.init()\n");
+        out.append("declare ptr @llvm.frameaddress.p0(i32)\n");
         out.append("\n");
 
         i = 0;
@@ -416,6 +444,11 @@ impl Gen {
             i = i + 1;
         }
         out.append(") {\nentry:\n");
+        if self.is_main && self.c.has_gc {
+            // Tell the collector where the stack starts
+            var base = self.value("call ptr @llvm.frameaddress.p0(i32 0)");
+            self.emit(concat3("call void @\"gc_init\"(ptr ", base, ")"));
+        }
 
         self.block(f.body);
         if !self.terminated {
@@ -640,7 +673,7 @@ impl Gen {
                 };
                 var elem_llvm = self.llvm_type(elem);
                 var size = self.value(concat3("mul i64 ", self.size_of(elem_llvm), concat(", ", int_to_str(items.len))));
-                var array = self.malloc(size);
+                var array = self.allocate(size, elem);
                 var i = 0;
                 while i < items.len {
                     var item = items.get(i);
@@ -655,7 +688,7 @@ impl Gen {
             ExprKind::SizeOf(t) => { return self.size_of(self.llvm_type(t)); },
             ExprKind::Alloc(x) => {
                 var v = self.expr(x);
-                var ptr = self.malloc(self.size_of(self.llvm_type(x.typ)));
+                var ptr = self.allocate(self.size_of(self.llvm_type(x.typ)), x.typ);
                 self.store(x.typ, v, ptr);
                 return ptr;
             },
@@ -820,6 +853,16 @@ impl Gen {
     }
 
     func call(self: &Gen, e: &Expr, symbol: str, args: Vec<&Expr>): str {
+        if str_eq(symbol, "gc_state") {
+            return "@__azula_gc_state";
+        }
+        if str_eq(symbol, "gc_stack_pointer") {
+            return self.value("call ptr @llvm.stacksave.p0()");
+        }
+        if str_eq(symbol, "gc_spill_registers") {
+            self.emit("call void @llvm.eh.unwind.init()");
+            return "";
+        }
         if str_eq(symbol, "ptr_add") {
             var base = self.expr(args.get(0));
             var offset = self.coerce(self.expr(args.get(1)), args.get(1).typ, Type::Int);
@@ -869,7 +912,7 @@ impl Gen {
             fn_type.append("...)");
             callee = fn_type.to_str();
         }
-        var text = concat3("call ", callee, concat3(" ", quote_global(symbol), concat3("(", arg_text.to_str(), ")")));
+        var text = concat3("call ", callee, concat3(" ", quote_global(link_name(symbol)), concat3("(", arg_text.to_str(), ")")));
         if is_void(sig.ret) {
             self.emit(text);
             return "";
@@ -890,7 +933,16 @@ impl Gen {
             i = i + 1;
         }
         var layout = quote_local(concat3(name, ".", info.variants.get(tag)));
-        var cell = self.malloc(self.size_of(layout));
+        // The cell holds pointers only if the payload does
+        var cell_type = Type::Int;
+        i = 0;
+        while i < info.payloads.get(tag).len {
+            if self.c.has_pointers(info.payloads.get(tag).get(i)) {
+                cell_type = Type::Str;
+            }
+            i = i + 1;
+        }
+        var cell = self.allocate(self.size_of(layout), cell_type);
         var tag_slot = self.value(concat3("getelementptr ", layout, concat3(", ptr ", cell, ", i32 0, i32 0")));
         self.store(Type::Int, int_to_str(tag), tag_slot);
         i = 0;

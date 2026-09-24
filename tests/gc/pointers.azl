@@ -1,0 +1,112 @@
+// Objects reachable only in unusual ways must survive collections.
+
+struct Node {
+    value: int,
+    next: &Node,
+}
+
+struct Holder {
+    // Only a pointer into the middle of an object
+    middle: &int,
+}
+
+enum Wrapped {
+    Boxed(&Node),
+    Nothing,
+}
+
+func make_list(n: int): &Node {
+    var head: &Node = null;
+    var i = 0;
+    while i < n {
+        head = alloc(Node { value: i, next: head });
+        i = i + 1;
+    }
+    return head;
+}
+
+func list_sum(n: &Node): int {
+    var total = 0;
+    var cur = n;
+    while cur != null {
+        total = total + cur.value;
+        cur = cur.next;
+    }
+    return total;
+}
+
+func churn() {
+    var i = 0;
+    while i < 200 {
+        make_list(100);
+        i = i + 1;
+    }
+}
+
+func main {
+    // A list reachable only through an enum payload
+    var wrapped = Wrapped::Boxed(make_list(1000));
+
+    // An array of ints reachable only through an interior pointer
+    var ints: &int = malloc(1000 * sizeof(int));
+    var i = 0;
+    while i < 1000 {
+        ints[i] = i;
+        i = i + 1;
+    }
+    var holder = Holder { middle: &ints[500] };
+    ints = null;
+
+    // A vector of lists that is grown (reallocated) while collections happen
+    var lists: Vec<&Node> = Vec::new();
+    i = 0;
+    while i < 100 {
+        lists.push(make_list(i));
+        churn();
+        i = i + 1;
+    }
+
+    // A map with struct values that point to heap data
+    var named: Map<&Node> = Map::new();
+    i = 0;
+    while i < 200 {
+        var sb = StringBuilder::new();
+        sb.append("list");
+        sb.append_int(i);
+        named.insert(sb.build(), make_list(10));
+        i = i + 1;
+    }
+    churn();
+
+    // Memory freed explicitly can be reused safely
+    i = 0;
+    while i < 1000 {
+        var scratch: &Node = alloc(Node { value: i, next: null });
+        free(scratch);
+        i = i + 1;
+    }
+
+    // Integers that look like pointers in pointer-free memory don't matter
+    var fake: &int = malloc(10 * sizeof(int));
+    fake[0] = holder.middle as int;
+
+    churn();
+
+    match wrapped {
+        Wrapped::Boxed(list) => { printf("enum payload list: %ld\n", list_sum(list)); },
+        Wrapped::Nothing => {},
+    }
+    var middle = holder.middle;
+    printf("interior pointer: %ld %ld\n", middle[0], middle[499]);
+    var total = 0;
+    i = 0;
+    while i < lists.length() {
+        total = total + list_sum(lists.get(i));
+        i = i + 1;
+    }
+    printf("vector of lists: %ld\n", total);
+    printf("map: %ld entries, list37 sums to %ld\n", named.length(), list_sum(named.get("list37").unwrap()));
+    if gc_collections() == 0 {
+        printf("expected collections\n");
+    }
+}

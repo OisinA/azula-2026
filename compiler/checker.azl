@@ -71,6 +71,8 @@ struct Checker {
     var_counter: int,
     current_return: Type,
     loop_depth: int,
+    // Whether the program includes the garbage collector (stdlib/gc.azl)
+    has_gc: bool,
 }
 
 func new_checker(src: &Source): &Checker {
@@ -97,6 +99,7 @@ func new_checker(src: &Source): &Checker {
         var_counter: 0,
         current_return: Type::Void,
         loop_depth: 0,
+        has_gc: false,
     });
     c.add_builtins();
     return c;
@@ -420,6 +423,15 @@ impl Checker {
         self.add_builtin("fread", types4(Type::Str, Type::Int, Type::Int, Type::Str), Type::Int, false);
         // Compiler intrinsic: byte offset from a pointer
         self.add_builtin("ptr_add", types2(Type::Str, Type::Int), Type::Str, false);
+        // Intrinsics for the garbage collector runtime
+        self.add_builtin("gc_state", Vec::new(), Type::Str, false);
+        self.add_builtin("gc_stack_pointer", Vec::new(), Type::Str, false);
+        self.add_builtin("gc_spill_registers", Vec::new(), Type::Void, false);
+        // C's allocator, which malloc & co. don't reach when the GC is in use
+        self.add_builtin("c_malloc", types1(Type::Int), Type::Str, false);
+        self.add_builtin("c_calloc", types2(Type::Int, Type::Int), Type::Str, false);
+        self.add_builtin("c_realloc", types2(Type::Str, Type::Int), Type::Str, false);
+        self.add_builtin("c_free", types1(Type::Str), Type::Void, false);
     }
 
     // -----------------------------------------------------------------------
@@ -552,6 +564,7 @@ impl Checker {
             self.check_global(program.globals.get(i));
             i = i + 1;
         }
+        self.has_gc = self.funcs.contains("gc_malloc");
 
         // Pass 2: function bodies
         i = 0;
@@ -1596,7 +1609,7 @@ impl Checker {
                 }
                 var sig = self.sig_for(symbol, concat3("unknown function `", name, "`"), callee.pos);
                 self.check_args(sig, args, 0, e.pos);
-                e.kind = ExprKind::CallFn(sig.symbol, args);
+                e.kind = ExprKind::CallFn(self.managed_allocator(sig.symbol, args), args);
                 return sig.ret;
             },
             ExprKind::Turbofish(name, targs) => {
@@ -1860,6 +1873,75 @@ impl Checker {
             result = Type::Void;
         }
         return result;
+    }
+}
+
+impl Checker {
+    // With the GC, malloc & co. allocate from the collected heap. Allocations
+    // sized by a pointer-free type (`n * sizeof(int)`) aren't scanned.
+    func managed_allocator(self: &Checker, symbol: str, args: Vec<&Expr>): str {
+        if !self.has_gc {
+            return symbol;
+        }
+        if str_eq(symbol, "malloc") {
+            if self.pointer_free_size(args.get(0)) {
+                return "gc_malloc_atomic";
+            }
+            return "gc_malloc";
+        }
+        if str_eq(symbol, "calloc") {
+            if self.pointer_free_size(args.get(0)) || self.pointer_free_size(args.get(1)) {
+                return "gc_calloc_atomic";
+            }
+            return "gc_calloc";
+        }
+        if str_eq(symbol, "realloc") {
+            return "gc_realloc";
+        }
+        if str_eq(symbol, "free") {
+            return "gc_free";
+        }
+        return symbol;
+    }
+
+    // Is `size` a multiple of the size of a type that holds no pointers?
+    func pointer_free_size(self: &Checker, size: &Expr): bool {
+        return match size.kind {
+            ExprKind::SizeOf(t) => !self.has_pointers(t),
+            ExprKind::Binary(op, l, r) => op == BinOp::Mul && (self.pointer_free_size(l) || self.pointer_free_size(r)),
+            _ => false,
+        };
+    }
+
+    // Can a value of type `t` hold a pointer to the heap?
+    func has_pointers(self: &Checker, t: Type): bool {
+        return match t {
+            Type::Int => false,
+            Type::SInt(_) => false,
+            Type::UInt(_) => false,
+            Type::Float => false,
+            Type::SFloat(_) => false,
+            Type::Bool => false,
+            Type::Named(name) => {
+                var info = self.enum_named(name);
+                if info != null {
+                    return info.boxed;
+                }
+                var s = self.struct_of(t);
+                if s == null {
+                    return true;
+                }
+                var i = 0;
+                while i < s.fields.len {
+                    if self.has_pointers(s.fields.get(i).typ) {
+                        return true;
+                    }
+                    i = i + 1;
+                }
+                false
+            },
+            _ => true,
+        };
     }
 }
 

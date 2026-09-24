@@ -1,0 +1,33 @@
+// Allocating far more than fits in memory at once must work, with the heap
+// staying small because garbage is reclaimed.
+
+struct Chunk {
+    data: &int,
+    size: int,
+}
+
+func main {
+    var total = 0;
+    var i = 0;
+    // 2 GB in total: 20,000 chunks of 100 KB (each a large object)
+    while i < 20000 {
+        var chunk = Chunk { data: malloc(12800 * sizeof(int)), size: 12800 };
+        chunk.data[chunk.size - 1] = i;
+        total = total + chunk.data[chunk.size - 1];
+        i = i + 1;
+    }
+    // ... and 2 GB more in small objects
+    var small = 0;
+    while small < 20000000 {
+        var s: str = malloc(100);
+        s[0] = 'x';
+        small = small + 1;
+    }
+    printf("total %ld\n", total);
+    if gc_heap_bytes() > 64 * 1024 * 1024 {
+        printf("heap too big: %ld KB\n", gc_heap_bytes() / 1024);
+    }
+    if gc_collections() < 10 {
+        printf("expected many collections, got %ld\n", gc_collections());
+    }
+}

@@ -55,4 +55,6 @@ if [ "$run_tests" = "1" ]; then
     tests/run_errors.sh build/azula
     echo "examples with both compilers:"
     tests/run_examples.sh "$stage0" build/azula
+    echo "garbage collector tests with build/azula:"
+    tests/run_gc.sh build/azula
 fi

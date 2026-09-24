@@ -25,7 +25,7 @@ impl String {
     }
 
     func substr(self: String, start: int, len: int): String {
-        var buf = malloc(len + 1);
+        var buf = malloc((len + 1) * sizeof(u8));
         memcpy(buf, ptr_add(self.data, start), len);
         buf[len] = 0;
         return String { data: buf, len: len };
@@ -37,7 +37,7 @@ func read_file(path: str): String {
     fseek(f, 0, 2);
     var size = ftell(f);
     fseek(f, 0, 0);
-    var buf = malloc(size + 1);
+    var buf = malloc((size + 1) * sizeof(u8));
     fread(buf, 1, size, f);
     buf[size] = 0;
     fclose(f);
@@ -53,7 +53,7 @@ struct StringBuilder {
 
 impl StringBuilder {
     func new(): StringBuilder {
-        var data: str = malloc(64);
+        var data: str = malloc(64 * sizeof(u8));
         data[0] = 0;
         return StringBuilder { data: data, len: 0, cap: 64 };
     }
@@ -94,6 +94,8 @@ impl StringBuilder {
 
     // A copy of the contents that later appends won't change
     func build(self: StringBuilder): str {
-        return strdup(self.data);
+        var copy: str = malloc((self.len + 1) * sizeof(u8));
+        memcpy(copy, self.data, self.len + 1);
+        return copy;
     }
 }

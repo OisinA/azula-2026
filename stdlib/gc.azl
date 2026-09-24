@@ -1,0 +1,579 @@
+// The garbage collector: conservative, non-moving mark and sweep.
+//
+// Memory comes from C in 64 KB-aligned pages. Objects of up to 2 KB are carved
+// out of pages dedicated to one size class; bigger objects get pages of their
+// own. A hash table from page number to page descriptor lets the collector tell
+// whether any word is a pointer into (the middle of) an allocated object.
+//
+// Each page keeps one byte per object for "allocated", "marked" and "atomic",
+// so sweeping a page is just `used &= marks` a word (8 objects) at a time, and
+// allocation finds the next unused slot from a cursor.
+//
+// A collection marks everything reachable from the stack (callee-saved
+// registers are spilled onto it first), treating every word that looks like a
+// heap pointer as one. Objects are scanned the same way, except those
+// allocated as pointer-free ("atomic"). Unmarked objects are then freed.
+//
+// A collection runs when the memory allocated since the last one exceeds the
+// memory that survived it (and at least GC_MIN_THRESHOLD).
+//
+// Environment variables:
+//   AZULA_GC_STRESS=N   also collect every N allocations (for testing)
+//   AZULA_GC_VERBOSE=1  report each collection on stderr
+//
+// This file is only used by the self-hosted compiler, which routes malloc,
+// calloc, realloc and free here. The collector itself only uses C's allocator
+// (c_malloc and friends) and keeps its state behind the gc_state() intrinsic.
+
+extern func aligned_alloc(int, int): str;
+
+const GC_PAGE_SIZE: int = 65536;
+const GC_PAGE_SHIFT: int = 16;
+const GC_MAX_SMALL: int = 2048;
+const GC_CLASSES: int = 24;
+const GC_MIN_THRESHOLD: int = 4194304;
+const GC_STATE_SIZE: int = 512;
+
+struct GcPage {
+    // Address of the first object
+    start: int,
+    object_size: int,
+    // Number of objects the page holds (1 for large objects)
+    capacity: int,
+    // Number of GC pages spanned (more than 1 only for large objects)
+    page_count: int,
+    // Size class, or -1 for a large object
+    size_class: int,
+    live: int,
+    // Slots before this one are all in use
+    cursor: int,
+    // Whether the page is on its size class's list of pages with free space
+    available: bool,
+    next_available: &GcPage,
+    // One byte (0 or 1) per object each, padded to a multiple of 8 objects
+    used: str,
+    marks: str,
+    atomic: str,
+}
+
+struct GcState {
+    initialised: bool,
+    // Address just above main's frame; 0 until main has started (no collections)
+    stack_base: int,
+    // Page table: page number -> descriptor (open addressing; -1 marks a removed key)
+    table_keys: &int,
+    table_pages: &&GcPage,
+    table_cap: int,
+    table_count: int,
+    pages: &&GcPage,
+    page_count: int,
+    page_cap: int,
+    // For each size class, the pages with free objects
+    available: &&GcPage,
+    heap_min: int,
+    heap_max: int,
+    allocated: int,
+    threshold: int,
+    live_bytes: int,
+    mark_stack: &int,
+    mark_len: int,
+    mark_cap: int,
+    collections: int,
+    allocations: int,
+    stress: int,
+    verbose: bool,
+}
+
+func gc(): &GcState {
+    return gc_state() as &GcState;
+}
+
+func gc_fatal(message: str) {
+    printf("azula gc: %s\n", message);
+    abort();
+}
+
+// Called at the start of main with the address just above main's frame
+func gc_init(stack_base: str) {
+    var s = gc();
+    if !s.initialised {
+        if sizeof(GcState) > GC_STATE_SIZE {
+            gc_fatal("state is larger than the space reserved for it");
+        }
+        s.table_cap = 1024;
+        s.table_keys = c_calloc(s.table_cap, sizeof(int));
+        s.table_pages = c_calloc(s.table_cap, sizeof(&GcPage));
+        s.page_cap = 64;
+        s.pages = c_calloc(s.page_cap, sizeof(&GcPage));
+        s.available = c_calloc(GC_CLASSES, sizeof(&GcPage));
+        s.heap_min = 0x7fffffffffffffff;
+        s.heap_max = 0;
+        s.threshold = GC_MIN_THRESHOLD;
+        s.mark_cap = 4096;
+        s.mark_stack = c_malloc(s.mark_cap * sizeof(int));
+        var stress = getenv("AZULA_GC_STRESS");
+        if stress != null {
+            s.stress = atoi(stress) as int;
+        }
+        s.verbose = getenv("AZULA_GC_VERBOSE") != null;
+        s.initialised = true;
+    }
+    s.stack_base = stack_base as int;
+}
+
+// ---------------------------------------------------------------------------
+// Size classes: 16 to 128 bytes in steps of 16, then four steps per doubling
+// (160, 192, 224, 256, 320, ... 2048)
+// ---------------------------------------------------------------------------
+
+func gc_class_index(size: int): int {
+    if size <= 128 {
+        return (size + 15) / 16 - 1;
+    }
+    var base = 128;
+    var step = 32;
+    var index = 8;
+    while size > base * 2 {
+        base = base * 2;
+        step = step * 2;
+        index = index + 4;
+    }
+    return index + (size - base + step - 1) / step - 1;
+}
+
+func gc_class_size(index: int): int {
+    if index < 8 {
+        return (index + 1) * 16;
+    }
+    var group = (index - 8) / 4;
+    return (128 << group) + ((index - 8) % 4 + 1) * (32 << group);
+}
+
+// ---------------------------------------------------------------------------
+// Page table
+// ---------------------------------------------------------------------------
+
+func gc_table_slot(s: &GcState, key: int): int {
+    var mask = s.table_cap - 1;
+    var slot = (key ^ (key >> 9)) & mask;
+    while s.table_keys[slot] != 0 && s.table_keys[slot] != key {
+        slot = (slot + 1) & mask;
+    }
+    return slot;
+}
+
+func gc_table_insert(s: &GcState, key: int, page: &GcPage) {
+    if (s.table_count + 1) * 2 > s.table_cap {
+        // Rehash into a table twice the size, dropping removed keys
+        var old_keys = s.table_keys;
+        var old_pages = s.table_pages;
+        var old_cap = s.table_cap;
+        s.table_cap = s.table_cap * 2;
+        s.table_keys = c_calloc(s.table_cap, sizeof(int));
+        s.table_pages = c_calloc(s.table_cap, sizeof(&GcPage));
+        s.table_count = 0;
+        var i = 0;
+        while i < old_cap {
+            if old_keys[i] > 0 {
+                var slot = gc_table_slot(s, old_keys[i]);
+                s.table_keys[slot] = old_keys[i];
+                s.table_pages[slot] = old_pages[i];
+                s.table_count = s.table_count + 1;
+            }
+            i = i + 1;
+        }
+        c_free(old_keys);
+        c_free(old_pages);
+    }
+    var slot = gc_table_slot(s, key);
+    if s.table_keys[slot] == 0 {
+        s.table_count = s.table_count + 1;
+    }
+    s.table_keys[slot] = key;
+    s.table_pages[slot] = page;
+}
+
+func gc_table_remove(s: &GcState, key: int) {
+    var slot = gc_table_slot(s, key);
+    if s.table_keys[slot] == key {
+        s.table_keys[slot] = -1;
+        s.table_pages[slot] = null;
+    }
+}
+
+// The page containing `address`, or null if it isn't in the GC heap
+func gc_page_of(s: &GcState, address: int): &GcPage {
+    if address < s.heap_min || address >= s.heap_max {
+        return null;
+    }
+    var slot = gc_table_slot(s, address >> GC_PAGE_SHIFT);
+    if s.table_keys[slot] == 0 {
+        return null;
+    }
+    return s.table_pages[slot];
+}
+
+// The index of the allocated object containing `address` in `page`, or -1
+func gc_slot_of(page: &GcPage, address: int): int {
+    var offset = address - page.start;
+    if offset < 0 || offset >= page.capacity * page.object_size {
+        return -1;
+    }
+    var slot = offset / page.object_size;
+    if page.used[slot] == 0 {
+        return -1;
+    }
+    return slot;
+}
+
+// ---------------------------------------------------------------------------
+// Pages
+// ---------------------------------------------------------------------------
+
+func gc_new_page(s: &GcState, bytes: int, object_size: int, capacity: int, size_class: int): &GcPage {
+    var memory = aligned_alloc(GC_PAGE_SIZE, bytes);
+    if memory == null {
+        gc_fatal("out of memory");
+    }
+    var page: &GcPage = c_calloc(1, sizeof(GcPage));
+    page.start = memory as int;
+    page.object_size = object_size;
+    page.capacity = capacity;
+    page.page_count = bytes / GC_PAGE_SIZE;
+    page.size_class = size_class;
+    var flag_bytes = (capacity + 7) / 8 * 8;
+    page.used = c_calloc(flag_bytes, 1);
+    page.marks = c_calloc(flag_bytes, 1);
+    page.atomic = c_calloc(flag_bytes, 1);
+
+    if s.page_count == s.page_cap {
+        s.page_cap = s.page_cap * 2;
+        s.pages = c_realloc(s.pages, s.page_cap * sizeof(&GcPage));
+    }
+    s.pages[s.page_count] = page;
+    s.page_count = s.page_count + 1;
+
+    var i = 0;
+    while i < page.page_count {
+        gc_table_insert(s, (page.start >> GC_PAGE_SHIFT) + i, page);
+        i = i + 1;
+    }
+    if page.start < s.heap_min {
+        s.heap_min = page.start;
+    }
+    if page.start + bytes > s.heap_max {
+        s.heap_max = page.start + bytes;
+    }
+    return page;
+}
+
+func gc_make_available(s: &GcState, page: &GcPage) {
+    if !page.available {
+        page.available = true;
+        page.next_available = s.available[page.size_class];
+        s.available[page.size_class] = page;
+    }
+}
+
+func gc_new_small_page(s: &GcState, index: int): &GcPage {
+    var size = gc_class_size(index);
+    var page = gc_new_page(s, GC_PAGE_SIZE, size, GC_PAGE_SIZE / size, index);
+    gc_make_available(s, page);
+    return page;
+}
+
+// The number of set bytes in a word whose bytes are each 0 or 1
+func gc_byte_count(word: int): int {
+    return (word * 0x0101010101010101) >> 56;
+}
+
+func gc_release_large(s: &GcState, page: &GcPage) {
+    var i = 0;
+    while i < page.page_count {
+        gc_table_remove(s, (page.start >> GC_PAGE_SHIFT) + i);
+        i = i + 1;
+    }
+    c_free(page.start as str);
+    c_free(page.used);
+    c_free(page.marks);
+    c_free(page.atomic);
+    c_free(page as str);
+}
+
+// ---------------------------------------------------------------------------
+// Allocation
+// ---------------------------------------------------------------------------
+
+func gc_allocate(size: int, atomic: bool): str {
+    var s = gc();
+    if !s.initialised {
+        gc_init(null);
+    }
+    var n = size;
+    if n < 1 {
+        n = 1;
+    }
+    s.allocations = s.allocations + 1;
+    if s.stack_base != 0 {
+        if s.allocated >= s.threshold || (s.stress > 0 && s.allocations % s.stress == 0) {
+            gc_collect();
+        }
+    }
+
+    if n > GC_MAX_SMALL {
+        var bytes = (n + GC_PAGE_SIZE - 1) / GC_PAGE_SIZE * GC_PAGE_SIZE;
+        var page = gc_new_page(s, bytes, (n + 7) / 8 * 8, 1, -1);
+        page.used[0] = 1;
+        if atomic {
+            page.atomic[0] = 1;
+        }
+        page.live = 1;
+        memset(page.start as str, 0, page.object_size);
+        s.allocated = s.allocated + bytes;
+        return page.start as str;
+    }
+
+    // Find a free slot in the first page of this size class that has one
+    var index = gc_class_index(n);
+    var page = s.available[index];
+    while true {
+        if page == null {
+            page = gc_new_small_page(s, index);
+        }
+        while page.cursor < page.capacity && page.used[page.cursor] != 0 {
+            page.cursor = page.cursor + 1;
+        }
+        if page.cursor < page.capacity {
+            break;
+        }
+        // Full: take it off the list and try the next page
+        s.available[index] = page.next_available;
+        page.available = false;
+        page = s.available[index];
+    }
+    var slot = page.cursor;
+    page.cursor = slot + 1;
+    page.used[slot] = 1;
+    if atomic {
+        page.atomic[slot] = 1;
+    }
+    page.live = page.live + 1;
+    var object = (page.start + slot * page.object_size) as str;
+    memset(object, 0, page.object_size);
+    s.allocated = s.allocated + page.object_size;
+    return object;
+}
+
+// Allocate memory the collector scans for pointers
+func gc_malloc(size: int): str {
+    return gc_allocate(size, false);
+}
+
+// Allocate memory that never holds pointers (the collector doesn't scan it)
+func gc_malloc_atomic(size: int): str {
+    return gc_allocate(size, true);
+}
+
+func gc_calloc(count: int, size: int): str {
+    return gc_allocate(count * size, false);
+}
+
+func gc_calloc_atomic(count: int, size: int): str {
+    return gc_allocate(count * size, true);
+}
+
+// Resize an allocation. The old block isn't freed (other copies of a struct
+// may still point at it); the collector reclaims it once it's unreachable.
+func gc_realloc(pointer: str, size: int): str {
+    if pointer == null {
+        return gc_allocate(size, false);
+    }
+    var s = gc();
+    var page = gc_page_of(s, pointer as int);
+    if page == null {
+        return c_realloc(pointer, size);
+    }
+    var slot = gc_slot_of(page, pointer as int);
+    if slot < 0 {
+        gc_fatal("realloc of a pointer that isn't allocated");
+    }
+    var start = page.start + slot * page.object_size;
+    var available = page.object_size - ((pointer as int) - start);
+    if size <= available {
+        return pointer;
+    }
+    var fresh = gc_allocate(size, page.atomic[slot] != 0);
+    memcpy(fresh, pointer, available);
+    return fresh;
+}
+
+// Free an allocation right away (optional: unreachable memory is collected anyway)
+func gc_free(pointer: str) {
+    if pointer == null {
+        return;
+    }
+    var s = gc();
+    var address = pointer as int;
+    var page = gc_page_of(s, address);
+    if page == null {
+        // Not ours: memory from C (strdup, ...)
+        c_free(pointer);
+        return;
+    }
+    var slot = gc_slot_of(page, address);
+    if slot < 0 || address != page.start + slot * page.object_size {
+        return;
+    }
+    if page.size_class < 0 {
+        var i = 0;
+        while i < s.page_count {
+            if s.pages[i] == page {
+                s.pages[i] = s.pages[s.page_count - 1];
+                s.page_count = s.page_count - 1;
+                break;
+            }
+            i = i + 1;
+        }
+        gc_release_large(s, page);
+        return;
+    }
+    page.used[slot] = 0;
+    page.atomic[slot] = 0;
+    page.live = page.live - 1;
+    if slot < page.cursor {
+        page.cursor = slot;
+    }
+    gc_make_available(s, page);
+}
+
+// ---------------------------------------------------------------------------
+// Collection
+// ---------------------------------------------------------------------------
+
+func gc_mark_address(s: &GcState, address: int) {
+    var page = gc_page_of(s, address);
+    if page == null {
+        return;
+    }
+    var slot = gc_slot_of(page, address);
+    if slot < 0 || page.marks[slot] != 0 {
+        return;
+    }
+    page.marks[slot] = 1;
+    if page.atomic[slot] == 0 {
+        if s.mark_len == s.mark_cap {
+            s.mark_cap = s.mark_cap * 2;
+            s.mark_stack = c_realloc(s.mark_stack, s.mark_cap * sizeof(int));
+        }
+        s.mark_stack[s.mark_len] = page.start + slot * page.object_size;
+        s.mark_len = s.mark_len + 1;
+    }
+}
+
+// Mark every object pointed to by a word in [low, high)
+func gc_scan_range(s: &GcState, low: int, high: int) {
+    var address = (low + 7) / 8 * 8;
+    while address + 8 <= high {
+        gc_mark_address(s, (address as &int)[0]);
+        address = address + 8;
+    }
+}
+
+func gc_collect() {
+    var s = gc();
+    if s.stack_base == 0 {
+        return;
+    }
+    // Put pointers held in callee-saved registers on the stack, then scan it
+    gc_spill_registers();
+    var top = gc_stack_pointer() as int;
+    s.mark_len = 0;
+    gc_scan_range(s, top, s.stack_base);
+    while s.mark_len > 0 {
+        s.mark_len = s.mark_len - 1;
+        var object = s.mark_stack[s.mark_len];
+        var page = gc_page_of(s, object);
+        gc_scan_range(s, object, object + page.object_size);
+    }
+    gc_sweep(s);
+}
+
+func gc_sweep(s: &GcState) {
+    var i = 0;
+    while i < GC_CLASSES {
+        s.available[i] = null;
+        i = i + 1;
+    }
+    var live = 0;
+    var kept = 0;
+    i = 0;
+    while i < s.page_count {
+        var page = s.pages[i];
+        i = i + 1;
+        if page.size_class < 0 {
+            if page.marks[0] == 0 {
+                gc_release_large(s, page);
+                continue;
+            }
+            page.marks[0] = 0;
+            live = live + page.object_size;
+        } else {
+            // Keep only marked objects, 8 at a time
+            var used = page.used as &int;
+            var marks = page.marks as &int;
+            var atomic = page.atomic as &int;
+            var words = (page.capacity + 7) / 8;
+            var count = 0;
+            var w = 0;
+            while w < words {
+                var kept_slots = used[w] & marks[w];
+                used[w] = kept_slots;
+                atomic[w] = atomic[w] & kept_slots;
+                marks[w] = 0;
+                count = count + gc_byte_count(kept_slots);
+                w = w + 1;
+            }
+            page.live = count;
+            page.cursor = 0;
+            page.available = false;
+            live = live + count * page.object_size;
+            if count < page.capacity {
+                gc_make_available(s, page);
+            }
+        }
+        s.pages[kept] = page;
+        kept = kept + 1;
+    }
+    s.page_count = kept;
+    s.collections = s.collections + 1;
+    if s.verbose {
+        dprintf(2, "azula gc: collection %ld: %ld KB live after %ld KB allocated, %ld pages\n",
+            s.collections, live / 1024, s.allocated / 1024, s.page_count);
+    }
+    s.live_bytes = live;
+    s.allocated = 0;
+    s.threshold = live;
+    if s.threshold < GC_MIN_THRESHOLD {
+        s.threshold = GC_MIN_THRESHOLD;
+    }
+}
+
+// Statistics
+func gc_collections(): int {
+    return gc().collections;
+}
+
+func gc_live_bytes(): int {
+    return gc().live_bytes;
+}
+
+func gc_heap_bytes(): int {
+    var s = gc();
+    var total = 0;
+    var i = 0;
+    while i < s.page_count {
+        total = total + s.pages[i].page_count * GC_PAGE_SIZE;
+        i = i + 1;
+    }
+    return total;
+}

@@ -24,13 +24,13 @@ func concat3(a: str, b: str, c: str): str {
 }
 
 func int_to_str(n: int): str {
-    var buf: str = malloc(24);
+    var buf: str = malloc(24 * sizeof(u8));
     snprintf(buf, 24, "%ld", n);
     return buf;
 }
 
 func substring(s: str, start: int, len: int): str {
-    var buf: str = malloc(len + 1);
+    var buf: str = malloc((len + 1) * sizeof(u8));
     memcpy(buf, ptr_add(s, start), len);
     buf[len] = 0;
     return buf;
@@ -92,7 +92,7 @@ func read_text_file(path: str): str {
     fseek(f, 0, 2);
     var size = ftell(f);
     fseek(f, 0, 0);
-    var buf: str = malloc(size + 1);
+    var buf: str = malloc((size + 1) * sizeof(u8));
     fread(buf, 1, size, f);
     buf[size] = 0;
     fclose(f);
