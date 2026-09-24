@@ -1,0 +1,4 @@
+// error: `break` outside a loop
+func main {
+    break;
+}

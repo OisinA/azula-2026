@@ -1,0 +1,5 @@
+// error: needs a payload
+enum Shape { Circle(int), Empty }
+func main {
+    var s = Shape::Circle;
+}

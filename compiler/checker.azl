@@ -891,14 +891,9 @@ impl Checker {
             },
             Option::None => {},
         }
-        var bindings: Map<Type> = Map::new();
-        var i = 0;
-        while i < patterns.len && i < args.len {
-            self.unify(patterns.get(i), self.peek_type(args.get(i)), params, &bindings);
-            i = i + 1;
-        }
+        var bindings = self.bind_params(params, patterns, args);
         var result: Vec<Type> = Vec::new();
-        i = 0;
+        var i = 0;
         while i < params.len {
             match bindings.get(params.get(i)) {
                 Option::Some(t) => { result.push(t); },
@@ -909,6 +904,41 @@ impl Checker {
             i = i + 1;
         }
         return result;
+    }
+
+    // Bind type parameters by matching `patterns` against the types of `args`
+    func bind_params(self: &Checker, params: Vec<str>, patterns: Vec<Type>, args: Vec<&Expr>): Map<Type> {
+        var bindings: Map<Type> = Map::new();
+        var i = 0;
+        while i < patterns.len && i < args.len {
+            self.unify(patterns.get(i), self.peek_type(args.get(i)), params, &bindings);
+            i = i + 1;
+        }
+        return bindings;
+    }
+
+    // The return type of a call to generic function `name`, if its type
+    // arguments can be inferred from `args` (Infer otherwise)
+    func peek_generic_call(self: &Checker, name: str, args: Vec<&Expr>, pos: int): Type {
+        var decl = self.generic_funcs.get(name).unwrap();
+        var patterns: Vec<Type> = Vec::new();
+        var i = 0;
+        while i < decl.params.len {
+            patterns.push(decl.params.get(i).typ);
+            i = i + 1;
+        }
+        var bindings = self.bind_params(decl.type_params, patterns, args);
+        var targs: Vec<Type> = Vec::new();
+        i = 0;
+        while i < decl.type_params.len {
+            var bound = bindings.get(decl.type_params.get(i));
+            if bound.is_none() {
+                return Type::Infer;
+            }
+            targs.push(bound.unwrap());
+            i = i + 1;
+        }
+        return self.resolve_type(subst_type(decl.ret, decl.type_params, targs), pos);
     }
 
     // The type of an expression if it can be known without checking it (used for
@@ -964,10 +994,15 @@ impl Checker {
                 },
                 _ => Type::Infer,
             },
-            ExprKind::Call(f, _) => match f.kind {
-                ExprKind::Ident(name) => match self.funcs.get(name) {
-                    Option::Some(sig) => sig.ret,
-                    Option::None => Type::Infer,
+            ExprKind::Call(f, call_args) => match f.kind {
+                ExprKind::Ident(name) => {
+                    if self.generic_funcs.contains(name) {
+                        return self.peek_generic_call(name, call_args, e.pos);
+                    }
+                    match self.funcs.get(name) {
+                        Option::Some(sig) => sig.ret,
+                        Option::None => Type::Infer,
+                    }
                 },
                 ExprKind::Field(obj, method) => {
                     var t = self.peek_type(obj);

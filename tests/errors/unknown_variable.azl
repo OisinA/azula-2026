@@ -1,0 +1,4 @@
+// error: unknown variable `missing`
+func main {
+    printf("%d\n", missing);
+}

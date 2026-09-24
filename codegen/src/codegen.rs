@@ -129,6 +129,11 @@ impl<'a> Codegen<'a> {
                 Statement::Assign(_, name, _, val, ..) => {
                     let value = match val.expression {
                         Expression::Integer(i) => GlobalValue::Int(i),
+                        Expression::Negate(inner) => match inner.expression {
+                            Expression::Integer(i) => GlobalValue::Int(-i),
+                            Expression::Float(f) => GlobalValue::Float(-f),
+                            _ => unreachable!(),
+                        },
                         Expression::Float(f) => GlobalValue::Float(f),
                         Expression::Boolean(b) => GlobalValue::Bool(b),
                         Expression::String(s) => {

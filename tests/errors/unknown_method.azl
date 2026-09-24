@@ -1,0 +1,5 @@
+// error: no method `nope`
+func main {
+    var v: Vec<int> = Vec::new();
+    v.nope();
+}

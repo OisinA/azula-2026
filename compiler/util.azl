@@ -238,6 +238,14 @@ func import_target(line: str): str {
         }
         end = end + 1;
     }
+    // Only whitespace may follow the path
+    var rest = end + 1;
+    while line[rest] == ' ' || line[rest] == '\t' || line[rest] == '\r' {
+        rest = rest + 1;
+    }
+    if line[rest] != 0 {
+        return null;
+    }
     return substring(line, start, end - start);
 }
 

@@ -1,0 +1,74 @@
+// Structs, with methods in impl blocks
+struct Point {
+    x: int,
+    y: int,
+}
+
+impl Point {
+    func length_squared(self: Point): int {
+        return self.x * self.x + self.y * self.y;
+    }
+
+    // Methods taking &Self can modify the value they're called on
+    func shift(self: &Point, dx: int) {
+        self.x = self.x + dx;
+    }
+}
+
+// Enums can carry payloads; values of these enums are immutable and
+// heap-allocated, so they can be recursive
+enum Expr {
+    Num(int),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+
+func eval(e: Expr): int {
+    return match e {
+        Expr::Num(n) => n,
+        Expr::Add(a, b) => eval(a) + eval(b),
+        Expr::Neg(inner) => 0 - eval(inner),
+    };
+}
+
+// Generic functions and types are specialised for each set of type
+// arguments. Type arguments are inferred where possible, or given
+// with a turbofish: max::<int>(1, 2), Vec::<str>::new()
+func max<T>(a: T, b: T): T {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+struct Pair<A, B> {
+    first: A,
+    second: B,
+}
+
+func main {
+    var p = Point { x: 3, y: 4 };
+    p.shift(1);
+    printf("%d\n", p.length_squared());
+
+    var e = Expr::Add(Expr::Num(2), Expr::Neg(Expr::Num(5)));
+    printf("%d\n", eval(e));
+
+    var names: Vec<str> = Vec::new();
+    names.push("azula");
+    var ages: Map<int> = Map::new();
+    ages.insert("azula", 7);
+    match ages.get("azula") {
+        Option::Some(age) => { printf("%s is %d\n", names.get(0), age); },
+        Option::None => { printf("unknown\n"); },
+    }
+
+    var pair = Pair { first: max(3, 9), second: "nine" };
+    printf("%d %s\n", pair.first, pair.second);
+
+    // Bitwise operators, sizeof, casts and raw pointers
+    var flags = (1 << 4) | 0x3;
+    var buffer: &int = malloc(8 * sizeof(int));
+    buffer[0] = flags & 0xf;
+    printf("%d %d\n", buffer[0], 'a' as int);
+}

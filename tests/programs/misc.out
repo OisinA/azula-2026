@@ -1,0 +1,11 @@
+hi 42 -7 1
+2.50 8.750
+3.5 10
+clicks=3 3
+-128 200 44
+1 0
+negative at 1, none at -1
+letter a, digit zero, newline, minus one, other
+collatz(27) = 111
+total 5200
+3 evens, last many; 2 odds

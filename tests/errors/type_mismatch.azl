@@ -1,0 +1,5 @@
+// error: expected int, found str
+func main {
+    var x = 5;
+    x = "text";
+}

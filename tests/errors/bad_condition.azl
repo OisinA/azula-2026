@@ -1,0 +1,5 @@
+// error: condition must be a bool
+func main {
+    if 1 {
+    }
+}

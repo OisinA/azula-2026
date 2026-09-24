@@ -1,0 +1,4 @@
+// error: expected an expression
+func main {
+    var x = 1 + ;
+}

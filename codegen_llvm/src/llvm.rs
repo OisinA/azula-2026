@@ -234,7 +234,7 @@ impl<'a> LLVMCodegen<'a> {
                         &self
                             .context
                             .i64_type()
-                            .const_int((*i).try_into().unwrap(), false),
+                            .const_int(*i as u64, true),
                     );
 
                     val.as_basic_value_enum()

@@ -1,0 +1,5 @@
+// error: P has no field y
+struct P { x: int, }
+func main {
+    var p = P { x: 1, y: 2 };
+}

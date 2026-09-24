@@ -1,0 +1,130 @@
+const GREETING: str = "hi";
+const ANSWER: int = 42;
+const NEGATIVE: int = -7;
+const ENABLED: bool = true;
+const RATIO: float = 2.5;
+
+struct Counter { count: int, label: str, }
+
+impl Counter {
+    func new(label: str): Counter {
+        return Counter { count: 0, label: label };
+    }
+
+    func bump(self: &Counter): int {
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    func describe(self: Counter): str {
+        var sb = StringBuilder::new();
+        sb.append(self.label);
+        sb.append("=");
+        sb.append_int(self.count);
+        return sb.to_str();
+    }
+}
+
+func first_negative(v: Vec<int>): int {
+    var i = 0;
+    while i < v.length() {
+        if v.get(i) < 0 {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+func classify(c: int): str {
+    return match c {
+        'a' => "letter a",
+        '0' => "digit zero",
+        10 => "newline",
+        -1 => "minus one",
+        _ => "other",
+    };
+}
+
+func collatz(start: int): int {
+    var n = start;
+    var steps = 0;
+    for {
+        if n == 1 {
+            break;
+        }
+        if n % 2 == 0 {
+            n = n / 2;
+        } else {
+            n = 3 * n + 1;
+        }
+        steps = steps + 1;
+    }
+    return steps;
+}
+
+func main {
+    printf("%s %d %d %d\n", GREETING, ANSWER, NEGATIVE, ENABLED);
+    printf("%.2f %.3f\n", RATIO, RATIO * 4.0 - 1.25);
+    var f: float = 7 as float;
+    printf("%.1f %d\n", f / 2.0, (f * 1.5) as int);
+
+    var c = Counter::new("clicks");
+    c.bump();
+    c.bump();
+    var p: &Counter = &c;
+    p.bump();
+    printf("%s %d\n", c.describe(), p.count);
+
+    var wrapped: i8 = 127 as i8;
+    wrapped = wrapped + 1;
+    var small: u8 = 200 as u8;
+    printf("%d %d %d\n", wrapped, small as int & 255, (300 as i8) as int);
+    printf("%d %d\n", true as int, false as int);
+
+    var v: Vec<int> = Vec::new();
+    v.push(3);
+    v.push(-4);
+    v.push(5);
+    printf("negative at %d, none at %d\n", first_negative(v), first_negative(Vec::<int>::new()));
+
+    printf("%s, %s, %s, %s, %s\n", classify('a'), classify('0'), classify('\n'), classify(-1), classify(7));
+    printf("collatz(27) = %d\n", collatz(27));
+
+    var total = 0;
+    var i = 0;
+    while i < 10 {
+        i = i + 1;
+        if i == 3 { continue; }
+        var i = i * 100;
+        total = total + i;
+    }
+    printf("total %d\n", total);
+
+    var names: Map<Vec<str>> = Map::new();
+    names.insert("even", Vec::new());
+    names.insert("odd", Vec::new());
+    var n = 0;
+    while n < 5 {
+        var key = "odd";
+        if n % 2 == 0 {
+            key = "even";
+        }
+        var list = names.get(key).unwrap();
+        list.push(int_name(n));
+        names.insert(key, list);
+        n = n + 1;
+    }
+    var evens = names.get("even").unwrap();
+    printf("%d evens, last %s; %d odds\n", evens.length(), evens.peek(), names.get("odd").unwrap().length());
+}
+
+func int_name(n: int): str {
+    return match n {
+        0 => "zero",
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "many",
+    };
+}

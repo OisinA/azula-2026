@@ -1,0 +1,4 @@
+// error: `Point` is defined more than once
+struct Point { x: int, }
+struct Point { y: int, }
+func main {}

@@ -1591,6 +1591,17 @@ impl<'a> Parser<'a> {
             let pattern = match &pat_tok.kind {
                 TokenKind::Identifier(name) if *name == "_" => MatchPattern::Wildcard,
                 TokenKind::Integer(n) => MatchPattern::Integer(*n),
+                TokenKind::Minus => match self.lexer.next().map(|t| t.kind) {
+                    Some(TokenKind::Integer(n)) => MatchPattern::Integer(-n),
+                    _ => {
+                        self.errors.push(AzulaError::new(
+                            ErrorType::ExpectedExpression("integer".to_string()),
+                            pat_tok.span.start,
+                            pat_tok.span.end,
+                        ));
+                        return None;
+                    }
+                },
                 TokenKind::Char(s) => {
                     let ascii = if s.starts_with('\\') {
                         match s.chars().nth(1) {

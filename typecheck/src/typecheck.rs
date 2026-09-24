@@ -609,6 +609,8 @@ impl<'a> Typechecker<'a> {
 
             let typ = match value.expression.clone() {
                 Expression::Integer(_) => AzulaType::Int,
+                Expression::Negate(inner) if matches!(inner.expression, Expression::Integer(_)) => AzulaType::Int,
+                Expression::Negate(inner) if matches!(inner.expression, Expression::Float(_)) => AzulaType::Float,
                 Expression::Float(_) => AzulaType::Float,
                 Expression::Boolean(_) => AzulaType::Bool,
                 Expression::String(_) => AzulaType::Str,
