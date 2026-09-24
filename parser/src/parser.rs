@@ -234,6 +234,38 @@ impl<'a> Parser<'a> {
 
     /// A closure, after `func`: `(a: A, b)` parameters, an optional `: R`
     /// return type, then `{ body }` or `=> value`
+    /// `if cond { a } else { b }` in an expression (after `if`)
+    fn parse_if_expression(&mut self, start: usize) -> Option<ExpressionNode<'a>> {
+        let cond = self.parse_expression(LOWEST, false)?;
+        if !self.expect_peek(TokenKind::BraceOpen) {
+            return None;
+        }
+        let open = self.lexer.next()?.span.start;
+        let then = self.parse_block_expr(open)?;
+        let mut end = then.span.end;
+        let mut otherwise = None;
+        if self.lexer.peek().map(|t| t.kind == TokenKind::Else).unwrap_or(false) {
+            self.lexer.next();
+            let branch = if self.lexer.peek().map(|t| t.kind == TokenKind::If).unwrap_or(false) {
+                let at = self.lexer.next()?.span.start;
+                self.parse_if_expression(at)?
+            } else {
+                if !self.expect_peek(TokenKind::BraceOpen) {
+                    return None;
+                }
+                let open = self.lexer.next()?.span.start;
+                self.parse_block_expr(open)?
+            };
+            end = branch.span.end;
+            otherwise = Some(Rc::new(branch));
+        }
+        Some(ExpressionNode {
+            expression: Expression::If(Rc::new(cond), Rc::new(then), otherwise),
+            typed: AzulaType::Infer,
+            span: Span { start, end },
+        })
+    }
+
     fn parse_closure(&mut self, start: usize) -> Option<ExpressionNode<'a>> {
         self.expect_peek(TokenKind::BracketOpen);
         self.lexer.next();
@@ -1667,6 +1699,7 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::Function => self.parse_closure(tok.span.start),
+            TokenKind::If => self.parse_if_expression(tok.span.start),
             TokenKind::Bang => {
                 let expr = self.parse_expression(PREFIX, allow_struct_init)?;
 
@@ -2176,7 +2209,22 @@ impl<'a> Parser<'a> {
                 return None;
             }
 
-            let pattern = self.parse_pattern(false)?;
+            let mut pattern = self.parse_pattern(false)?;
+            // `A | B`
+            if self.lexer.peek().map(|t| t.kind == TokenKind::Bar).unwrap_or(false) {
+                let mut alternatives = vec![pattern];
+                while self.lexer.peek().map(|t| t.kind == TokenKind::Bar).unwrap_or(false) {
+                    self.lexer.next();
+                    alternatives.push(self.parse_pattern(false)?);
+                }
+                pattern = MatchPattern::Or(alternatives);
+            }
+            // `pattern if condition`
+            if self.lexer.peek().map(|t| t.kind == TokenKind::If).unwrap_or(false) {
+                self.lexer.next();
+                let guard = self.parse_expression(LOWEST, false)?;
+                pattern = MatchPattern::Guarded(Rc::new(pattern), Rc::new(guard));
+            }
 
             // expect =>
             if !self.expect_peek(TokenKind::FatArrow) {
@@ -2221,9 +2269,9 @@ impl<'a> Parser<'a> {
         let pat_tok = self.lexer.next()?;
         let pattern = match &pat_tok.kind {
             TokenKind::Identifier(name) if *name == "_" => MatchPattern::Wildcard,
-            // Inside a tuple pattern, a plain name binds the element
+            // A plain name binds the value (or, in a tuple pattern, the element)
             TokenKind::Identifier(name)
-                if in_tuple && !self.lexer.peek().map(|t| t.kind == TokenKind::NamespaceAccess).unwrap_or(false) =>
+                if !self.lexer.peek().map(|t| t.kind == TokenKind::NamespaceAccess).unwrap_or(false) =>
             {
                 MatchPattern::Binding(name)
             }
@@ -2576,7 +2624,14 @@ fn expression_mentions_self(expr: &ExpressionNode) -> bool {
         // Only the object of a field access or path can be `self`
         Expression::StructAccess(obj, _) => e(obj),
         Expression::NamespaceAccess(ns, _) => e(ns),
-        Expression::Match(scrutinee, arms) => e(scrutinee) || arms.iter().any(|(_, body)| expression_mentions_self(body)),
+        Expression::Match(scrutinee, arms) => {
+            e(scrutinee)
+                || arms.iter().any(|(pattern, body)| {
+                    expression_mentions_self(body)
+                        || matches!(pattern, MatchPattern::Guarded(_, guard) if expression_mentions_self(guard))
+                })
+        }
+        Expression::If(cond, then, otherwise) => e(cond) || e(then) || otherwise.as_ref().map(e).unwrap_or(false),
         Expression::Block(stmts, value) => {
             stmts.iter().any(statement_mentions_self) || value.as_ref().map(|v| e(v)).unwrap_or(false)
         }

@@ -649,6 +649,7 @@ struct Gen {
                 return ptr;
             },
             ExprKind::Match(scrutinee, arms) => { return self.match_expr(e, scrutinee, arms); },
+            ExprKind::If(cond, then, otherwise) => { return self.if_expr(e, cond, then, otherwise); },
             // A closure object: { code, captured cell, ... }
             ExprKind::MakeClosure(symbol, captures) => {
                 var object = self.allocate(int_to_str(8 * (captures.len + 1)), Type::Str);
@@ -984,6 +985,44 @@ struct Gen {
         return cell;
     }
 
+    func if_expr(e: &Expr, cond: &Expr, then: &Expr, otherwise: Option<&Expr>): str {
+        var has_result = !is_void(e.typ) && !is_never(e.typ);
+        var result_slot = "";
+        if has_result {
+            result_slot = self.temp_slot(e.typ);
+        }
+        var then_label = self.new_label("ifx.then");
+        var else_label = self.new_label("ifx.else");
+        var end_label = self.new_label("ifx.end");
+        self.cond_branch(self.expr(cond), then_label, else_label);
+        self.start_block(then_label);
+        var v = self.expr(then);
+        if !self.terminated {
+            if has_result {
+                self.store(e.typ, self.coerce(v, then.typ, e.typ), result_slot);
+            }
+            self.branch(end_label);
+        }
+        self.start_block(else_label);
+        match otherwise {
+            Option::Some(o) => {
+                var ov = self.expr(o);
+                if !self.terminated && has_result {
+                    self.store(e.typ, self.coerce(ov, o.typ, e.typ), result_slot);
+                }
+            },
+            Option::None => {},
+        }
+        if !self.terminated {
+            self.branch(end_label);
+        }
+        self.start_block(end_label);
+        if has_result {
+            return self.load(e.typ, result_slot);
+        }
+        return "";
+    }
+
     func match_expr(e: &Expr, scrutinee: &Expr, arms: Vec<&MatchArm>): str {
         var v = self.expr(scrutinee);
         var boxed = self.is_boxed_enum(scrutinee.typ);
@@ -1009,16 +1048,37 @@ struct Gen {
             if i + 1 < arms.len {
                 next_label = self.new_label("match.next");
             }
-            var is_wildcard = match arm.pattern {
+            var matches_all = match arm.pattern {
                 Pattern::Wildcard => true,
+                Pattern::Binding(_) => true,
                 _ => false,
             };
+            var is_or = match arm.pattern {
+                Pattern::Or(_) => true,
+                _ => false,
+            };
+            // Later arms can't be reached after an unguarded catch-all
+            var is_wildcard = matches_all && arm.guard.is_none();
             var is_tuple = match arm.pattern {
                 Pattern::Tuple(_) => true,
                 _ => false,
             };
-            if is_wildcard {
+            if matches_all {
                 self.branch(arm_label);
+            } else if is_or {
+                // Try each alternative in turn
+                var k = 0;
+                while k < arm.alt_tags.len {
+                    var alt_cond = self.value(concat3("icmp eq ", self.llvm_type(tag_type), concat3(" ", tag, concat(", ", self.int_constant(arm.alt_tags.get(k), tag_type)))));
+                    if k + 1 == arm.alt_tags.len {
+                        self.cond_branch(alt_cond, arm_label, next_label);
+                    } else {
+                        var other = self.new_label("match.alt");
+                        self.cond_branch(alt_cond, arm_label, other);
+                        self.start_block(other);
+                    }
+                    k += 1;
+                }
             } else if is_tuple {
                 // Test the tuple's elements in turn
                 var k = 0;
@@ -1047,7 +1107,10 @@ struct Gen {
             var b = 0;
             while b < arm.binds.len {
                 var bind = arm.binds.get(b);
-                var element = self.value(concat3("extractvalue ", self.llvm_type(scrutinee.typ), concat3(" ", v, path_text(bind.path))));
+                var element = v;
+                if bind.path.len > 0 {
+                    element = self.value(concat3("extractvalue ", self.llvm_type(scrutinee.typ), concat3(" ", v, path_text(bind.path))));
+                }
                 var bind_slot = quote_local(bind.ir);
                 self.alloca(bind_slot, bind.typ);
                 self.store(bind.typ, element, bind_slot);
@@ -1068,6 +1131,17 @@ struct Gen {
                     self.store(field_type, field, slot);
                 }
                 j += 1;
+            }
+
+            // A guard that fails moves on to the next arm
+            match arm.guard {
+                Option::Some(g) => {
+                    var passed = self.expr(g);
+                    var body_label = self.new_label("match.body");
+                    self.cond_branch(passed, body_label, next_label);
+                    self.start_block(body_label);
+                },
+                Option::None => {},
             }
 
             var body = self.expr(arm.body);

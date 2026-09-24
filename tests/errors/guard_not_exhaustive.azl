@@ -1,0 +1,14 @@
+// error: match doesn't cover variant `On`
+enum Switch {
+    On;
+    Off;
+}
+
+func main() {
+    var level = 3;
+    var s = Switch::On;
+    var n = match s {
+        Switch::On if level > 2 => 1,
+        Switch::Off => 0,
+    };
+}

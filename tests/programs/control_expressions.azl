@@ -1,0 +1,64 @@
+// if-expressions, match guards, | patterns and name patterns.
+
+enum Dir { North; East; South; West; }
+
+enum Shape {
+    Circle(int);
+    Square(int);
+    Dot;
+}
+
+func classify(n: int): str {
+    return match n {
+        0 => "zero",
+        1 | 2 | 3 => "small",
+        x if x < 0 => "negative",
+        x if x % 2 == 0 => "even",
+        _ => "odd",
+    };
+}
+
+func vertical(d: Dir): bool {
+    return match d {
+        Dir::North | Dir::South => true,
+        _ => false,
+    };
+}
+
+func size(s: Shape): int {
+    return match s {
+        Shape::Circle(r) if r > 10 => 1000,
+        Shape::Circle(r) => r * r * 3,
+        Shape::Square(side) => side * side,
+        Shape::Dot => 0,
+    };
+}
+
+func sign(n: int): int {
+    return if n > 0 { 1 } else if n < 0 { -1 } else { 0 };
+}
+
+func main() {
+    for n in [0, 2, -5, 8, 9] {
+        println(classify(n));
+    }
+    println("${vertical(Dir::North)} ${vertical(Dir::East)}");
+    println("${size(Shape::Circle(2))} ${size(Shape::Circle(20))} ${size(Shape::Square(3))}");
+    println("${sign(5)} ${sign(-3)} ${sign(0)}");
+    var label = if sign(4) > 0 { "positive" } else { "not positive" };
+    println(label);
+    var big = if label == "positive" {
+        var x = 10;
+        x * 10
+    } else {
+        0
+    };
+    println(big);
+    println(if big > 50 { "big" } else { "small" });
+    var t = (Dir::East, 3);
+    println(match t {
+        (Dir::East, n) if n > 5 => "far east",
+        (Dir::East, _) => "east",
+        _ => "elsewhere",
+    });
+}

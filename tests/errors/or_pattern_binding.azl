@@ -1,0 +1,12 @@
+// error: the alternatives of a `|` pattern can't bind names
+enum Shape {
+    Circle(int);
+    Square(int);
+}
+
+func main() {
+    var s = Shape::Circle(1);
+    var n = match s {
+        Shape::Circle(r) | Shape::Square(r) => r,
+    };
+}

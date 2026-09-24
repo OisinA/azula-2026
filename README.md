@@ -197,6 +197,11 @@ Other things to know:
   function returning a Result, `value?` gives the value of an Ok or returns the Err
   (the error types must match); inside a function returning an Option, `option?` gives
   the value of a Some or returns None.
+- `if cond { a } else { b }` can be used as a value (blocks give their last expression),
+  e.g. `var sign = if n < 0 { -1 } else { 1 };`.
+- Match arms can have guards (`n if n > 0 => ...`) and alternatives (`1 | 2 | 3 => ...`,
+  `Dir::Up | Dir::Down => ...`); a plain name as a pattern binds the whole value. Guarded
+  arms don't count towards covering every case.
 - `match` works on enums and integers (including character literals); arms can be
   blocks, and a `match` can be used as a statement or an expression.
 - Methods are declared in a type's body and receive `self` implicitly (a reference for

@@ -139,8 +139,9 @@ pub fn subst_expr<'a>(expr: &ExpressionNode<'a>, map: &Substitution<'a>) -> Expr
         Expression::NamespaceAccess(n, m) => Expression::NamespaceAccess(sub(n), sub(m)),
         Expression::Match(scrutinee, arms) => Expression::Match(
             sub(scrutinee),
-            arms.iter().map(|(p, e)| (p.clone(), subst_expr(e, map))).collect(),
+            arms.iter().map(|(p, e)| (subst_pattern(p, map), subst_expr(e, map))).collect(),
         ),
+        Expression::If(cond, then, otherwise) => Expression::If(sub(cond), sub(then), otherwise.as_ref().map(sub)),
         Expression::Cast(e, t) => Expression::Cast(sub(e), subst_type(t, map)),
         Expression::Alloc(e) => Expression::Alloc(sub(e)),
         Expression::Turbofish(name, args) => {
@@ -155,6 +156,14 @@ pub fn subst_expr<'a>(expr: &ExpressionNode<'a>, map: &Substitution<'a>) -> Expr
         expression,
         typed: subst_type(&expr.typed, map),
         span: expr.span.clone(),
+    }
+}
+
+/// Substitute in a match pattern's guard
+fn subst_pattern<'a>(pattern: &MatchPattern<'a>, map: &Substitution<'a>) -> MatchPattern<'a> {
+    match pattern {
+        MatchPattern::Guarded(p, guard) => MatchPattern::Guarded(p.clone(), Rc::new(subst_expr(guard, map))),
+        other => other.clone(),
     }
 }
 

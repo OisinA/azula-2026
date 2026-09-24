@@ -80,6 +80,8 @@ enum ExprKind {
     Tuple(Vec<&Expr>);
     // `value?`: the value of an Option or Result, or return early with its None or Err
     Try(&Expr);
+    // `if cond { a } else { b }` used as a value
+    If(&Expr, &Expr, Option<&Expr>);
     // `value.method::<Types>` (only as a callee)
     MethodTurbofish(&Expr, str, Vec<Type>);
     // `func(a: A, b): R { body }` or `func(a) => value`: parameters (typed
@@ -116,8 +118,10 @@ enum Pattern {
     Variant(str, str, Vec<str>);
     // `(p, q)`, matching a tuple's elements
     Tuple(Vec<Pattern>);
-    // A name binding a tuple element
+    // A name binding the value (or a tuple element)
     Binding(str);
+    // `A | B`: any of the alternatives (which can't bind names)
+    Or(Vec<Pattern>);
 }
 
 // A test made by a tuple pattern: the element at `path` (field indices from
@@ -147,6 +151,10 @@ struct MatchArm {
     // For tuple patterns
     tests: Vec<PatTest>;
     binds: Vec<PatBind>;
+    // `pattern if guard =>`
+    guard: Option<&Expr>;
+    // The tags or values of the alternatives of a `|` pattern
+    alt_tags: Vec<int>;
 }
 
 struct Stmt {

@@ -762,6 +762,7 @@ struct Parser {
             Tok::LBracket => { return self.parse_array_lit(pos); },
             Tok::KwMatch => { return self.parse_match(pos); },
             Tok::KwFunc => { return self.parse_closure(pos); },
+            Tok::KwIf => { return self.parse_if_expr(pos); },
             Tok::Ident => {
                 // `new Type { ... }` allocates a struct on the heap
                 if tok.text != "new" || !self.at(Tok::Ident) {
@@ -789,6 +790,24 @@ struct Parser {
                 return new_expr(ExprKind::Null, pos);
             },
         }
+    }
+
+    // `if cond { a } else { b }` in an expression (after `if`)
+    func parse_if_expr(pos: int): &Expr {
+        var cond = self.parse_expr(PREC_LOWEST, false);
+        var then_pos = self.expect(Tok::LBrace, "`{`").pos;
+        var then = self.parse_block_expr(then_pos);
+        var otherwise: Option<&Expr> = Option::None;
+        if self.accept(Tok::KwElse) {
+            if self.at(Tok::KwIf) {
+                var if_pos = self.advance().pos;
+                otherwise = Option::Some(self.parse_if_expr(if_pos));
+            } else {
+                var else_pos = self.expect(Tok::LBrace, "`{`").pos;
+                otherwise = Option::Some(self.parse_block_expr(else_pos));
+            }
+        }
+        return new_expr(ExprKind::If(cond, then, otherwise), pos);
     }
 
     // A closure, after `func`: `(a: A, b)` parameters, an optional `: R`
@@ -936,6 +955,20 @@ struct Parser {
             }
             var arm_pos = self.peek().pos;
             var pattern = self.parse_pattern(false);
+            // `A | B`
+            if self.at(Tok::Pipe) {
+                var alternatives: Vec<Pattern> = Vec::new();
+                alternatives.push(pattern);
+                while self.accept(Tok::Pipe) {
+                    alternatives.push(self.parse_pattern(false));
+                }
+                pattern = Pattern::Or(alternatives);
+            }
+            // `pattern if condition`
+            var guard: Option<&Expr> = Option::None;
+            if self.accept(Tok::KwIf) {
+                guard = Option::Some(self.parse_expr(PREC_LOWEST, false));
+            }
             self.expect(Tok::FatArrow, "`=>`");
             var body_pos = self.peek().pos;
             var body = new_expr(ExprKind::Null, body_pos);
@@ -953,6 +986,8 @@ struct Parser {
                 bindings: Vec::new(),
                 tests: Vec::new(),
                 binds: Vec::new(),
+                guard: guard,
+                alt_tags: Vec::new(),
             });
         }
         return new_expr(ExprKind::Match(scrutinee, arms), pos);
@@ -979,7 +1014,7 @@ struct Parser {
                 if tok.text == "_" {
                     return Pattern::Wildcard;
                 }
-                if in_tuple && !self.at(Tok::ColonColon) {
+                if !self.at(Tok::ColonColon) {
                     return Pattern::Binding(tok.text);
                 }
                 self.expect(Tok::ColonColon, "`::`");
@@ -1277,7 +1312,7 @@ func expr_mentions_self(e: &Expr): bool {
             }
             var i = 0;
             while i < arms.len {
-                if expr_mentions_self(arms.get(i).body) {
+                if expr_mentions_self(arms.get(i).body) || opt_mentions_self(arms.get(i).guard) {
                     return true;
                 }
                 i += 1;
@@ -1288,6 +1323,7 @@ func expr_mentions_self(e: &Expr): bool {
         ExprKind::Interpolate(parts) => exprs_mention_self(parts),
         ExprKind::Tuple(items) => exprs_mention_self(items),
         ExprKind::Try(x) => expr_mentions_self(x),
+        ExprKind::If(cond, then, otherwise) => expr_mentions_self(cond) || expr_mentions_self(then) || opt_mentions_self(otherwise),
         ExprKind::MethodTurbofish(x, _, _) => expr_mentions_self(x),
         ExprKind::Closure(_, _, body) => stmts_mention_self(body),
         _ => false,

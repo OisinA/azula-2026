@@ -1150,6 +1150,31 @@ struct Checker {
             ExprKind::BoolLit(_) => Type::Bool,
             ExprKind::StrLit(_) => Type::Str,
             ExprKind::Interpolate(_) => Type::Str,
+            ExprKind::Block(_, value) => match value {
+                Option::Some(v) => self.peek_type(v),
+                Option::None => Type::Infer,
+            },
+            ExprKind::Match(_, arms) => {
+                var i = 0;
+                while i < arms.len {
+                    var t = self.peek_type(arms.get(i).body);
+                    if !is_infer(t) {
+                        return t;
+                    }
+                    i += 1;
+                }
+                Type::Infer
+            },
+            ExprKind::If(_, then, otherwise) => {
+                var t = self.peek_type(then);
+                if is_infer(t) {
+                    match otherwise {
+                        Option::Some(o) => { t = self.peek_type(o); },
+                        Option::None => {},
+                    }
+                }
+                t
+            },
             ExprKind::Binary(op, l, r) => {
                 if op == BinOp::Add || op == BinOp::Sub || op == BinOp::Mul || op == BinOp::Div || op == BinOp::Mod
                     || op == BinOp::BitAnd || op == BinOp::BitOr || op == BinOp::BitXor || op == BinOp::Shl || op == BinOp::Shr {
@@ -1752,6 +1777,24 @@ struct Checker {
             ExprKind::Interpolate(parts) => { return self.check_interpolation(e, parts); },
             ExprKind::Tuple(items) => { return self.check_tuple(e, items, expected); },
             ExprKind::Try(inner) => { return self.check_try(e, inner); },
+            ExprKind::If(cond, then, otherwise) => {
+                self.check_condition(cond);
+                var tt = self.check_expr(then, expected);
+                return match otherwise {
+                    Option::None => Type::Void,
+                    Option::Some(o) => {
+                        var ot = self.check_expr(o, expected);
+                        // Branches that always return don't affect the type
+                        if expr_diverges(then) {
+                            return ot;
+                        }
+                        if expr_diverges(o) || type_eq(tt, ot) {
+                            return tt;
+                        }
+                        Type::Void
+                    },
+                };
+            },
             ExprKind::MethodTurbofish(_, _, _) => {
                 self.fail(e.pos, "type arguments on a method must be followed by a call");
                 return Type::Infer;
@@ -2855,8 +2898,46 @@ struct Checker {
         while i < arms.len {
             var arm = arms.get(i);
             self.push_scope();
+            // A guarded arm doesn't count towards covering the cases
+            var arm_wildcard = false;
+            var arm_covered: Vec<str> = Vec::new();
             match arm.pattern {
-                Pattern::Wildcard => { has_wildcard = true; },
+                Pattern::Wildcard => { arm_wildcard = true; },
+                // A name matching anything binds the whole value
+                Pattern::Binding(name) => {
+                    arm_wildcard = true;
+                    arm.binds.push(PatBind { path: Vec::new(), ir: self.declare_var(name, st, false), typ: st });
+                },
+                Pattern::Or(alternatives) => {
+                    var j = 0;
+                    while j < alternatives.len {
+                        match alternatives.get(j) {
+                            Pattern::Wildcard => { arm_wildcard = true; },
+                            Pattern::IntValue(value) => {
+                                if !is_int {
+                                    self.fail(arm.pos, "integer pattern on a non-integer value");
+                                }
+                                arm.alt_tags.push(value);
+                            },
+                            Pattern::Variant(pat_enum, variant, bindings) => {
+                                if info == null || (pat_enum != enum_name && pat_enum != generic_name) {
+                                    self.fail(arm.pos, concat3("pattern doesn't match a value of type ", mangle(st), ""));
+                                }
+                                if bindings.len > 0 {
+                                    self.fail(arm.pos, "the alternatives of a `|` pattern can't bind names");
+                                }
+                                arm.alt_tags.push(self.variant_tag(info, variant, arm.pos));
+                                arm_covered.push(variant);
+                                arm.enum_name = enum_name;
+                            },
+                            _ => { self.fail(arm.pos, "the alternatives of a `|` pattern can't bind names"); },
+                        }
+                        j += 1;
+                    }
+                    if arm_wildcard {
+                        arm.pattern = Pattern::Wildcard;
+                    }
+                },
                 Pattern::IntValue(value) => {
                     if !is_int {
                         self.fail(arm.pos, "integer pattern on a non-integer value");
@@ -2868,7 +2949,7 @@ struct Checker {
                         self.fail(arm.pos, concat3("pattern doesn't match a value of type ", mangle(st), ""));
                     }
                     var tag = self.variant_tag(info, variant, arm.pos);
-                    covered.insert(variant, true);
+                    arm_covered.push(variant);
                     arm.enum_name = enum_name;
                     arm.tag = tag;
                     var payload = info.payloads.get(tag);
@@ -2889,6 +2970,14 @@ struct Checker {
                     arm.bindings = names;
                 },
                 _ => { self.fail(arm.pos, concat("a tuple pattern can't match a value of type ", mangle(st))); },
+            }
+            if self.check_guard(arm) {
+                has_wildcard = has_wildcard || arm_wildcard;
+                var j = 0;
+                while j < arm_covered.len {
+                    covered.insert(arm_covered.get(j), true);
+                    j += 1;
+                }
             }
             var t = self.check_expr(arm.body, expected);
             self.pop_scope();
@@ -2918,6 +3007,21 @@ struct Checker {
         return result;
     }
 
+    // Check an arm's guard, if it has one; whether it has none (so the arm's
+    // pattern counts towards covering the cases)
+    func check_guard(arm: &MatchArm): bool {
+        return match arm.guard {
+            Option::Some(g) => {
+                var t = self.check_expr(g, Type::Bool);
+                if !is_bool(t) {
+                    self.fail(g.pos, concat("a match guard must be a bool, not ", mangle(t)));
+                }
+                false
+            },
+            Option::None => true,
+        };
+    }
+
     // A match on a tuple: each arm is `_` or a tuple pattern, which becomes
     // tests of the elements and variables bound to them
     func check_tuple_match(e: &Expr, st: Type, types: Vec<Type>, arms: Vec<&MatchArm>, expected: Type): Type {
@@ -2929,12 +3033,18 @@ struct Checker {
             self.push_scope();
             match arm.pattern {
                 Pattern::Wildcard => {},
+                Pattern::Binding(name) => {
+                    arm.binds.push(PatBind { path: Vec::new(), ir: self.declare_var(name, st, false), typ: st });
+                },
                 Pattern::Tuple(items) => { self.check_tuple_pattern(arm, items, types, Vec::new()); },
                 _ => { self.fail(arm.pos, concat3("patterns matching the tuple ", mangle(st), " must be tuples like (a, _)")); },
             }
-            var row: Vec<Pattern> = Vec::new();
-            row.push(arm.pattern);
-            rows.push(row);
+            // A guarded arm doesn't count towards covering the cases
+            if self.check_guard(arm) {
+                var row: Vec<Pattern> = Vec::new();
+                row.push(arm.pattern);
+                rows.push(row);
+            }
             var t = self.check_expr(arm.body, expected);
             self.pop_scope();
             if !arm_diverges(arm) {
@@ -2998,6 +3108,7 @@ struct Checker {
                         Option::None => { self.fail(arm.pos, concat("a tuple pattern can't match a value of type ", mangle(t))); },
                     }
                 },
+                Pattern::Or(_) => { self.fail(arm.pos, "`|` patterns can't be used inside a tuple pattern"); },
             }
             i += 1;
         }
@@ -3450,6 +3561,11 @@ struct NameWalk {
             ExprKind::ArrayLit(items) => { self.exprs(items); },
             ExprKind::Tuple(items) => { self.exprs(items); },
             ExprKind::Try(x) => { self.expr(x); },
+            ExprKind::If(cond, then, otherwise) => {
+                self.expr(cond);
+                self.expr(then);
+                self.opt_expr(otherwise);
+            },
             ExprKind::Interpolate(parts) => { self.exprs(parts); },
             ExprKind::Cast(x, _) => { self.expr(x); },
             ExprKind::Alloc(x) => { self.expr(x); },
@@ -3462,6 +3578,7 @@ struct NameWalk {
                 var i = 0;
                 while i < arms.len {
                     self.pattern(arms.get(i).pattern);
+                    self.opt_expr(arms.get(i).guard);
                     self.expr(arms.get(i).body);
                     i += 1;
                 }
@@ -3556,6 +3673,8 @@ func new_arm(pattern: Pattern, body: &Expr, pos: int): &MatchArm {
         bindings: Vec::new(),
         tests: Vec::new(),
         binds: Vec::new(),
+        guard: Option::None,
+        alt_tags: Vec::new(),
     };
 }
 
@@ -3704,6 +3823,8 @@ struct Copier {
                         bindings: Vec::new(),
                         tests: Vec::new(),
                         binds: Vec::new(),
+                        guard: self.opt_expr(arm.guard),
+                        alt_tags: Vec::new(),
                     });
                     i += 1;
                 }
@@ -3713,6 +3834,7 @@ struct Copier {
             ExprKind::Interpolate(parts) => ExprKind::Interpolate(self.exprs(parts)),
             ExprKind::Tuple(items) => ExprKind::Tuple(self.exprs(items)),
             ExprKind::Try(x) => ExprKind::Try(self.expr(x)),
+            ExprKind::If(cond, then, otherwise) => ExprKind::If(self.expr(cond), self.expr(then), self.opt_expr(otherwise)),
             ExprKind::Closure(params, ret, body) => {
                 var out: Vec<Param> = Vec::new();
                 var i = 0;
@@ -3875,6 +3997,14 @@ func assignable(expected: Type, got: Type, e: &Expr): bool {
         return type_eq(expected, Type::Str) || type_eq(got, Type::Str);
     }
     return false;
+}
+
+// Does evaluating `e` never produce a value (it always returns, or is `!`)?
+func expr_diverges(e: &Expr): bool {
+    return is_never(e.typ) || match e.kind {
+        ExprKind::Block(stmts, value) => value.is_none() && always_returns(stmts),
+        _ => false,
+    };
 }
 
 func arm_diverges(arm: &MatchArm): bool {

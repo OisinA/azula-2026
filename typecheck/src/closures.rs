@@ -113,6 +113,10 @@ fn declare_pattern(pattern: &MatchPattern, names: &mut Names) {
                 declare_pattern(item, names);
             }
         }
+        MatchPattern::Guarded(inner, guard) => {
+            declare_pattern(inner, names);
+            walk_expr(guard, names);
+        }
         _ => {}
     }
 }
@@ -157,6 +161,13 @@ fn walk_expr(expr: &ExpressionNode, names: &mut Names) {
             for (pattern, body) in arms {
                 declare_pattern(pattern, names);
                 walk_expr(body, names);
+            }
+        }
+        Expression::If(cond, then, otherwise) => {
+            walk_expr(cond, names);
+            walk_expr(then, names);
+            if let Some(o) = otherwise {
+                walk_expr(o, names);
             }
         }
         Expression::Block(stmts, last) => {

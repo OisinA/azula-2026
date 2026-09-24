@@ -832,6 +832,42 @@ impl<'a> Codegen<'a> {
             Expression::Match(scrutinee, arms) => {
                 self.codegen_match(scrutinee, arms, expr.typed, func)
             }
+            Expression::If(cond, then, otherwise) => {
+                self.var_counter += 1;
+                let n = self.var_counter;
+                let has_value = expr.typed != AzulaType::Void && expr.typed != AzulaType::Never;
+                let result = format!("__if_{}", n);
+                if has_value {
+                    func.variables.insert(result.clone(), expr.typed.clone());
+                }
+                let then_block = format!("ifx-then-{}", n);
+                let else_block = format!("ifx-else-{}", n);
+                let end_block = format!("ifx-end-{}", n);
+                let c = self.codegen_expr(cond.as_ref().clone(), func, true);
+                func.jcond(c, then_block.clone(), else_block.clone());
+                for (block, branch) in [(then_block, Some(then)), (else_block, otherwise)] {
+                    func.blocks.push((block.clone(), Block::new()));
+                    func.current_block = block;
+                    self.scopes.push(HashMap::new());
+                    if let Some(branch) = branch {
+                        let value = self.codegen_expr(branch.as_ref().clone(), func, true);
+                        if has_value && !current_block_terminated(func) {
+                            func.store(result.clone(), value, expr.typed.clone());
+                        }
+                    }
+                    self.scopes.pop();
+                    if !current_block_terminated(func) {
+                        func.jump(end_block.clone());
+                    }
+                }
+                func.blocks.push((end_block.clone(), Block::new()));
+                func.current_block = end_block;
+                if has_value {
+                    func.load(result, expr.typed)
+                } else {
+                    Value::LiteralInteger(0)
+                }
+            }
             Expression::Cast(inner, target_type) => {
                 let val = self.codegen_expr(inner.as_ref().clone(), func, true);
                 func.cast(val, target_type)
@@ -1034,6 +1070,7 @@ impl<'a> Codegen<'a> {
     ) -> Value {
         let n = func.match_block_index;
         func.match_block_index += 1;
+        let scrutinee_type = scrutinee.typed.clone();
 
         let enum_name = match &scrutinee.typed {
             AzulaType::Named(name) => name.clone(),
@@ -1066,16 +1103,46 @@ impl<'a> Codegen<'a> {
                 end_block.clone()
             };
 
-            let is_wildcard = matches!(pattern, MatchPattern::Wildcard);
+            let (pattern, guard) = match pattern {
+                MatchPattern::Guarded(p, g) => (p.as_ref().clone(), Some(g.as_ref().clone())),
+                p => (p, None),
+            };
+            let is_wildcard = matches!(pattern, MatchPattern::Wildcard | MatchPattern::Binding(_)) && guard.is_none();
             match &pattern {
-                MatchPattern::Wildcard => func.jump(arm_block.clone()),
+                MatchPattern::Wildcard | MatchPattern::Binding(_) => func.jump(arm_block.clone()),
+                MatchPattern::Guarded(..) => unreachable!(),
+                // Try each alternative in turn
+                MatchPattern::Or(alternatives) => {
+                    for (k, alternative) in alternatives.iter().enumerate() {
+                        let expected = match alternative {
+                            MatchPattern::Wildcard => {
+                                func.jump(arm_block.clone());
+                                break;
+                            }
+                            MatchPattern::Integer(value) => *value,
+                            MatchPattern::Variant(enum_name, variant) | MatchPattern::Destructure(enum_name, variant, _) => {
+                                self.variant_index(enum_name, variant) as i64
+                            }
+                            _ => unreachable!("checked by the typechecker"),
+                        };
+                        let expected = func.const_int(expected);
+                        let cond = func.eq(tag_val.clone(), expected);
+                        if k + 1 == alternatives.len() {
+                            func.jcond(cond, arm_block.clone(), next_block.clone());
+                        } else {
+                            let other = format!("match-alt-{}-{}-{}", n, i, k);
+                            func.jcond(cond, arm_block.clone(), other.clone());
+                            func.blocks.push((other.clone(), Block::new()));
+                            func.current_block = other;
+                        }
+                    }
+                }
                 MatchPattern::Tuple(items) => {
                     let mut tests = 0;
                     let prefix = format!("match-test-{}-{}", n, i);
                     self.codegen_tuple_test(items, scrut_val.clone(), &enum_name, &prefix, &mut tests, &next_block, func);
                     func.jump(arm_block.clone());
                 }
-                MatchPattern::Binding(_) => unreachable!("bindings only appear inside tuple patterns"),
                 MatchPattern::Integer(value) => {
                     let expected = func.const_int(*value);
                     let cond = func.eq(tag_val.clone(), expected);
@@ -1095,6 +1162,11 @@ impl<'a> Codegen<'a> {
             if let MatchPattern::Tuple(items) = &pattern {
                 self.bind_tuple_pattern(items, scrut_val.clone(), &enum_name, func);
             }
+            // A name matching anything binds the whole value
+            if let MatchPattern::Binding(name) = &pattern {
+                let unique = self.declare_variable(name, scrutinee_type.clone(), func);
+                func.store(unique, scrut_val.clone(), scrutinee_type.clone());
+            }
             if let MatchPattern::Destructure(enum_name, variant, bindings) = &pattern {
                 let struct_name = format!("{}.{}", enum_name, variant);
                 for (field, binding) in bindings.iter().enumerate() {
@@ -1105,6 +1177,15 @@ impl<'a> Codegen<'a> {
                         func.store(unique, value, typ);
                     }
                 }
+            }
+
+            // A guard that fails moves on to the next arm
+            if let Some(guard) = guard {
+                let passed = self.codegen_expr(guard, func, true);
+                let body_block = format!("match-body-{}-{}", n, i);
+                func.jcond(passed, body_block.clone(), next_block.clone());
+                func.blocks.push((body_block.clone(), Block::new()));
+                func.current_block = body_block;
             }
 
             let body_val = self.codegen_expr(body, func, true);
@@ -1171,7 +1252,7 @@ impl<'a> Codegen<'a> {
                     self.codegen_tuple_test(inner, element, &inner_tuple, prefix, tests, fail, func);
                     continue;
                 }
-                MatchPattern::Destructure(..) => unreachable!(),
+                MatchPattern::Destructure(..) | MatchPattern::Or(_) | MatchPattern::Guarded(..) => unreachable!(),
             };
             let pass = format!("{}-{}", prefix, tests);
             *tests += 1;

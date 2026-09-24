@@ -107,6 +107,8 @@ pub enum Expression<'a> {
     Tuple(Vec<ExpressionNode<'a>>),
     /// `value?`: the value of an Option or Result, or return early with its None or Err
     Try(Rc<ExpressionNode<'a>>),
+    /// `if cond { a } else { b }` used as a value
+    If(Rc<ExpressionNode<'a>>, Rc<ExpressionNode<'a>>, Option<Rc<ExpressionNode<'a>>>),
     /// `func(a: A, b) : R { body }` or `func(a) => value`: parameters (whose
     /// types may be left to inference), return type if given, and body
     Closure(Vec<(Option<AzulaType<'a>>, String)>, Option<AzulaType<'a>>, Vec<Statement<'a>>),
@@ -148,6 +150,10 @@ pub enum MatchPattern<'a> {
     Wildcard,
     /// A name binding a tuple element
     Binding(&'a str),
+    /// `A | B`: any of the alternatives (which can't bind names)
+    Or(Vec<MatchPattern<'a>>),
+    /// `pattern if condition`
+    Guarded(Rc<MatchPattern<'a>>, Rc<ExpressionNode<'a>>),
     /// (p, q, ...)
     Tuple(Vec<MatchPattern<'a>>),
 }

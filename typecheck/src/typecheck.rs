@@ -629,6 +629,55 @@ impl<'a> Typechecker<'a> {
         ))
     }
 
+    /// `if cond { a } else { b }` as a value: branches that always return don't
+    /// affect its type, and branches of different types (or no `else`) make it void
+    fn typecheck_if_expression(
+        &mut self,
+        cond: Rc<ExpressionNode<'a>>,
+        then: Rc<ExpressionNode<'a>>,
+        otherwise: Option<Rc<ExpressionNode<'a>>>,
+        span: Span,
+        env: &Environment<'a>,
+        expected: Option<AzulaType<'a>>,
+    ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
+        let (cond, cond_type) = self.typecheck_expression(cond.as_ref().clone(), env)?;
+        if cond_type != AzulaType::Bool {
+            self.errors.push(AzulaError::new(
+                ErrorType::NonBoolCondition(cond_type.mangle()),
+                cond.span.start,
+                cond.span.end,
+            ));
+            return Err("non-bool condition".to_string());
+        }
+        let mut check = |this: &mut Self, branch: ExpressionNode<'a>| match &expected {
+            Some(e) => this.typecheck_expecting(branch, env, e),
+            None => this.typecheck_expression(branch, env),
+        };
+        let (then, then_type) = check(self, then.as_ref().clone())?;
+        let (otherwise, typ) = match otherwise {
+            None => (None, AzulaType::Void),
+            Some(o) => {
+                let (o, o_type) = check(self, o.as_ref().clone())?;
+                let diverges = |node: &ExpressionNode<'a>, t: &AzulaType<'a>| {
+                    *t == AzulaType::Never
+                        || matches!(&node.expression, Expression::Block(stmts, None) if always_returns(stmts))
+                };
+                let typ = if diverges(&then, &then_type) {
+                    o_type.clone()
+                } else if diverges(&o, &o_type) || then_type == o_type {
+                    then_type.clone()
+                } else {
+                    AzulaType::Void
+                };
+                (Some(Rc::new(o)), typ)
+            }
+        };
+        Ok((
+            ExpressionNode { expression: Expression::If(Rc::new(cond), Rc::new(then), otherwise), typed: typ.clone(), span },
+            typ,
+        ))
+    }
+
     /// `value?` on an Option or Result becomes
     ///
     ///   match value { Option::Some(v) => v, Option::None => { return Option::None; } }
@@ -1858,6 +1907,7 @@ impl<'a> Typechecker<'a> {
             Expression::Interpolation(parts) => self.typecheck_interpolation(parts, expr.span, env),
             Expression::Tuple(items) => self.typecheck_tuple(items, expr.span, env, expected),
             Expression::Try(inner) => self.typecheck_try(inner.as_ref().clone(), expr.span, env),
+            Expression::If(cond, then, otherwise) => self.typecheck_if_expression(cond, then, otherwise, expr.span, env, expected),
             Expression::Integer(_) => {
                 // Character literals are chars; other integer literals are ints
                 if expr.typed != AzulaType::Char {
@@ -2447,6 +2497,10 @@ impl<'a> Typechecker<'a> {
                     self.error("Variant payloads can't be destructured inside a tuple pattern; match on the element instead".to_string(), span);
                     return Err("bad pattern".to_string());
                 }
+                MatchPattern::Or(_) | MatchPattern::Guarded(..) => {
+                    self.error("`|` patterns can't be used inside a tuple pattern".to_string(), span);
+                    return Err("bad pattern".to_string());
+                }
                 MatchPattern::Tuple(inner) => match self.tuple_items(&typ) {
                     Some(inner_types) => {
                         let (pattern, inner_irrefutable) = self.check_tuple_pattern(inner, inner_types, env, span)?;
@@ -2517,7 +2571,16 @@ impl<'a> Typechecker<'a> {
         let mut new_arms = vec![];
 
         for (pattern, body) in arms {
-            if tuple_types.is_some() != matches!(pattern, MatchPattern::Tuple(_)) && pattern != MatchPattern::Wildcard {
+            // A guarded arm doesn't count towards covering the cases
+            let (pattern, guard) = match pattern {
+                MatchPattern::Guarded(p, g) => (p.as_ref().clone(), Some(g.as_ref().clone())),
+                p => (p, None),
+            };
+            let mut arm_covered: Vec<String> = vec![];
+            let mut arm_wildcard = false;
+            if tuple_types.is_some() != matches!(pattern, MatchPattern::Tuple(_))
+                && !matches!(pattern, MatchPattern::Wildcard | MatchPattern::Binding(_))
+            {
                 let message = if tuple_types.is_some() {
                     format!("Patterns matching the tuple {} must be tuples like (a, _)", scrut_type.mangle())
                 } else {
@@ -2526,11 +2589,23 @@ impl<'a> Typechecker<'a> {
                 self.error(message, &body.span);
                 return Err("bad tuple pattern".to_string());
             }
-            match &pattern {
-                MatchPattern::Wildcard => {
-                    has_wildcard = true;
+            let alternatives = match &pattern {
+                MatchPattern::Or(alts) => alts.clone(),
+                other => vec![other.clone()],
+            };
+            for alternative in &alternatives {
+            if matches!(pattern, MatchPattern::Or(_))
+                && (matches!(alternative, MatchPattern::Tuple(_) | MatchPattern::Binding(_) | MatchPattern::Or(_))
+                    || matches!(alternative, MatchPattern::Destructure(_, _, b) if !b.is_empty()))
+            {
+                self.error("The alternatives of a `|` pattern can't bind names".to_string(), &body.span);
+                return Err("binding in or-pattern".to_string());
+            }
+            match alternative {
+                MatchPattern::Wildcard | MatchPattern::Binding(_) => {
+                    arm_wildcard = true;
                 }
-                MatchPattern::Tuple(_) | MatchPattern::Binding(_) => {}
+                MatchPattern::Tuple(_) | MatchPattern::Or(_) | MatchPattern::Guarded(..) => {}
                 MatchPattern::Integer(_) => {
                     if !is_integer_match {
                         self.errors.push(AzulaError::new(
@@ -2560,8 +2635,9 @@ impl<'a> Typechecker<'a> {
                         ));
                         return Err(format!("Unknown variant {}", variant));
                     }
-                    covered.push(variant.to_string());
+                    arm_covered.push(variant.to_string());
                 }
+            }
             }
 
             // Bind the payload fields of a destructured variant
@@ -2571,12 +2647,19 @@ impl<'a> Typechecker<'a> {
                     let (pattern, irrefutable) =
                         self.check_tuple_pattern(items, types.clone(), &mut arm_env, &body.span)?;
                     if irrefutable {
-                        has_wildcard = true;
+                        arm_wildcard = true;
                     }
                     pattern
                 }
                 (pattern, _) => pattern,
             };
+            // A name matching anything binds the whole value
+            if let MatchPattern::Binding(name) = &pattern {
+                arm_env.add_variable(
+                    name.to_string(),
+                    VariableDefinition { name: name.to_string(), mutable: false, typ: scrut_type.clone() },
+                );
+            }
             if let MatchPattern::Destructure(_, variant, bindings) = &pattern {
                 let payload = self.variant_payload(&enum_name, variant).unwrap_or_default();
                 if payload.len() != bindings.len() {
@@ -2607,6 +2690,22 @@ impl<'a> Typechecker<'a> {
                 }
             }
 
+            let guard = match guard {
+                Some(g) => {
+                    let (g, t) = self.typecheck_expression(g, &arm_env)?;
+                    if t != AzulaType::Bool {
+                        self.error(format!("A match guard must be a bool, not {}", t.mangle()), &g.span);
+                        return Err("bad guard".to_string());
+                    }
+                    Some(g)
+                }
+                None => {
+                    covered.extend(arm_covered);
+                    has_wildcard |= arm_wildcard;
+                    None
+                }
+            };
+
             let (body_node, body_type) = match &expected {
                 Some(expected) => self.typecheck_expecting(body, &arm_env, expected)?,
                 None => self.typecheck_expression(body, &arm_env)?,
@@ -2627,12 +2726,20 @@ impl<'a> Typechecker<'a> {
                 }
             }
 
-            let pattern = match pattern {
+            let resolve = |p: MatchPattern<'a>| match p {
                 MatchPattern::Variant(_, variant) => MatchPattern::Variant(leak(enum_name.clone()), variant),
                 MatchPattern::Destructure(_, variant, bindings) => {
                     MatchPattern::Destructure(leak(enum_name.clone()), variant, bindings)
                 }
                 other => other,
+            };
+            let pattern = match pattern {
+                MatchPattern::Or(alts) => MatchPattern::Or(alts.into_iter().map(resolve).collect()),
+                other => resolve(other),
+            };
+            let pattern = match guard {
+                Some(g) => MatchPattern::Guarded(Rc::new(pattern), Rc::new(g)),
+                None => pattern,
             };
             new_arms.push((pattern, body_node));
         }
@@ -2641,7 +2748,11 @@ impl<'a> Typechecker<'a> {
         // integer and tuple matches just require a wildcard (or a tuple pattern
         // matching anything).
         if !has_wildcard && tuple_types.is_some() {
-            let rows: Vec<Vec<MatchPattern<'a>>> = new_arms.iter().map(|(p, _)| vec![p.clone()]).collect();
+            let rows: Vec<Vec<MatchPattern<'a>>> = new_arms
+                .iter()
+                .filter(|(p, _)| !matches!(p, MatchPattern::Guarded(..)))
+                .map(|(p, _)| vec![p.clone()])
+                .collect();
             if !self.patterns_exhaustive(rows, &[scrut_type.clone()]) {
                 self.error(
                     "This match isn't exhaustive: some tuples match none of the arms (add a `_` arm?)".to_string(),
