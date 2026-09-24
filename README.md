@@ -151,8 +151,15 @@ Other things to know:
   (a C string), `&T` pointers, arrays `[T; n]`, structs, enums and generic instances.
 - Variables are declared with `var` (mutable) or `const`; parameters are immutable.
 - Loops are `while cond { }`, `for cond { }`, `for { }`, `for i in 0..n { }` (or `0..=n`)
-  and `for x in collection { }`, which works for arrays, `str` and anything with `length()`
-  and `get(i)` methods; `break` and `continue` work in all of them.
+  and `for x in collection { }`, which works for arrays, `str`, `Vec`, iterators (anything
+  with `next(): Option<T>`), types with an `iter()` method returning one (such as `Map`,
+  giving `(key, value)` pairs), and anything with `length()` and `get(i)` methods.
+  `for (a, b) in ...` destructures each element. `break` and `continue` work in all of them.
+- Iterators implement `Iterator<T>` and get lazy `map`, `filter`, `enumerate` and `take`
+  adapters plus `collect`, `count`, `fold`, `any`, `all` and `each`:
+  `v.iter().filter(func(n) => n > 0).map(func(n) => n * 2).collect()`. `range(a, b)`,
+  `vec.iter()`, `map.iter()` and `text.chars()` make iterators. Interfaces can take type
+  parameters (`interface Iterator<T>`, `struct Countdown is Iterator<int>`).
 - Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`) and
   `*pointer` to read or write through a pointer.
 - `char` is a byte of text: `'a'` literals and `s[i]` are chars, which work like 8-bit

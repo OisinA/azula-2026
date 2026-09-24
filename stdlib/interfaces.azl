@@ -127,3 +127,99 @@ extend float is Eq, Ord, Show {
         return str_from_float(self);
     }
 }
+
+// Something that produces values one at a time: `for x in it` calls `next()`
+// until it gives None. Types with an `iter()` method returning an Iterator can
+// be used in `for` loops too. The other methods are lazy adapters and helpers
+// that every iterator gets.
+interface Iterator<T> {
+    func next(): Option<T>;
+
+    // `f` applied to each value
+    func map<U>(f: func(T): U): Mapped<Self, T, U> {
+        return Mapped { source: *self, f: f };
+    }
+
+    // The values `keep` returns true for
+    func filter(keep: func(T): bool): Filtered<Self, T> {
+        return Filtered { source: *self, keep: keep };
+    }
+
+    // Each value with its position: (0, a), (1, b), ...
+    func enumerate(): Enumerated<Self, T> {
+        return Enumerated { source: *self, index: 0 };
+    }
+
+    // At most the first `count` values
+    func take(count: int): Taken<Self, T> {
+        return Taken { source: *self, left: count };
+    }
+
+    // All the remaining values, in a Vec
+    func collect(): Vec<T> {
+        var out: Vec<T> = Vec::new();
+        while true {
+            match self.next() {
+                Option::Some(value) => { out.push(value); },
+                Option::None => { return out; },
+            }
+        }
+        return out;
+    }
+
+    func count(): int {
+        var n = 0;
+        while self.next().is_some() {
+            n += 1;
+        }
+        return n;
+    }
+
+    func fold<A>(initial: A, f: func(A, T): A): A {
+        var result = initial;
+        while true {
+            match self.next() {
+                Option::Some(value) => { result = f(result, value); },
+                Option::None => { return result; },
+            }
+        }
+        return result;
+    }
+
+    func any(test: func(T): bool): bool {
+        while true {
+            match self.next() {
+                Option::Some(value) => {
+                    if test(value) {
+                        return true;
+                    }
+                },
+                Option::None => { return false; },
+            }
+        }
+        return false;
+    }
+
+    func all(test: func(T): bool): bool {
+        while true {
+            match self.next() {
+                Option::Some(value) => {
+                    if !test(value) {
+                        return false;
+                    }
+                },
+                Option::None => { return true; },
+            }
+        }
+        return true;
+    }
+
+    func each(f: func(T)) {
+        while true {
+            match self.next() {
+                Option::Some(value) => { f(value); },
+                Option::None => { return; },
+            }
+        }
+    }
+}

@@ -161,22 +161,33 @@ struct Parser {
     }
 
     // An optional `is A, B` list of interfaces a type implements
-    func parse_is_list(): Vec<str> {
-        var interfaces: Vec<str> = Vec::new();
+    // (The conformance's target is filled in by the caller)
+    func parse_is_list(): &Conformance {
+        var list = new Conformance { target: Type::Infer, interfaces: Vec::new(), args: Vec::new(), pos: self.peek().pos };
         if !self.at(Tok::Ident) || self.peek().text != "is" {
-            return interfaces;
+            return list;
         }
         self.advance();
-        interfaces.push(self.expect_ident("interface name"));
+        self.parse_is_item(list);
         while self.accept(Tok::Comma) {
-            interfaces.push(self.expect_ident("interface name"));
+            self.parse_is_item(list);
         }
-        return interfaces;
+        return list;
+    }
+
+    // `Name` or `Name<Types>` in an `is` list
+    func parse_is_item(list: &Conformance) {
+        list.interfaces.push(self.expect_ident("interface name"));
+        if self.at(Tok::Lt) {
+            list.args.push(self.parse_type_args());
+        } else {
+            list.args.push(Vec::new());
+        }
     }
 
     // Record that the type `name<type_params>` implements `interfaces`
-    static func add_conformance(program: &Program, name: str, type_params: Vec<str>, interfaces: Vec<str>, pos: int) {
-        if interfaces.len == 0 {
+    static func add_conformance(program: &Program, name: str, type_params: Vec<str>, list: &Conformance, pos: int) {
+        if list.interfaces.len == 0 {
             return;
         }
         var target = Type::Named(name);
@@ -189,7 +200,9 @@ struct Parser {
             }
             target = Type::Generic(name, args);
         }
-        program.conformances.push(new Conformance { target: target, interfaces: interfaces, pos: pos });
+        list.target = target;
+        list.pos = pos;
+        program.conformances.push(list);
     }
 
     // `interface Name { func m(args): R; func d(): R { default body } }`.
@@ -197,6 +210,8 @@ struct Parser {
     func parse_interface(): &InterfaceDecl {
         var pos = self.advance().pos;
         var name = self.expect_ident("interface name");
+        var type_params = self.parse_type_params();
+        self.bounds = Vec::new();
         var methods: Vec<&FuncDecl> = Vec::new();
         var has_body: Vec<bool> = Vec::new();
         self.expect(Tok::LBrace, "`{`");
@@ -208,7 +223,7 @@ struct Parser {
             methods.push(f);
             has_body.push(self.last_had_body);
         }
-        return new InterfaceDecl { name: name, methods: methods, has_body: has_body, pos: pos };
+        return new InterfaceDecl { name: name, type_params: type_params, methods: methods, has_body: has_body, pos: pos };
     }
 
     func parse_func(): &FuncDecl {
@@ -415,8 +430,10 @@ struct Parser {
         }
         // `extend Type is A, B { ... }`
         var interfaces = self.parse_is_list();
-        if interfaces.len > 0 {
-            program.conformances.push(new Conformance { target: target, interfaces: interfaces, pos: pos });
+        if interfaces.interfaces.len > 0 {
+            interfaces.target = target;
+            interfaces.pos = pos;
+            program.conformances.push(interfaces);
         }
         var methods: Vec<&FuncDecl> = Vec::new();
         self.expect(Tok::LBrace, "`{`");
@@ -564,8 +581,28 @@ struct Parser {
             },
             Tok::KwFor => {
                 self.advance();
-                if self.at(Tok::Ident) && self.peek_at(1).kind == Tok::KwIn {
-                    var name = self.advance().text;
+                // `for (a, b) in ...` destructures each element
+                var names: Vec<str> = Vec::new();
+                if self.at(Tok::LParen) {
+                    var k = 1;
+                    while self.peek_at(k).kind == Tok::Ident && (self.peek_at(k + 1).kind == Tok::Comma || self.peek_at(k + 1).kind == Tok::RParen) {
+                        names.push(self.peek_at(k).text);
+                        if self.peek_at(k + 1).kind == Tok::RParen {
+                            break;
+                        }
+                        k += 2;
+                    }
+                    if names.len == 0 || self.peek_at(k + 2).kind != Tok::KwIn {
+                        names = Vec::new();
+                    } else {
+                        self.index = self.index + k + 2;
+                    }
+                }
+                if names.len > 0 || (self.at(Tok::Ident) && self.peek_at(1).kind == Tok::KwIn) {
+                    var name = "$element";
+                    if names.len == 0 {
+                        name = self.advance().text;
+                    }
                     self.advance();
                     var iterable = self.parse_expr(PREC_LOWEST, false);
                     var end: Option<&Expr> = Option::None;
@@ -576,6 +613,16 @@ struct Parser {
                     }
                     self.expect(Tok::LBrace, "`{`");
                     var body = self.parse_block_body();
+                    if names.len > 0 {
+                        var with_names: Vec<&Stmt> = Vec::new();
+                        with_names.push(new_stmt(StmtKind::Destructure(names, true, new_expr(ExprKind::Ident("$element"), pos)), pos));
+                        var i = 0;
+                        while i < body.len {
+                            with_names.push(body.get(i));
+                            i += 1;
+                        }
+                        body = with_names;
+                    }
                     return new_stmt(StmtKind::ForIn(name, iterable, end, inclusive, body), pos);
                 }
                 var cond: Option<&Expr> = Option::None;

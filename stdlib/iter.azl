@@ -1,0 +1,141 @@
+// Iterators: the adapters Iterator's methods return, and iterators over
+// ranges, Vecs, Maps and strings.
+
+struct Mapped<I, T, U> is Iterator<U> {
+    source: I;
+    f: func(T): U;
+
+    func next(): Option<U> {
+        return match self.source.next() {
+            Option::Some(value) => Option::Some(self.f(value)),
+            Option::None => Option::None,
+        };
+    }
+}
+
+struct Filtered<I, T> is Iterator<T> {
+    source: I;
+    keep: func(T): bool;
+
+    func next(): Option<T> {
+        while true {
+            match self.source.next() {
+                Option::Some(value) => {
+                    if self.keep(value) {
+                        return Option::Some(value);
+                    }
+                },
+                Option::None => { return Option::None; },
+            }
+        }
+        return Option::None;
+    }
+}
+
+struct Enumerated<I, T> is Iterator<(int, T)> {
+    source: I;
+    index: int;
+
+    func next(): Option<(int, T)> {
+        return match self.source.next() {
+            Option::Some(value) => {
+                self.index += 1;
+                Option::Some((self.index - 1, value))
+            },
+            Option::None => Option::None,
+        };
+    }
+}
+
+struct Taken<I, T> is Iterator<T> {
+    source: I;
+    left: int;
+
+    func next(): Option<T> {
+        if self.left <= 0 {
+            return Option::None;
+        }
+        self.left -= 1;
+        return self.source.next();
+    }
+}
+
+// The integers from `start` up to (not including) `end`
+struct Range is Iterator<int> {
+    current: int;
+    end: int;
+
+    func next(): Option<int> {
+        if self.current >= self.end {
+            return Option::None;
+        }
+        self.current += 1;
+        return Option::Some(self.current - 1);
+    }
+}
+
+func range(start: int, end: int): Range {
+    return Range { current: start, end: end };
+}
+
+struct VecIter<T> is Iterator<T> {
+    items: Vec<T>;
+    index: int;
+
+    func next(): Option<T> {
+        if self.index >= self.items.len {
+            return Option::None;
+        }
+        self.index += 1;
+        return Option::Some(self.items.get(self.index - 1));
+    }
+}
+
+struct MapIter<K, V> is Iterator<(K, V)> {
+    map: Map<K, V>;
+    index: int;
+
+    func next(): Option<(K, V)> {
+        while self.index < self.map.cap {
+            var i = self.index;
+            self.index += 1;
+            if self.map.used[i] {
+                return Option::Some((self.map.keys[i], self.map.values[i]));
+            }
+        }
+        return Option::None;
+    }
+}
+
+struct Chars is Iterator<char> {
+    text: str;
+    index: int;
+
+    func next(): Option<char> {
+        var c = self.text[self.index];
+        if c == 0 {
+            return Option::None;
+        }
+        self.index += 1;
+        return Option::Some(c);
+    }
+}
+
+extend Vec<T> {
+    func iter(): VecIter<T> {
+        return VecIter { items: *self, index: 0 };
+    }
+}
+
+extend Map<K, V> {
+    // The (key, value) pairs, in no particular order
+    func iter(): MapIter<K, V> {
+        return MapIter { map: *self, index: 0 };
+    }
+}
+
+extend str {
+    func chars(): Chars {
+        return Chars { text: self, index: 0 };
+    }
+}

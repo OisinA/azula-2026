@@ -247,15 +247,18 @@ struct AliasDecl {
 // `interface Name { methods }`: methods without a body have `has_body` false
 struct InterfaceDecl {
     name: str;
+    // `interface Iterator<T>`
+    type_params: Vec<str>;
     methods: Vec<&FuncDecl>;
     has_body: Vec<bool>;
     pos: int;
 }
 
-// `Type is A, B`
+// `Type is A, B<T>`: the interfaces and their type arguments
 struct Conformance {
     target: Type;
     interfaces: Vec<str>;
+    args: Vec<Vec<Type>>;
     pos: int;
 }
 

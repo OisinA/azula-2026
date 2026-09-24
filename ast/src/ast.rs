@@ -74,11 +74,13 @@ pub enum Statement<'a> {
     /// `interface Name { methods }`: each method, and whether it has a default body
     Interface {
         name: &'a str,
+        /// Type parameters: `interface Iterator<T>`
+        params: Vec<&'a str>,
         methods: Vec<(Statement<'a>, bool)>,
         span: Span,
     },
-    /// `Type is A, B`: the type implements these interfaces
-    Conforms(AzulaType<'a>, Vec<&'a str>, Span),
+    /// `Type is A, B<T>`: the type implements these interfaces (with type arguments)
+    Conforms(AzulaType<'a>, Vec<(&'a str, Vec<AzulaType<'a>>)>, Span),
 }
 
 #[derive(Debug, PartialEq, Clone)]

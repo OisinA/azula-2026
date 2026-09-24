@@ -1043,9 +1043,33 @@ impl<'a> Parser<'a> {
 
         let mut lookahead = self.lexer.clone();
         let first = lookahead.next().map(|t| t.kind);
+        // `for (a, b) in ...` destructures each element
+        let mut names: Vec<String> = vec![];
+        let mut tokens_before_in = 1;
+        if first == Some(TokenKind::BracketOpen) {
+            loop {
+                tokens_before_in += 1;
+                match lookahead.next().map(|t| t.kind) {
+                    Some(TokenKind::Identifier(n)) => names.push(n.to_string()),
+                    Some(TokenKind::Comma) => {}
+                    Some(TokenKind::BracketClose) => break,
+                    _ => {
+                        names.clear();
+                        break;
+                    }
+                }
+            }
+        }
         let second = lookahead.next().map(|t| t.kind);
-        if let (Some(TokenKind::Identifier(name)), Some(TokenKind::In)) = (first, second) {
-            self.lexer.next(); // name
+        let loop_name = match (&first, &second) {
+            (Some(TokenKind::Identifier(name)), Some(TokenKind::In)) => Some(name.to_string()),
+            (Some(TokenKind::BracketOpen), Some(TokenKind::In)) if !names.is_empty() => Some("$element".to_string()),
+            _ => None,
+        };
+        if let Some(name) = loop_name {
+            for _ in 0..tokens_before_in {
+                self.lexer.next(); // name, or the destructuring pattern
+            }
             self.lexer.next(); // in
             let iterable = self.parse_expression(LOWEST, false)?;
             let mut range_end = None;
@@ -1061,10 +1085,19 @@ impl<'a> Parser<'a> {
                 return None;
             }
             self.lexer.next();
-            let body = self.parse_block(TokenKind::BraceClose);
+            let mut body = self.parse_block(TokenKind::BraceClose);
             let end_token = self.lexer.next().unwrap();
+            if !names.is_empty() {
+                let element = ExpressionNode {
+                    expression: Expression::Identifier(name.clone()),
+                    typed: AzulaType::Infer,
+                    span: Span { start: start_token.span.start, end: start_token.span.end },
+                };
+                let span = Span { start: start_token.span.start, end: start_token.span.end };
+                body.insert(0, Statement::Destructure(true, names, element, span));
+            }
             return Some(Statement::ForIn(
-                name.to_string(),
+                name,
                 iterable,
                 range_end,
                 inclusive,
@@ -1271,7 +1304,7 @@ impl<'a> Parser<'a> {
     }
 
     /// An optional `is A, B` list of interfaces a type implements
-    fn parse_is_list(&mut self) -> Vec<&'a str> {
+    fn parse_is_list(&mut self) -> Vec<(&'a str, Vec<AzulaType<'a>>)> {
         let mut interfaces = vec![];
         if !self.lexer.peek().map(|t| t.kind == TokenKind::Identifier("is")).unwrap_or(false) {
             return interfaces;
@@ -1279,7 +1312,14 @@ impl<'a> Parser<'a> {
         self.lexer.next();
         loop {
             match self.lexer.next() {
-                Some(Token { kind: TokenKind::Identifier(name), .. }) => interfaces.push(name),
+                Some(Token { kind: TokenKind::Identifier(name), .. }) => {
+                    let args = if self.lexer.peek().map(|t| t.kind == TokenKind::Less).unwrap_or(false) {
+                        self.parse_type_args()
+                    } else {
+                        vec![]
+                    };
+                    interfaces.push((name, args));
+                }
                 Some(tok) => {
                     self.errors.push(AzulaError::new(
                         ErrorType::ExpectedToken("interface name".to_string(), Some(format!("{:?}", tok.kind))),
@@ -1300,7 +1340,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Record that the type declared as `name<type_params>` implements `interfaces`
-    fn add_conformance(&mut self, name: &'a str, type_params: &[&'a str], interfaces: Vec<&'a str>, span: Span) {
+    fn add_conformance(&mut self, name: &'a str, type_params: &[&'a str], interfaces: Vec<(&'a str, Vec<AzulaType<'a>>)>, span: Span) {
         if interfaces.is_empty() {
             return;
         }
@@ -1320,6 +1360,8 @@ impl<'a> Parser<'a> {
             TokenKind::Identifier(n) => n,
             _ => return None,
         };
+        let params = self.parse_type_params();
+        self.bounds.clear();
         if !self.expect_peek(TokenKind::BraceOpen) {
             return None;
         }
@@ -1382,7 +1424,7 @@ impl<'a> Parser<'a> {
             ));
         }
         let end = self.lexer.next()?.span.end;
-        Some(Statement::Interface { name, methods, span: Span { start, end } })
+        Some(Statement::Interface { name, params, methods, span: Span { start, end } })
     }
 
     fn parse_typed_identifier(&mut self) -> Option<TypedIdentifier<'a>> {

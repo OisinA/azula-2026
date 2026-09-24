@@ -45,6 +45,8 @@ struct Instance {
 // A type's claim to implement an interface
 struct Claim {
     iface: str;
+    // The interface's type arguments
+    args: Vec<Type>;
     pos: int;
 }
 
@@ -73,6 +75,8 @@ struct Checker {
     claims: Map<str, Vec<Claim>>;
     // Bounds on the type parameters of generic functions and types
     bounds: Map<str, Vec<Bound>>;
+    // Methods of generic instances, whose signatures are made when first used
+    lazy_methods: Map<str, bool>;
 
     // Results, in a deterministic order
     out_structs: Vec<&StructInfo>;
@@ -295,7 +299,7 @@ struct Checker {
             if !self.generic_structs.contains(key) && !self.generic_enums.contains(key) {
                 var j = 0;
                 while j < claim.interfaces.len {
-                    self.verify_conformance(key, self.resolve_type(claim.target, claim.pos), claim.interfaces.get(j), claim.pos);
+                    self.verify_conformance(key, self.resolve_type(claim.target, claim.pos), claim.interfaces.get(j), claim.args.get(j), claim.pos);
                     j += 1;
                 }
             }
@@ -373,16 +377,22 @@ struct Checker {
                     self.fail(claim.pos, concat3("unknown interface `", name, "`"));
                 }
                 var iface = self.interfaces.get(name).unwrap();
+                var iface_args = claim.args.get(j);
+                if iface_args.len != iface.type_params.len {
+                    self.fail(claim.pos, concat3("interface `", name, concat3("` takes ", int_to_str(iface.type_params.len), " type arguments")));
+                }
                 var list = self.claims.get(key).unwrap_or(Vec::new());
-                list.push(Claim { iface: name, pos: claim.pos });
+                list.push(Claim { iface: name, args: iface_args, pos: claim.pos });
                 self.claims.insert(key, list);
                 // Default methods the type doesn't define
                 var k = 0;
                 while k < iface.methods.len {
                     var m = iface.methods.get(k);
                     if iface.has_body.get(k) && !type_defines(program, key, m.name) {
-                        var copier = Copier { params: Vec::new(), args: Vec::new() };
+                        // Default methods use the type arguments given here
+                        var copier = Copier { params: iface.type_params, args: iface_args };
                         var copy = copier.copy_func(m, m.name);
+                        copy.type_params = m.type_params;
                         var methods: Vec<&FuncDecl> = Vec::new();
                         methods.push(copy);
                         var type_params: Vec<str> = Vec::new();
@@ -407,7 +417,7 @@ struct Checker {
     }
 
     // Check that `type_name` has the methods of interface `name`, with matching signatures
-    func verify_conformance(type_name: str, self_type: Type, name: str, pos: int) {
+    func verify_conformance(type_name: str, self_type: Type, name: str, iface_args: Vec<Type>, pos: int) {
         var iface = self.interfaces.get(name).unwrap();
         var receiver = self_type;
         if self.structs.contains(type_name) {
@@ -419,10 +429,21 @@ struct Checker {
         var args: Vec<Type> = Vec::new();
         args.push(self_type);
         args.push(receiver);
+        var p = 0;
+        while p < iface.type_params.len && p < iface_args.len {
+            params.push(iface.type_params.get(p));
+            args.push(iface_args.get(p));
+            p += 1;
+        }
         var i = 0;
         while i < iface.methods.len {
             var m = iface.methods.get(i);
-            var found = self.funcs.get(concat3(type_name, ".", m.name));
+            // Default methods are copied from the interface, so they fit
+            if iface.has_body.get(i) {
+                i += 1;
+                continue;
+            }
+            var found = self.lookup_sig(concat3(type_name, ".", m.name));
             if found.is_none() {
                 self.fail(pos, concat3("`", mangle(self_type), concat3("` doesn't implement `", name, concat3("`: it has no method `", m.name, "`"))));
             }
@@ -805,28 +826,24 @@ struct Checker {
                 i += 1;
                 continue;
             }
-            var sig_params: Vec<Type> = Vec::new();
-            var j = 0;
-            while j < m.decl.params.len {
-                sig_params.push(self.resolve_type(subst_type(m.decl.params.get(j).typ, m.params, args), m.decl.pos));
-                j += 1;
-            }
-            var symbol = concat3(inst, ".", m.decl.name);
-            self.funcs.insert(symbol, new FuncSig {
-                symbol: symbol,
-                params: sig_params,
-                ret: self.resolve_type(subst_type(m.decl.ret, m.params, args), m.decl.pos),
-                is_varargs: false,
-                is_extern: false,
-                is_method: m.decl.params.len > 0 && m.decl.params.get(0).name == "self",
-            });
+            // The signature is made when the method is first used: making it
+            // now could instantiate types without end, e.g. an iterator
+            // adapter whose `filter` returns Filtered<Self>
+            self.lazy_methods.insert(concat3(inst, ".", m.decl.name), true);
             i += 1;
         }
         // Generic types implementing interfaces are checked per instance
         var claims = self.claims.get(name).unwrap_or(Vec::new());
         i = 0;
         while i < claims.len {
-            self.verify_conformance(inst, Type::Named(inst), claims.get(i).iface, claims.get(i).pos);
+            // The interface's arguments are in terms of the generic's parameters
+            var claim_args: Vec<Type> = Vec::new();
+            var j = 0;
+            while j < claims.get(i).args.len {
+                claim_args.push(self.resolve_type(subst_type(claims.get(i).args.get(j), params, args), pos));
+                j += 1;
+            }
+            self.verify_conformance(inst, Type::Named(inst), claims.get(i).iface, claim_args, claims.get(i).pos);
             i += 1;
         }
         return Type::Named(inst);
@@ -849,11 +866,31 @@ struct Checker {
             if m.decl.name == method && m.decl.type_params.len == 0 {
                 self.instantiated.insert(symbol, true);
                 var copier = Copier { params: m.params, args: instance.args };
-                self.pending.push(copier.copy_func(m.decl, symbol));
+                var copy = copier.copy_func(m.decl, symbol);
+                self.declare_func(copy, symbol);
+                self.pending.push(copy);
                 return;
             }
             i += 1;
         }
+    }
+
+    // Is there a method (or function) with this symbol?
+    func method_exists(symbol: str): bool {
+        return self.funcs.contains(symbol) || self.lazy_methods.contains(symbol);
+    }
+
+    // The signature for `symbol`, making it first if it's a generic instance's method
+    func lookup_sig(symbol: str): Option<&FuncSig> {
+        if !self.funcs.contains(symbol) && self.lazy_methods.contains(symbol) {
+            // Split `Type.method` at the last `.`
+            var dot = strlen(symbol) - 1;
+            while dot > 0 && symbol[dot] != '.' {
+                dot -= 1;
+            }
+            self.instantiate_method(substring(symbol, 0, dot), substring(symbol, dot + 1, strlen(symbol) - dot - 1));
+        }
+        return self.funcs.get(symbol);
     }
 
     // If `method` is a generic method of `type_name`, the symbol of its instance
@@ -1032,6 +1069,7 @@ struct Checker {
         }
         var bindings = self.bind_params(params, patterns, args);
         self.bind_from_closures(params, patterns, args, &bindings);
+        self.bind_by_checking(params, patterns, args, &bindings);
         var result: Vec<Type> = Vec::new();
         var i = 0;
         while i < params.len {
@@ -1100,6 +1138,39 @@ struct Checker {
                     },
                     _ => {},
                 }
+            }
+            i += 1;
+        }
+    }
+
+    // For type parameters still unbound, check copies of the arguments that
+    // don't need context to be checked (such as method calls) to learn their types
+    func bind_by_checking(params: Vec<str>, patterns: Vec<Type>, args: Vec<&Expr>, bindings: &Map<str, Type>) {
+        var i = 0;
+        while i < patterns.len && i < args.len {
+            var unbound = false;
+            var j = 0;
+            while j < params.len {
+                if !bindings.contains(params.get(j)) && mentions_params(patterns.get(i), types_name_list(params.get(j))) {
+                    unbound = true;
+                }
+                j += 1;
+            }
+            var arg = args.get(i);
+            var self_contained = match arg.kind {
+                ExprKind::Call(f, _) => match f.kind {
+                    ExprKind::Field(_, _) => true,
+                    _ => false,
+                },
+                ExprKind::MethodTurbofish(_, _, _) => true,
+                ExprKind::Field(_, _) => true,
+                ExprKind::Index(_, _) => true,
+                _ => false,
+            };
+            if unbound && self_contained && is_infer(self.peek_type(arg)) {
+                var copier = Copier { params: Vec::new(), args: Vec::new() };
+                var t = self.check_expr(copier.expr(arg), Type::Infer);
+                self.unify(patterns.get(i), t, params, bindings);
             }
             i += 1;
         }
@@ -1272,7 +1343,7 @@ struct Checker {
                         Type::Ptr(inner) => { type_name = named_of(inner); },
                         _ => {},
                     }
-                    match self.funcs.get(concat3(type_name, ".", method)) {
+                    match self.lookup_sig(concat3(type_name, ".", method)) {
                         Option::Some(sig) => sig.ret,
                         Option::None => Type::Infer,
                     }
@@ -1282,7 +1353,7 @@ struct Checker {
                         if self.enums.contains(type_name) {
                             return Type::Named(type_name);
                         }
-                        match self.funcs.get(concat3(type_name, ".", member)) {
+                        match self.lookup_sig(concat3(type_name, ".", member)) {
                             Option::Some(sig) => sig.ret,
                             Option::None => Type::Infer,
                         }
@@ -1695,8 +1766,22 @@ struct Checker {
                             Type::Ptr(inner) => { type_name = named_of(inner); },
                             _ => {},
                         }
-                        if !self.funcs.contains(concat(type_name, ".length")) || !self.funcs.contains(concat(type_name, ".get")) {
-                            self.fail(iterable.pos, concat3("can't iterate over ", mangle(t), ": it needs length() and get() methods"));
+                        // Iterators: types with an iter() method, or with next()
+                        // themselves (Vecs are indexed directly)
+                        var is_vec = match self.instances.get(type_name) {
+                            Option::Some(inst) => inst.generic == "Vec",
+                            Option::None => false,
+                        };
+                        var has_iter = self.method_exists(concat(type_name, ".iter"));
+                        if !is_vec && (has_iter || self.method_exists(concat(type_name, ".next"))) {
+                            var source = iterable;
+                            if has_iter {
+                                source = new_expr(ExprKind::Call(new_expr(ExprKind::Field(iterable, "iter"), pos), Vec::new()), pos);
+                            }
+                            return iterator_loop(pos, name, source, body);
+                        }
+                        if !self.method_exists(concat(type_name, ".length")) || !self.method_exists(concat(type_name, ".get")) {
+                            self.fail(iterable.pos, concat3("can't iterate over ", mangle(t), ": it needs an iter() or next() method, or length() and get()"));
                         }
                         length = new_expr(ExprKind::Call(new_expr(ExprKind::Field(items, "length"), pos), Vec::new()), pos);
                     },
@@ -2147,7 +2232,7 @@ struct Checker {
                     Type::Ptr(inner) => { type_name = named_of(inner); },
                     _ => {},
                 }
-                if !self.funcs.contains(concat(type_name, ".to_str")) {
+                if !self.method_exists(concat(type_name, ".to_str")) {
                     self.fail(part.pos, concat3("can't interpolate a value of type ", mangle(t), "; it needs a `to_str()` method"));
                 }
                 converted = new_expr(ExprKind::Call(new_expr(ExprKind::Field(part, "to_str"), part.pos), Vec::new()), part.pos);
@@ -2284,7 +2369,7 @@ struct Checker {
 
     // The signature for `symbol`, or an error mentioning `what`
     func sig_for(symbol: str, what: str, pos: int): &FuncSig {
-        var found = self.funcs.get(symbol);
+        var found = self.lookup_sig(symbol);
         if found.is_none() {
             self.fail(pos, what);
         }
@@ -2427,7 +2512,7 @@ struct Checker {
         }
         self.instantiate_method(type_name, method);
         var symbol = concat3(type_name, ".", method);
-        if !explicit && !self.funcs.contains(symbol) && self.has_func_field(t, method) {
+        if !explicit && !self.method_exists(symbol) && self.has_func_field(t, method) {
             // A field holding a function
             return self.check_closure_call(e, new_expr(ExprKind::Field(obj, method), callee.pos), args);
         }
@@ -3304,6 +3389,7 @@ func new_checker(src: &Source): &Checker {
         interfaces: Map::new(),
         claims: Map::new(),
         bounds: Map::new(),
+        lazy_methods: Map::new(),
         out_structs: Vec::new(),
         out_enums: Vec::new(),
         out_funcs: Vec::new(),
@@ -3390,6 +3476,13 @@ func subst_type(t: Type, params: Vec<str>, args: Vec<Type>): Type {
         },
         _ => t,
     };
+}
+
+// A list holding just `name`
+func types_name_list(name: str): Vec<str> {
+    var out: Vec<str> = Vec::new();
+    out.push(name);
+    return out;
 }
 
 // Does `t` refer to any of the type parameters `params`?
@@ -3653,6 +3746,31 @@ func format_argument(name: str): int {
         return 2;
     }
     return -1;
+}
+
+// `for name in source` over an iterator:
+//
+//   var $iter = source;
+//   while true { const $next = $iter.next(); if !$next.is_some() { break; } var name = $next.unwrap(); body }
+func iterator_loop(pos: int, name: str, source: &Expr, body: Vec<&Stmt>): &Expr {
+    var stmts: Vec<&Stmt> = Vec::new();
+    stmts.push(new_stmt(StmtKind::VarDecl("$iter", true, Type::Infer, source), pos));
+    var loop_body: Vec<&Stmt> = Vec::new();
+    var next = new_expr(ExprKind::Call(new_expr(ExprKind::Field(new_expr(ExprKind::Ident("$iter"), pos), "next"), pos), Vec::new()), pos);
+    loop_body.push(new_stmt(StmtKind::VarDecl("$next", false, Type::Infer, next), pos));
+    var is_some = new_expr(ExprKind::Call(new_expr(ExprKind::Field(new_expr(ExprKind::Ident("$next"), pos), "is_some"), pos), Vec::new()), pos);
+    var stop: Vec<&Stmt> = Vec::new();
+    stop.push(new_stmt(StmtKind::Break, pos));
+    loop_body.push(new_stmt(StmtKind::If(new_expr(ExprKind::Unary(UnOp::Not, is_some), pos), stop, Vec::new()), pos));
+    var value = new_expr(ExprKind::Call(new_expr(ExprKind::Field(new_expr(ExprKind::Ident("$next"), pos), "unwrap"), pos), Vec::new()), pos);
+    loop_body.push(new_stmt(StmtKind::VarDecl(name, true, Type::Infer, value), pos));
+    var i = 0;
+    while i < body.len {
+        loop_body.push(body.get(i));
+        i += 1;
+    }
+    stmts.push(new_stmt(StmtKind::Loop(Option::Some(new_expr(ExprKind::BoolLit(true), pos)), loop_body), pos));
+    return new_expr(ExprKind::Block(stmts, Option::None), pos);
 }
 
 // A (checked) integer expression converted to int
