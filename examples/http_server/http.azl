@@ -1,0 +1,119 @@
+// A little HTTP/1.1 on top of std/net.azl: reading requests and writing
+// responses.
+import "std/net.azl" as net
+
+pub struct Request {
+    method: str;
+    path: str;
+    headers: Map<str, str>;
+    body: str;
+
+    // A header's value (names are case-insensitive)
+    func header(name: str): Option<str> {
+        return self.headers.get(name.to_lower());
+    }
+}
+
+pub struct Response {
+    status: int;
+    content_type: str;
+    body: str;
+
+    static func text(status: int, body: str): Response {
+        return Response { status: status, content_type: "text/plain", body: body };
+    }
+
+    static func html(body: str): Response {
+        return Response { status: 200, content_type: "text/html", body: body };
+    }
+
+    func to_str(): str {
+        return "HTTP/1.1 ${self.status} ${reason(self.status)}\r\n"
+            + "Content-Type: ${self.content_type}; charset=utf-8\r\n"
+            + "Content-Length: ${self.body.len()}\r\n"
+            + "Connection: close\r\n\r\n"
+            + self.body;
+    }
+}
+
+func reason(status: int): str {
+    return match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Unknown",
+    };
+}
+
+// Read a request from `conn`: the head (up to a blank line), then as much body
+// as Content-Length says
+pub func read_request(conn: net::TcpStream): Result<Request, str> {
+    var data = "";
+    var head_end = -1;
+    while head_end < 0 {
+        var chunk = conn.read_str()?;
+        if chunk == "" {
+            return Result::Err("connection closed mid-request");
+        }
+        data += chunk;
+        head_end = match data.find("\r\n\r\n") {
+            Option::Some(i) => i,
+            Option::None => -1,
+        };
+    }
+
+    var lines = data.slice(0, head_end).split("\r\n");
+    var parts = lines.get(0).split(" ");
+    if parts.len != 3 {
+        return Result::Err("malformed request line: ${lines.get(0)}");
+    }
+    var headers: Map<str, str> = Map::new();
+    for line in lines.slice(1, lines.len) {
+        match line.find(":") {
+            Option::Some(colon) => headers.insert(line.slice(0, colon).trim().to_lower(), line.slice(colon + 1, line.len()).trim()),
+            Option::None => {}
+        }
+    }
+
+    var body = data.slice(head_end + 4, data.len());
+    var length = match headers.get("content-length") {
+        Option::Some(value) => value.parse_int().unwrap_or(0),
+        Option::None => 0,
+    };
+    while body.len() < length {
+        var chunk = conn.read_str()?;
+        if chunk == "" {
+            break;
+        }
+        body += chunk;
+    }
+    return Result::Ok(Request { method: parts.get(0), path: parts.get(1), headers: headers, body: body });
+}
+
+// Accept connections forever, answering each request with `handle`
+pub func serve(server: net::TcpListener, handle: func(Request): Response) {
+    while true {
+        var conn = match server.accept() {
+            Result::Ok(conn) => conn,
+            Result::Err(message) => {
+                println(message);
+                continue;
+            }
+        };
+        var response = match read_request(conn) {
+            Result::Ok(request) => {
+                var response = handle(request);
+                println("${request.method} ${request.path} -> ${response.status}");
+                response
+            }
+            Result::Err(message) => Response::text(400, "${message}\n"),
+        };
+        match conn.write(response.to_str()) {
+            Result::Ok(_) => {}
+            Result::Err(message) => println(message),
+        }
+        conn.close();
+        fflush(null);
+    }
+}

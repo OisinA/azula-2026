@@ -122,7 +122,7 @@ impl<'a> VM {
                 Instruction::CreateStruct(_, _, _) => todo!(),
                 Instruction::StoreStructMember(_, _, _, _) => todo!(),
                 Instruction::AccessStructMember(_, _, _, _, _) => todo!(),
-                Instruction::Cast(_, _, _) => todo!(),
+                Instruction::Cast(..) => todo!(),
                 _ => todo!(),
             }
         }

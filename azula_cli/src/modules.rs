@@ -143,12 +143,12 @@ pub fn collect_items(text: &str) -> (HashSet<String>, HashSet<String>) {
                 if matches!(w, "func" | "struct" | "enum" | "interface" | "type" | "const") && k + 1 < sig.len() {
                     if toks[sig[k + 1]].kind == Kind::Ident {
                         let name = word(k + 1).to_string();
-                        // `pub`, possibly before `extern`
-                        let mut j = k;
-                        while j > 0 && matches!(word(j - 1), "extern" | "varargs") {
-                            j -= 1;
+                        // `extern` functions keep their C names: they aren't
+                        // the module's items and are never renamed
+                        if k > 0 && matches!(word(k - 1), "extern" | "varargs") {
+                            continue;
                         }
-                        if j > 0 && word(j - 1) == "pub" {
+                        if k > 0 && word(k - 1) == "pub" {
                             public.insert(name.clone());
                         }
                         items.insert(name);
@@ -175,12 +175,15 @@ pub fn rewrite(
     let mut last = 0;
     let word = |t: &Tok| &text[t.start..t.end];
     let mut depth = 0;
+    let mut parens = 0;
     let mut enum_pending = false;
     let mut enum_depths: Vec<i32> = vec![];
     let mut k = 0;
     while k < sig.len() {
         let t = &toks[sig[k]];
         match t.kind {
+            Kind::Punct('(') => parens += 1,
+            Kind::Punct(')') => parens -= 1,
             Kind::Punct('{') => {
                 depth += 1;
                 if enum_pending {
@@ -240,7 +243,12 @@ pub fn rewrite(
                     let declares_member = prev_word == "func" && depth > 0;
                     let is_variant = enum_depths.last() == Some(&depth)
                         && matches!(prev.map(|p| &p.kind), Some(Kind::Punct('{')) | Some(Kind::Punct(';')));
-                    let is_label = matches!(next.map(|n| &n.kind), Some(Kind::Punct(':')));
+                    // A field (`name: type` in a struct, or `name: value` in a
+                    // struct literal) isn't renamed; parameters, constants
+                    // and variables are
+                    let is_label = matches!(next.map(|n| &n.kind), Some(Kind::Punct(':')))
+                        && parens == 0
+                        && !matches!(prev_word, "const" | "var");
                     if module.items.contains(w) && !after_member && !declares_member && !is_variant && !is_label {
                         out.push_str(&text[last..t.start]);
                         out.push_str(&module.prefix);

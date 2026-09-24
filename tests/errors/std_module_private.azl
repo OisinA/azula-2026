@@ -1,0 +1,6 @@
+// error: `os_error` is private to std/net.azl (declare it `pub`)
+import "std/net.azl" as net
+
+func main() {
+    println(net::os_error("x"));
+}

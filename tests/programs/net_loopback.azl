@@ -1,0 +1,41 @@
+// A TCP server and client talking to each other over the loopback interface
+import "std/net.azl" as net
+
+func main() {
+    // Port 0 picks any free port
+    var server = net::TcpListener::bind(0).unwrap();
+    var port = server.port();
+    println(port > 0);
+
+    // The kernel completes the connection before accept() is called, so one
+    // thread can play both parts
+    var client = net::TcpStream::connect("localhost", port).unwrap();
+    var conn = server.accept().unwrap();
+
+    client.write("ping").unwrap();
+    println("server got ${conn.read_str().unwrap()}");
+    conn.write("pong").unwrap();
+    println("client got ${client.read_str().unwrap()}");
+
+    // read_all() reads until the other end closes
+    conn.write("line 1\n").unwrap();
+    conn.write("line 2\n").unwrap();
+    conn.close();
+    print(client.read_all().unwrap());
+    client.close();
+
+    // Errors come back as Result::Err
+    match net::TcpListener::bind(port) {
+        Result::Ok(_) => println("bound the port twice?"),
+        Result::Err(message) => println("second bind: ${message}"),
+    }
+    server.close();
+    match net::TcpStream::connect("localhost", port) {
+        Result::Ok(_) => println("connected to a closed port?"),
+        Result::Err(message) => println(message),
+    }
+    match net::TcpStream::connect("no-such-host.invalid", 80) {
+        Result::Ok(_) => println("resolved a .invalid name?"),
+        Result::Err(message) => println(message.starts_with("connect: no-such-host.invalid: ")),
+    }
+}

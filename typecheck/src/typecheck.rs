@@ -1290,7 +1290,23 @@ impl<'a> Typechecker<'a> {
         self.expected = Some(expected.clone());
         let result = self.typecheck_expression(expr, env);
         self.expected = None;
-        result
+        // An unsigned integer (or char) stored in a wider integer is
+        // zero-extended, which needs an explicit conversion
+        match result {
+            Ok((mut node, typ)) if is_unsigned_type(&typ) && int_bits(expected) > int_bits(&typ) && int_bits(&typ) > 0 => {
+                node.typed = typ.clone();
+                let span = node.span.clone();
+                Ok((
+                    ExpressionNode {
+                        expression: Expression::Cast(Rc::new(node), expected.clone()),
+                        typed: expected.clone(),
+                        span,
+                    },
+                    expected.clone(),
+                ))
+            }
+            other => other,
+        }
     }
 
     pub fn typecheck_statement(
@@ -1413,7 +1429,7 @@ impl<'a> Typechecker<'a> {
             //     Err(e) => return Err(e),
             // };
 
-            let typ = match value.expression.clone() {
+            let mut typ = match value.expression.clone() {
                 Expression::Integer(_) => AzulaType::Int,
                 Expression::Negate(inner) if matches!(inner.expression, Expression::Integer(_)) => AzulaType::Int,
                 Expression::Negate(inner) if matches!(inner.expression, Expression::Float(_)) => AzulaType::Float,
@@ -1436,6 +1452,10 @@ impl<'a> Typechecker<'a> {
             if type_annotation.is_some() {
                 let type_annotation = self.resolve_type(type_annotation.clone().unwrap());
 
+                // An integer constant can have any integer type (`const X: i32 = 2`)
+                if typ == AzulaType::Int && is_integer_type(&type_annotation) {
+                    typ = type_annotation.clone();
+                }
                 if type_annotation != typ {
                     self.errors.push(AzulaError::new(
                         ErrorType::MismatchedAssignTypes(
@@ -2225,13 +2245,9 @@ impl<'a> Typechecker<'a> {
                 ))
             }
             Expression::ArrayAccess(array, index) => {
-                let (array, array_typ) = self
-                    .typecheck_expression(array.deref().clone(), env)
-                    .unwrap();
+                let (array, array_typ) = self.typecheck_expression(array.deref().clone(), env)?;
 
-                let (index, typ) = self
-                    .typecheck_expression(index.deref().clone(), env)
-                    .unwrap();
+                let (index, typ) = self.typecheck_expression(index.deref().clone(), env)?;
 
                 if typ != AzulaType::Int {
                     self.errors.push(AzulaError::new(
@@ -2456,14 +2472,20 @@ impl<'a> Typechecker<'a> {
                             fe_type,
                         ))
                     }
-                    None => Ok((
-                        ExpressionNode {
-                            expression: Expression::Block(new_stmts, None),
-                            typed: AzulaType::Void,
-                            span: expr.span,
-                        },
-                        AzulaType::Void,
-                    )),
+                    None => {
+                        // A block that always leaves (through `return`, `break`,
+                        // `continue` or a `!` call) never gives a value, so it
+                        // fits anywhere (such as a match arm)
+                        let typ = if block_diverges(&new_stmts) { AzulaType::Never } else { AzulaType::Void };
+                        Ok((
+                            ExpressionNode {
+                                expression: Expression::Block(new_stmts, None),
+                                typed: typ.clone(),
+                                span: expr.span,
+                            },
+                            typ,
+                        ))
+                    }
                 }
             }
         }
@@ -2669,7 +2691,7 @@ impl<'a> Typechecker<'a> {
             for alternative in &alternatives {
             if matches!(pattern, MatchPattern::Or(_))
                 && (matches!(alternative, MatchPattern::Tuple(_) | MatchPattern::Binding(_) | MatchPattern::Or(_))
-                    || matches!(alternative, MatchPattern::Destructure(_, _, b) if !b.is_empty()))
+                    || matches!(alternative, MatchPattern::Destructure(_, _, b) if b.iter().any(Option::is_some)))
             {
                 self.error("The alternatives of a `|` pattern can't bind names".to_string(), &body.span);
                 return Err("binding in or-pattern".to_string());
@@ -3643,7 +3665,9 @@ impl<'a> Typechecker<'a> {
             }
 
             // Arithmetic between int and a narrower integer (such as a char) is done in int
-            let widen = |node: ExpressionNode<'a>| {
+            let widen = |mut node: ExpressionNode<'a>, typ: &AzulaType<'a>| {
+                // The codegen zero-extends unsigned values, so it needs their type
+                node.typed = typ.clone();
                 let span = node.span.clone();
                 ExpressionNode { expression: Expression::Cast(Rc::new(node), AzulaType::Int), typed: AzulaType::Int, span }
             };
@@ -3654,10 +3678,10 @@ impl<'a> Typechecker<'a> {
             );
             if arithmetic && is_integer_type(&left_typ) && is_integer_type(&right_typ) && left_typ != right_typ {
                 if left_typ == AzulaType::Int {
-                    right = widen(right);
+                    right = widen(right, &right_typ);
                     right_typ = AzulaType::Int;
                 } else if right_typ == AzulaType::Int {
-                    left = widen(left);
+                    left = widen(left, &left_typ);
                     left_typ = AzulaType::Int;
                 }
             }
@@ -4149,6 +4173,10 @@ fn always_returns(body: &[Statement]) -> bool {
     }
 }
 
+fn block_diverges(body: &[Statement]) -> bool {
+    matches!(body.last(), Some(Statement::Break(_)) | Some(Statement::Continue(_))) || always_returns(body)
+}
+
 fn statement_always_returns(stmt: &Statement) -> bool {
     match stmt {
         Statement::Return(..) => true,
@@ -4197,6 +4225,20 @@ fn contains_break(body: &[Statement]) -> bool {
 
 fn is_integer_type(t: &AzulaType) -> bool {
     matches!(t, AzulaType::Int | AzulaType::SizedSignedInt(_) | AzulaType::SizedUnsignedInt(_) | AzulaType::Char)
+}
+
+fn is_unsigned_type(t: &AzulaType) -> bool {
+    matches!(t, AzulaType::SizedUnsignedInt(_) | AzulaType::Char)
+}
+
+/// The width of an integer type, or 0 for other types
+fn int_bits(t: &AzulaType) -> u32 {
+    match t {
+        AzulaType::Int => 64,
+        AzulaType::SizedSignedInt(bits) | AzulaType::SizedUnsignedInt(bits) => *bits as u32,
+        AzulaType::Char => 8,
+        _ => 0,
+    }
 }
 
 fn is_float_type(t: &AzulaType) -> bool {

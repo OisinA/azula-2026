@@ -1,0 +1,4 @@
+// error: there's no standard library module `std/nope.azl`
+import "std/nope.azl" as nope
+
+func main() {}

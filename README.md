@@ -63,6 +63,7 @@ directory holding the compiler.
 - [x] Enums with payloads and pattern matching
 - [x] Generics
 - [x] Beginnings of a standard library (`Option<T>`, `Result<T, E>`, `Vec<T>`, `Map<K, V>`, `StringBuilder`, and the `Eq`, `Ord`, `Hash` and `Show` interfaces)
+- [x] TCP networking (`import "std/net.azl" as net`)
 - [x] Self-hosting compiler
 
 ## A tour of the language
@@ -179,7 +180,10 @@ Other things to know:
   whose names bind elements; the arms must cover every case.
 - `!` is the type of functions that never return, such as `exit`. A call to one
   counts as leaving the function, and a `!` value fits wherever any type is expected
-  (for example in a `match` arm).
+  (for example in a `match` arm). So does a block that always leaves through `return`,
+  `break` or `continue`: `var n = match x { Option::Some(n) => n, Option::None => { continue; } };`.
+- Unsigned integers (`u8` and so on, and `char`) are zero-extended when widened, so a
+  byte of 200 is 200 as an `int`.
 - Methods can have their own type parameters (`func pair<U>(other: U): (T, U)`), inferred
   from the arguments or given as `value.pair::<str>(...)`.
 - Functions are values. `func(int, str): bool` is a function type, and closures are
@@ -229,7 +233,15 @@ Other things to know:
   A module's top-level items are private unless declared `pub` (`pub func`, `pub struct`,
   ...). A plain `import "file.azl"` puts the file's items in the shared namespace, as
   the standard library's are. Paths are relative to the importing file; see
-  [`examples/modules`](examples/modules).
+  [`examples/modules`](examples/modules). Paths starting `std/` name optional
+  standard library modules, which aren't loaded unless imported.
+- Networking: `import "std/net.azl" as net` gives TCP servers and clients (Linux).
+  `net::TcpListener::bind(port)` returns a `Result`; `listener.accept()` waits for
+  a connection, a `net::TcpStream`, and `net::TcpStream::connect(host, port)` makes one.
+  Streams have `read_str()` (what has arrived, or `""` once the other end closes),
+  `read_all()`, `write(text)` and `close()`, and failures are `Result::Err` messages
+  such as `"bind: Address already in use"`. See
+  [`examples/http_server`](examples/http_server) for a web server built on it.
 - `extern func name(types): type;` (optionally `extern varargs func`) declares C functions;
   `stdlib/libc.azl` declares the common ones.
 - Memory: see below.

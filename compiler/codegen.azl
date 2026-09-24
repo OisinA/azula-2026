@@ -178,10 +178,11 @@ struct Gen {
         }
         var op = "trunc";
         if tw > fw {
-            op = "sext";
-            if fw == 1 {
-                op = "zext";
-            }
+            // Unsigned values (and bytes of text) are zero-extended
+            op = match from {
+                Type::UInt(_) | Type::Char | Type::Bool => "zext",
+                _ => if fw == 1 { "zext" } else { "sext" },
+            };
         }
         return self.value(concat3(op, " ", concat3(self.llvm_type(from), " ", concat3(v, " to ", self.llvm_type(to)))));
     }

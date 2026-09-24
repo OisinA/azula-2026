@@ -161,15 +161,18 @@ func collect_items(text: str, info: &ModuleInfo) {
             var next = toks.get(sig.get(k + 1));
             if (w == "func" || w == "struct" || w == "enum" || w == "interface" || w == "type" || w == "const") && next.kind == SCAN_IDENT {
                 var name = token_text(text, next);
-                // `pub`, possibly before `extern`
-                var j = k;
-                while j > 0 && (token_text(text, toks.get(sig.get(j - 1))) == "extern" || token_text(text, toks.get(sig.get(j - 1))) == "varargs") {
-                    j -= 1;
+                var before = "";
+                if k > 0 {
+                    before = token_text(text, toks.get(sig.get(k - 1)));
                 }
-                if j > 0 && token_text(text, toks.get(sig.get(j - 1))) == "pub" {
-                    info.public.insert(name, true);
+                // `extern` functions keep their C names: they aren't the
+                // module's items and are never renamed
+                if before != "extern" && before != "varargs" {
+                    if before == "pub" {
+                        info.public.insert(name, true);
+                    }
+                    info.items.insert(name, true);
                 }
-                info.items.insert(name, true);
             }
         }
         k += 1;
@@ -185,12 +188,17 @@ func rewrite_module_text(text: str, own: &ModuleInfo, aliases: &Map<str, &Module
     var out = StringBuilder::new();
     var last = 0;
     var depth = 0;
+    var parens = 0;
     var enum_pending = false;
     var enum_depths: Vec<int> = Vec::new();
     var k = 0;
     while k < sig.len {
         var t = toks.get(sig.get(k));
-        if is_punct(t, '{') {
+        if is_punct(t, '(') {
+            parens += 1;
+        } else if is_punct(t, ')') {
+            parens -= 1;
+        } else if is_punct(t, '{') {
             depth += 1;
             if enum_pending {
                 enum_depths.push(depth);
@@ -251,7 +259,14 @@ func rewrite_module_text(text: str, own: &ModuleInfo, aliases: &Map<str, &Module
                 if own != null && own.items.contains(w) && !after_member {
                     var declares_member = has_prev && token_text(text, prev) == "func" && depth > 0;
                     var is_variant = enum_depths.len > 0 && enum_depths.peek() == depth && has_prev && (is_punct(prev, '{') || is_punct(prev, ';'));
-                    var is_label = has_next && is_punct(next, ':');
+                    // A field (`name: type` in a struct, or `name: value` in
+                    // a struct literal) isn't renamed; parameters, constants
+                    // and variables are
+                    var prev_word = "";
+                    if has_prev {
+                        prev_word = token_text(text, prev);
+                    }
+                    var is_label = has_next && is_punct(next, ':') && parens == 0 && prev_word != "const" && prev_word != "var";
                     if !declares_member && !is_variant && !is_label {
                         out.append(substring(text, last, t.start - last));
                         out.append(own.prefix);

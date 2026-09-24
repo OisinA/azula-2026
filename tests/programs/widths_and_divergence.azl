@@ -1,0 +1,48 @@
+// Unsigned integers widen without sign extension, constants can have sized
+// integer types, and blocks that always leave fit anywhere a value is needed.
+
+const FLAGS: i32 = 6;
+const LIMIT: u8 = 250;
+
+enum Shape {
+    Circle(int);
+    Square(int);
+    Point;
+}
+
+func main() {
+    // Bytes above 127 stay positive when widened
+    var b: u8 = 200;
+    var widened: int = b;
+    println(widened);
+    println(b as int);
+    var n: int = 5 + b;
+    println(n);
+    println((LIMIT as int) + 1);
+    println((FLAGS as int) * 2);
+    var negative: i8 = -3;
+    println(negative as int);
+
+    // `continue` and `break` in match arms and if-expressions
+    var total = 0;
+    for i in 0..10 {
+        var value = match i % 3 {
+            0 => i,
+            1 => {
+                continue;
+            },
+            _ => if i > 7 { break; } else { i * 10 },
+        };
+        total += value;
+    }
+    println(total);
+
+    // `_` in the alternatives of a `|` pattern
+    var shapes = [Shape::Circle(1), Shape::Square(2), Shape::Point];
+    for shape in shapes {
+        println(match shape {
+            Shape::Circle(_) | Shape::Square(_) => "has a size",
+            Shape::Point => "a point",
+        });
+    }
+}

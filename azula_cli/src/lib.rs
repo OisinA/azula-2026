@@ -99,6 +99,10 @@ const STDLIB: &[(&str, &str)] = &[
     ("stdlib/math.azl", include_str!("../../stdlib/math.azl")),
 ];
 
+/// Standard library modules that programs import on request, as
+/// `import "std/net.azl" as net`
+const STD_MODULES: &[(&str, &str)] = &[("net.azl", include_str!("../../stdlib/net.azl"))];
+
 /// The combined program source, plus a record of which file and line every
 /// line of it came from (so errors can point at the original location).
 #[derive(Default)]
@@ -136,15 +140,23 @@ fn resolve_imports(
     alias: Option<&str>,
     seen: &mut HashMap<PathBuf, ModuleInfo>,
     source: &mut Source,
+    // The contents of a standard library module, which isn't read from disk
+    std_module: Option<&str>,
 ) -> ModuleInfo {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical = if std_module.is_some() {
+        path.to_path_buf()
+    } else {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    };
     if let Some(info) = seen.get(&canonical) {
         return info.clone();
     }
 
-    let src = fs::read_to_string(path).unwrap_or_else(|_| {
-        eprintln!("Could not read file: {}", path.display());
-        exit(1);
+    let src = std_module.map(str::to_string).unwrap_or_else(|| {
+        fs::read_to_string(path).unwrap_or_else(|_| {
+            eprintln!("Could not read file: {}", path.display());
+            exit(1);
+        })
     });
 
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -162,7 +174,21 @@ fn resolve_imports(
     let mut aliases = HashMap::new();
     for line in src.lines() {
         if let Some((import_path, name)) = import_line(line) {
-            let module = resolve_imports(&dir.join(import_path), name.as_deref(), seen, source);
+            // `std/...` names a module of the (embedded) standard library
+            let module = match import_path.strip_prefix("std/") {
+                Some(std_name) => {
+                    let contents = match STD_MODULES.iter().find(|(file, _)| *file == std_name) {
+                        Some((_, contents)) => contents,
+                        None => {
+                            let line = src[..src.find(line).unwrap_or(0)].matches('\n').count() + 1;
+                            eprintln!("error: {}:{}: there's no standard library module `{}`", file, line, import_path);
+                            exit(1);
+                        }
+                    };
+                    resolve_imports(Path::new(&import_path), name.as_deref(), seen, source, Some(contents))
+                }
+                None => resolve_imports(&dir.join(&import_path), name.as_deref(), seen, source, None),
+            };
             if let Some(name) = name {
                 aliases.insert(name, module);
             }
@@ -203,7 +229,7 @@ fn build(
     }
     let mut seen = HashMap::new();
     for f in files {
-        resolve_imports(Path::new(f), None, &mut seen, &mut source);
+        resolve_imports(Path::new(f), None, &mut seen, &mut source, None);
     }
 
     let input = source.text.clone();

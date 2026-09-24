@@ -471,8 +471,8 @@ impl<'a> Function<'a> {
         Value::Local(dest)
     }
 
-    pub fn cast(&mut self, val: Value, typ: AzulaType<'a>) -> Value {
-        self.add_instruction(Instruction::Cast(val, typ, self.tmp_var_index));
+    pub fn cast(&mut self, val: Value, typ: AzulaType<'a>, unsigned: bool) -> Value {
+        self.add_instruction(Instruction::Cast(val, typ, self.tmp_var_index, unsigned));
         self.tmp_var_index += 1;
         Value::Local(self.tmp_var_index - 1)
     }

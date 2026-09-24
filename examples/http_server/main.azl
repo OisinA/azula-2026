@@ -1,0 +1,53 @@
+// A small web server.
+//
+//   azula run examples/http_server/main.azl [PORT]
+//
+// then visit http://localhost:8080/ (port 0 picks a free port).
+import "std/net.azl" as net
+import "http.azl" as http
+
+func route(request: http::Request, visits: &int): http::Response {
+    var path = request.path;
+    if request.method == "POST" {
+        if path == "/echo" {
+            return http::Response::text(200, request.body);
+        }
+        return http::Response::text(405, "can't POST to ${path}\n");
+    }
+    if request.method != "GET" {
+        return http::Response::text(405, "unsupported method ${request.method}\n");
+    }
+    if path == "/" {
+        visits[0] += 1;
+        return http::Response::html("<h1>Hello from Azula!</h1>\n<p>Visit number ${visits[0]}.</p>\n");
+    }
+    if path.starts_with("/hello/") {
+        var name = path.slice(7, path.len());
+        return http::Response::text(200, "Hello, ${name}!\n");
+    }
+    if path == "/agent" {
+        var agent = request.header("User-Agent").unwrap_or("nobody");
+        return http::Response::text(200, "You are ${agent}\n");
+    }
+    return http::Response::text(404, "nothing at ${path}\n");
+}
+
+func main() {
+    var arguments = args();
+    var port = 8080;
+    if arguments.len > 1 {
+        port = arguments.get(1).parse_int().unwrap_or(8080);
+    }
+    var server = match net::TcpListener::bind(port) {
+        Result::Ok(server) => server,
+        Result::Err(message) => {
+            println(message);
+            exit(1);
+        }
+    };
+    println("listening on http://localhost:${server.port()}");
+    fflush(null);
+
+    var visits = 0;
+    http::serve(server, func(request) => route(request, &visits));
+}

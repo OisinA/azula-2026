@@ -1,0 +1,179 @@
+// TCP networking (Linux). This module isn't loaded automatically; import it
+// with
+//
+//   import "std/net.azl" as net
+//
+// and use net::TcpListener and net::TcpStream. Data is sent and received as
+// strings, so it's meant for text protocols such as HTTP.
+
+extern func socket(i32, i32, i32): i32;
+extern func setsockopt(i32, i32, i32, &i32, i32): i32;
+extern func bind(i32, &u8, i32): i32;
+extern func listen(i32, i32): i32;
+extern func accept(i32, &u8, &i32): i32;
+extern func connect(i32, &u8, i32): i32;
+extern func getsockname(i32, &u8, &i32): i32;
+extern func recv(i32, &u8, int, i32): int;
+extern func send(i32, str, int, i32): int;
+extern func close(i32): i32;
+extern func getaddrinfo(str, str, &u8, &&u8): i32;
+extern func freeaddrinfo(&u8);
+extern func gai_strerror(i32): str;
+extern func strerror(i32): str;
+extern func __errno_location(): &i32;
+
+const AF_INET: i32 = 2;
+const SOCK_STREAM: i32 = 1;
+const SOL_SOCKET: i32 = 1;
+const SO_REUSEADDR: i32 = 2;
+// Report a closed connection as an error instead of raising SIGPIPE
+const MSG_NOSIGNAL: i32 = 16384;
+const SOCKADDR_SIZE: int = 16;
+const CHUNK_SIZE: int = 4096;
+
+// "what: <description of errno>"
+func os_error(what: str): str {
+    var errno = __errno_location();
+    return "${what}: ${strerror(errno[0])}";
+}
+
+// A server socket accepting connections
+pub struct TcpListener {
+    fd: i32;
+
+    // Listen on `port` on every interface. Port 0 picks a free port (see
+    // `port()`).
+    static func bind(port: int): Result<TcpListener, str> {
+        var fd = socket(AF_INET, SOCK_STREAM, 0);
+        if fd < 0 {
+            return Result::Err(os_error("socket"));
+        }
+        var one: i32 = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, 4);
+
+        // struct sockaddr_in: the family, the port (big-endian) and the
+        // address 0.0.0.0
+        var address: &u8 = malloc(SOCKADDR_SIZE);
+        memset(address, 0, SOCKADDR_SIZE);
+        address[0] = AF_INET as u8;
+        address[2] = ((port >> 8) & 255) as u8;
+        address[3] = (port & 255) as u8;
+        var bound = bind(fd, address, SOCKADDR_SIZE as i32);
+        free(address);
+        if bound < 0 {
+            var message = os_error("bind");
+            close(fd);
+            return Result::Err(message);
+        }
+        if listen(fd, 128) < 0 {
+            var message = os_error("listen");
+            close(fd);
+            return Result::Err(message);
+        }
+        return Result::Ok(TcpListener { fd: fd });
+    }
+
+    // The port it's listening on
+    func port(): int {
+        var address: &u8 = malloc(SOCKADDR_SIZE);
+        var size: i32 = SOCKADDR_SIZE as i32;
+        getsockname(self.fd, address, &size);
+        var port = (address[2] as int) * 256 + (address[3] as int);
+        free(address);
+        return port;
+    }
+
+    // Wait for the next connection
+    func accept(): Result<TcpStream, str> {
+        var fd = accept(self.fd, null, null);
+        if fd < 0 {
+            return Result::Err(os_error("accept"));
+        }
+        return Result::Ok(TcpStream { fd: fd });
+    }
+
+    func close() {
+        close(self.fd);
+    }
+}
+
+// A connection
+pub struct TcpStream {
+    fd: i32;
+
+    // Connect to `port` on `host` (a name such as "localhost" or an IPv4
+    // address)
+    static func connect(host: str, port: int): Result<TcpStream, str> {
+        // struct addrinfo hints: ai_family and ai_socktype
+        var hints: &u8 = malloc(48);
+        memset(hints, 0, 48);
+        var hint_fields = hints as &i32;
+        hint_fields[1] = AF_INET;
+        hint_fields[2] = SOCK_STREAM;
+        var found: &u8 = null;
+        var status = getaddrinfo(host, "${port}", hints, &found);
+        free(hints);
+        if status != 0 {
+            return Result::Err("connect: ${host}: ${gai_strerror(status)}");
+        }
+        // The first result's ai_addrlen and ai_addr
+        var length = (found as &i32)[4];
+        var address = (ptr_add(found, 24) as &&u8)[0];
+        var fd = socket(AF_INET, SOCK_STREAM, 0);
+        if fd < 0 {
+            freeaddrinfo(found);
+            return Result::Err(os_error("socket"));
+        }
+        var connected = connect(fd, address, length);
+        freeaddrinfo(found);
+        if connected < 0 {
+            var message = os_error("connect");
+            close(fd);
+            return Result::Err(message);
+        }
+        return Result::Ok(TcpStream { fd: fd });
+    }
+
+    // Whatever has arrived, waiting for something if nothing has (up to
+    // 4096 bytes). Gives "" once the other end has closed the connection.
+    func read_str(): Result<str, str> {
+        var buffer: &u8 = malloc(CHUNK_SIZE + 1);
+        var n = recv(self.fd, buffer, CHUNK_SIZE, 0);
+        if n < 0 {
+            free(buffer);
+            return Result::Err(os_error("read"));
+        }
+        buffer[n] = 0;
+        return Result::Ok(buffer as str);
+    }
+
+    // Everything until the other end closes the connection
+    func read_all(): Result<str, str> {
+        var text = StringBuilder::new();
+        while true {
+            var chunk = self.read_str()?;
+            if chunk == "" {
+                return Result::Ok(text.to_str());
+            }
+            text.append(chunk);
+        }
+    }
+
+    // Send all of `text`
+    func write(text: str): Result<int, str> {
+        var total = strlen(text);
+        var sent = 0;
+        while sent < total {
+            var n = send(self.fd, ptr_add(text, sent), total - sent, MSG_NOSIGNAL);
+            if n < 0 {
+                return Result::Err(os_error("write"));
+            }
+            sent += n;
+        }
+        return Result::Ok(total);
+    }
+
+    func close() {
+        close(self.fd);
+    }
+}

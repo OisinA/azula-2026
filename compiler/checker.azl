@@ -2095,9 +2095,12 @@ struct Checker {
                     self.check_stmt(stmts.get(i));
                     i += 1;
                 }
+                // A block that always leaves (through `return`, `break`,
+                // `continue` or a `!` call) never gives a value, so it fits
+                // anywhere (such as a match arm)
                 var t = match value {
                     Option::Some(v) => self.check_expr(v, expected),
-                    Option::None => Type::Void,
+                    Option::None => if block_diverges(stmts) { Type::Never } else { Type::Void },
                 };
                 self.pop_scope();
                 return t;
@@ -3008,7 +3011,7 @@ struct Checker {
                                 if info == null || (pat_enum != enum_name && pat_enum != generic_name) {
                                     self.fail(arm.pos, concat3("pattern doesn't match a value of type ", mangle(st), ""));
                                 }
-                                if bindings.len > 0 {
+                                if bindings.any(func(b) => b != "_") {
                                     self.fail(arm.pos, "the alternatives of a `|` pattern can't bind names");
                                 }
                                 arm.alt_tags.push(self.variant_tag(info, variant, arm.pos));
@@ -4017,6 +4020,20 @@ struct Copier {
 }
 
 // Does executing `body` always end in a return (or never finish)?
+// Does running `body` always leave it (by returning, or jumping out of or
+// back round a loop)?
+func block_diverges(body: Vec<&Stmt>): bool {
+    if body.len > 0 {
+        match body.get(body.len - 1).kind {
+            StmtKind::Break | StmtKind::Continue => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    return always_returns(body);
+}
+
 func always_returns(body: Vec<&Stmt>): bool {
     if body.len == 0 {
         return false;
@@ -4120,14 +4137,14 @@ func assignable(expected: Type, got: Type, e: &Expr): bool {
 // Does evaluating `e` never produce a value (it always returns, or is `!`)?
 func expr_diverges(e: &Expr): bool {
     return is_never(e.typ) || match e.kind {
-        ExprKind::Block(stmts, value) => value.is_none() && always_returns(stmts),
+        ExprKind::Block(stmts, value) => value.is_none() && block_diverges(stmts),
         _ => false,
     };
 }
 
 func arm_diverges(arm: &MatchArm): bool {
     return is_never(arm.body.typ) || match arm.body.kind {
-        ExprKind::Block(stmts, value) => value.is_none() && always_returns(stmts),
+        ExprKind::Block(stmts, value) => value.is_none() && block_diverges(stmts),
         _ => false,
     };
 }

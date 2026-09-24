@@ -105,8 +105,8 @@ func find_stdlib(options: Options): str {
 }
 
 // Add `path` and (recursively) the files it imports. A file imported `as` a
-// name is a module: see modules.azl.
-func add_module(src: &Source, path: str, alias: str, modules: &Map<str, &ModuleInfo>): &ModuleInfo {
+// name is a module: see modules.azl. `file` is the name used in messages.
+func add_module(src: &Source, path: str, file: str, alias: str, modules: &Map<str, &ModuleInfo>, stdlib: str): &ModuleInfo {
     var real: str = malloc(4096 * sizeof(u8));
     if realpath(path, real) == null {
         fatal(concat("can't read ", path));
@@ -125,16 +125,28 @@ func add_module(src: &Source, path: str, alias: str, modules: &Map<str, &ModuleI
     if alias != "" {
         prefix = concat(alias, "__");
     }
-    var info = new ModuleInfo { prefix: prefix, items: Map::new(), public: Map::new(), file: path };
+    var info = new ModuleInfo { prefix: prefix, items: Map::new(), public: Map::new(), file: file };
     collect_items(text, info);
     modules.insert(real, info);
 
     // Dependencies first, noting the names modules are imported as
     var aliases: Map<str, &ModuleInfo> = Map::new();
-    for line in text.split("\n") {
+    var lines = text.split("\n");
+    for (number, line) in lines.iter().enumerate() {
         match parse_import_line(line) {
             Option::Some(imp) => {
-                var module = add_module(src, join_path(dir_name(path), imp.path), imp.alias, modules);
+                var target = join_path(dir_name(path), imp.path);
+                var target_file = target;
+                // `std/...` names a module of the standard library
+                if imp.path.starts_with("std/") {
+                    target = join_path(stdlib, imp.path.slice(4, imp.path.len()));
+                    target_file = imp.path;
+                    if !file_exists(target) {
+                        printf("error: %s:%ld: there's no standard library module `%s`\n", file, number + 1, imp.path);
+                        exit(1);
+                    }
+                }
+                var module = add_module(src, target, target_file, imp.alias, modules, stdlib);
                 if imp.alias != "" {
                     aliases.insert(imp.alias, module);
                 }
@@ -147,7 +159,7 @@ func add_module(src: &Source, path: str, alias: str, modules: &Map<str, &ModuleI
     if prefix != "" {
         own = info;
     }
-    src.add_file(path, rewrite_module_text(text, own, &aliases, path, text, 0));
+    src.add_file(file, rewrite_module_text(text, own, &aliases, file, text, 0));
     return info;
 }
 
@@ -165,19 +177,13 @@ func main(argc: i32, argv: &str) {
 
     var src = new_source();
     var modules: Map<str, &ModuleInfo> = Map::new();
-    add_module(src, join_path(stdlib, "libc.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "option.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "string.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "vec.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "map.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "interfaces.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "result.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "io.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "iter.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "math.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "gc.azl"), "", &modules);
-    add_module(src, join_path(stdlib, "arena.azl"), "", &modules);
-    add_module(src, options.file, "", &modules);
+    // The standard library (modules such as std/net.azl are only loaded when
+    // imported)
+    for name in "libc option string vec map interfaces result io iter math gc arena".split(" ") {
+        var path = join_path(stdlib, "${name}.azl");
+        add_module(src, path, path, "", &modules, stdlib);
+    }
+    add_module(src, options.file, options.file, "", &modules, stdlib);
 
     var program = parse_program(src, lex(src));
     var checker = new_checker(src);

@@ -52,7 +52,9 @@ pub enum Instruction<'a> {
     CreateStruct(String, Vec<Value>, usize),
     StoreStructMember(Value, usize, Value, String),
     AccessStructMember(Value, usize, usize, bool, String),
-    Cast(Value, AzulaType<'a>, usize),
+    // The value, the type to convert it to, the destination, and whether the
+    // value is unsigned (so it is zero-extended when widened)
+    Cast(Value, AzulaType<'a>, usize, bool),
 }
 
 impl<'a> Display for Instruction<'a> {
@@ -142,7 +144,7 @@ impl<'a> Display for Instruction<'a> {
                     dest, struc, index, resolve
                 )
             }
-            Instruction::Cast(val, typ, dest) => write!(f, "%{}: cast {} {:?}", dest, val, typ),
+            Instruction::Cast(val, typ, dest, _) => write!(f, "%{}: cast {} {:?}", dest, val, typ),
         }
     }
 }

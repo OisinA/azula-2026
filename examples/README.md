@@ -2,7 +2,8 @@
 
 Run any of these with `azula run FILE` (or build them with `azula build FILE`).
 Every example is built with both the Rust compiler and the self-hosted compiler
-by `tests/run_examples.sh`, which checks that they print the same thing.
+by `tests/run_examples.sh`, which checks that they print the same thing (the web
+server is started, sent some requests with curl and stopped).
 
 | Example | Shows |
 | --- | --- |
@@ -17,6 +18,7 @@ by `tests/run_examples.sh`, which checks that they print the same thing.
 | [game_of_life.azl](game_of_life.azl) | Conway's Game of Life on a wrapping grid |
 | [calculator.azl](calculator.azl) | A tokenizer, recursive-descent parser and evaluator; reads its expression from the command line |
 | [brainfuck.azl](brainfuck.azl) | An interpreter for Brainfuck |
-| [modules/main.azl](modules/main.azl) | Splitting a program across files with `import` |
+| [modules/main.azl](modules/main.azl) | Splitting a program into modules with `import ... as` and `pub` |
+| [http_server/main.azl](http_server/main.azl) | A small web server using `std/net.azl`: routing, headers, POST bodies and a visit counter (`azula run http_server/main.azl [PORT]`) |
 
 For a much bigger example, the compiler itself is written in Azula: see [`compiler/`](../compiler).

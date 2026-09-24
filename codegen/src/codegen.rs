@@ -869,8 +869,13 @@ impl<'a> Codegen<'a> {
                 }
             }
             Expression::Cast(inner, target_type) => {
+                // Unsigned values (and bytes of text) are zero-extended
+                let unsigned = matches!(
+                    inner.typed,
+                    AzulaType::SizedUnsignedInt(_) | AzulaType::Char | AzulaType::Bool
+                );
                 let val = self.codegen_expr(inner.as_ref().clone(), func, true);
-                func.cast(val, target_type)
+                func.cast(val, target_type, unsigned)
             }
             Expression::Null => func.const_null(),
             Expression::Turbofish(..) => unreachable!("turbofish should be resolved by the typechecker"),

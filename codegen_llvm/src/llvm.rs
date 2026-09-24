@@ -1062,14 +1062,14 @@ impl<'a> LLVMCodegen<'a> {
                     }
                 }
             }
-            Instruction::Cast(val, target_type, dest) => {
+            Instruction::Cast(val, target_type, dest, unsigned) => {
                 let src = locals.load(value_to_local(val));
                 let target_llvm = self.azula_type_to_llvm_basic_type(target_type);
                 let result = match (src, target_llvm) {
                     (BasicValueEnum::IntValue(iv), BasicTypeEnum::IntType(it)) => {
                         let src_bits = iv.get_type().get_bit_width();
                         let dst_bits = it.get_bit_width();
-                        if dst_bits > src_bits && src_bits == 1 {
+                        if dst_bits > src_bits && (src_bits == 1 || unsigned) {
                             self.builder.build_int_z_extend(iv, it, "zext").unwrap().as_basic_value_enum()
                         } else if dst_bits > src_bits {
                             self.builder.build_int_s_extend(iv, it, "sext").unwrap().as_basic_value_enum()
@@ -1378,7 +1378,9 @@ impl<'a> LLVMCodegen<'a> {
         }
     }
 
-    /// Sign-extend the narrower of two integer operands so both have the same width.
+    /// Give two integer operands the same width. A constant (such as the `5`
+    /// in `5 + byte`, which is typed as the other operand) is narrowed to fit;
+    /// otherwise the narrower operand is sign-extended.
     fn harmonize<'v>(
         &self,
         a: BasicValueEnum<'v>,
@@ -1389,7 +1391,11 @@ impl<'a> LLVMCodegen<'a> {
     {
         if let (BasicValueEnum::IntValue(x), BasicValueEnum::IntValue(y)) = (a, b) {
             let (xw, yw) = (x.get_type().get_bit_width(), y.get_type().get_bit_width());
-            if xw < yw {
+            if xw > yw && x.is_const() && !y.is_const() {
+                return (self.coerce_int_width(a, y.get_type().as_basic_type_enum()), b);
+            } else if yw > xw && y.is_const() && !x.is_const() {
+                return (a, self.coerce_int_width(b, x.get_type().as_basic_type_enum()));
+            } else if xw < yw {
                 return (self.coerce_int_width(a, y.get_type().as_basic_type_enum()), b);
             } else if yw < xw {
                 return (a, self.coerce_int_width(b, x.get_type().as_basic_type_enum()));

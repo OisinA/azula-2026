@@ -36,5 +36,52 @@ for src in *.azl modules/main.azl; do
     pass=$((pass + 1))
 done
 
+# The web server runs until it's stopped: start each build on a free port,
+# send it some requests and compare what comes back
+http_transcript() {
+    local log="$WORK/server.log"
+    "$1" 0 > "$log" 2>&1 &
+    local pid=$!
+    local port=""
+    for _ in $(seq 50); do
+        port="$(grep -o 'localhost:[0-9]*' "$log" | cut -d: -f2)"
+        [ -n "$port" ] && break
+        sleep 0.1
+    done
+    if [ -n "$port" ]; then
+        local url="http://localhost:$port"
+        curl -s "$url/"; curl -s "$url/"
+        curl -s "$url/hello/Azula"
+        curl -s -A test-agent "$url/agent"
+        curl -s -d 'posted body' "$url/echo"; echo
+        curl -si "$url/missing" | head -1
+        curl -s -X DELETE "$url/"
+    fi
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    sed "s/localhost:[0-9]*/localhost:PORT/" "$log"
+}
+if command -v curl > /dev/null; then
+    src=http_server/main.azl
+    if ! "$STAGE0" build "$src" > "$WORK/log" 2>&1 || ! mv http_server/main "$WORK/a.out"; then
+        echo "FAIL $src (Rust compiler)"; sed 's/^/    /' "$WORK/log" | head -10
+        fail=$((fail + 1))
+    elif ! "$SELF_HOSTED" build "$src" -o "$WORK/b.out" > "$WORK/log" 2>&1; then
+        echo "FAIL $src (self-hosted compiler)"; sed 's/^/    /' "$WORK/log" | head -10
+        fail=$((fail + 1))
+    else
+        expected="$(http_transcript "$WORK/a.out")"
+        actual="$(http_transcript "$WORK/b.out")"
+        if [ "$expected" != "$actual" ] || [[ "$expected" != *"Hello, Azula!"* ]]; then
+            echo "FAIL $src (responses differ or are wrong)"
+            diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") | head -10 | sed 's/^/    /'
+            fail=$((fail + 1))
+        else
+            pass=$((pass + 1))
+        fi
+    fi
+else
+    echo "skipping http_server/main.azl (needs curl)"
+fi
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
