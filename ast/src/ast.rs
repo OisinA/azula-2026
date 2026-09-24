@@ -49,6 +49,8 @@ pub enum Statement<'a> {
     Enum {
         name: &'a str,
         variants: Vec<&'a str>,
+        /// The payload types carried by each variant (empty for plain variants)
+        payloads: Vec<Vec<AzulaType<'a>>>,
         span: Span,
     },
     TypeAlias {
@@ -95,6 +97,8 @@ pub enum Expression<'a> {
 pub enum MatchPattern<'a> {
     /// EnumName::Variant
     Variant(&'a str, &'a str),
+    /// EnumName::Variant(a, _, c) — binds the variant's payload fields (`_` ignores one)
+    Destructure(&'a str, &'a str, Vec<Option<&'a str>>),
     /// integer or char literal
     Integer(i64),
     /// _

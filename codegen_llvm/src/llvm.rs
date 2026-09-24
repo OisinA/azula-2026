@@ -27,6 +27,7 @@ pub struct LLVMCodegen<'ctx> {
     globals: HashMap<String, BasicValueEnum<'ctx>>,
     structs: HashMap<String, StructType<'ctx>>,
     enum_names: std::collections::HashSet<String>,
+    boxed_enum_names: std::collections::HashSet<String>,
 
     target: Option<String>,
     opt_level: OptimizationLevel,
@@ -66,6 +67,7 @@ impl<'ctx> Backend<'ctx> for LLVMCodegen<'ctx> {
             globals: HashMap::new(),
             structs: HashMap::new(),
             enum_names,
+            boxed_enum_names: module.boxed_enums.clone(),
             target,
             opt_level,
         };
@@ -1282,7 +1284,9 @@ impl<'a> LLVMCodegen<'a> {
             }
             AzulaType::Infer => unreachable!(),
             AzulaType::Named(name) => {
-                if self.enum_names.contains(&name) {
+                if self.boxed_enum_names.contains(&name) {
+                    self.context.ptr_type(AddressSpace::default()).as_basic_type_enum()
+                } else if self.enum_names.contains(&name) {
                     self.context.i64_type().as_basic_type_enum()
                 } else {
                     self.structs
@@ -1341,59 +1345,7 @@ impl<'a> LLVMCodegen<'a> {
         t: AzulaType<'a>,
         args: &[BasicMetadataTypeEnum<'a>],
     ) -> FunctionType<'a> {
-        match t {
-            AzulaType::Int => self.context.i64_type().fn_type(args, false),
-            AzulaType::SizedSignedInt(size) => match size {
-                8 => self.context.i8_type().as_basic_type_enum(),
-                16 => self.context.i16_type().as_basic_type_enum(),
-                32 => self.context.i32_type().as_basic_type_enum(),
-                64 => self.context.i64_type().as_basic_type_enum(),
-                _ => unreachable!(),
-            }
-            .fn_type(args, false),
-            AzulaType::SizedUnsignedInt(size) => match size {
-                8 => self.context.i8_type().as_basic_type_enum(),
-                16 => self.context.i16_type().as_basic_type_enum(),
-                32 => self.context.i32_type().as_basic_type_enum(),
-                64 => self.context.i64_type().as_basic_type_enum(),
-                _ => unreachable!(),
-            }
-            .fn_type(args, false),
-            AzulaType::Str => self
-                .context
-                .ptr_type(AddressSpace::default())
-                .fn_type(args, false),
-            AzulaType::Float => self.context.f64_type().fn_type(args, false),
-            AzulaType::SizedFloat(size) => match size {
-                16 => self.context.f16_type().as_basic_type_enum(),
-                32 => self.context.f32_type().as_basic_type_enum(),
-                64 => self.context.f64_type().as_basic_type_enum(),
-                _ => unreachable!(),
-            }
-            .fn_type(args, false),
-            AzulaType::Bool => self.context.bool_type().fn_type(args, false),
-            AzulaType::Void => self.context.void_type().fn_type(args, false),
-            AzulaType::Pointer(_) => self
-                .context
-                .ptr_type(AddressSpace::default())
-                .fn_type(args, false),
-            AzulaType::Infer => todo!(),
-            AzulaType::Named(name) => {
-                if self.enum_names.contains(&name) {
-                    self.context.i64_type().fn_type(args, false)
-                } else {
-                    self.structs
-                        .get(&name.to_string())
-                        .unwrap()
-                        .fn_type(args, false)
-                }
-            }
-            AzulaType::UnknownType(_) => todo!(),
-            AzulaType::Array(_, _) => self
-                .context
-                .ptr_type(AddressSpace::default())
-                .fn_type(args, false),
-        }
+        self.azula_type_to_function_llvm_type_with_varargs(t, args, false)
     }
 
     fn azula_type_to_function_llvm_type_with_varargs(
@@ -1403,57 +1355,8 @@ impl<'a> LLVMCodegen<'a> {
         varargs: bool,
     ) -> FunctionType<'a> {
         match t {
-            AzulaType::Int => self.context.i64_type().fn_type(args, varargs),
-            AzulaType::SizedSignedInt(size) => match size {
-                8 => self.context.i8_type().as_basic_type_enum(),
-                16 => self.context.i16_type().as_basic_type_enum(),
-                32 => self.context.i32_type().as_basic_type_enum(),
-                64 => self.context.i64_type().as_basic_type_enum(),
-                _ => unreachable!(),
-            }
-            .fn_type(args, varargs),
-            AzulaType::SizedUnsignedInt(size) => match size {
-                8 => self.context.i8_type().as_basic_type_enum(),
-                16 => self.context.i16_type().as_basic_type_enum(),
-                32 => self.context.i32_type().as_basic_type_enum(),
-                64 => self.context.i64_type().as_basic_type_enum(),
-                _ => unreachable!(),
-            }
-            .fn_type(args, varargs),
-            AzulaType::Str => self
-                .context
-                .ptr_type(AddressSpace::default())
-                .fn_type(args, varargs),
-            AzulaType::Float => self.context.f64_type().fn_type(args, varargs),
-            AzulaType::SizedFloat(size) => match size {
-                16 => self.context.f16_type().as_basic_type_enum(),
-                32 => self.context.f32_type().as_basic_type_enum(),
-                64 => self.context.f64_type().as_basic_type_enum(),
-                _ => unreachable!(),
-            }
-            .fn_type(args, false),
-            AzulaType::Bool => self.context.bool_type().fn_type(args, varargs),
             AzulaType::Void => self.context.void_type().fn_type(args, varargs),
-            AzulaType::Pointer(_) => self
-                .context
-                .ptr_type(AddressSpace::default())
-                .fn_type(args, varargs),
-            AzulaType::Infer => todo!(),
-            AzulaType::Named(name) => {
-                if self.enum_names.contains(&name) {
-                    self.context.i64_type().fn_type(args, varargs)
-                } else {
-                    self.structs
-                        .get(&name.to_string())
-                        .unwrap()
-                        .fn_type(args, varargs)
-                }
-            }
-            AzulaType::UnknownType(_) => todo!(),
-            AzulaType::Array(_, _) => self
-                .context
-                .ptr_type(AddressSpace::default())
-                .fn_type(args, varargs),
+            _ => self.azula_type_to_llvm_basic_type(t).fn_type(args, varargs),
         }
     }
 }

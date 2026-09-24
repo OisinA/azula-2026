@@ -1,5 +1,9 @@
 use core::fmt;
-use std::{collections::HashMap, fmt::Display, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    rc::Rc,
+};
 
 use azula_type::prelude::AzulaType;
 
@@ -13,6 +17,9 @@ pub struct Module<'a> {
     pub global_values: HashMap<String, GlobalValue>,
     pub structs: HashMap<&'a str, Struct<'a>>,
     pub enums: HashMap<String, Vec<String>>,
+    /// Enums with payloads. Their values are pointers to heap cells laid out
+    /// like the struct `Enum.Variant` = { tag, payload... }.
+    pub boxed_enums: HashSet<String>,
 }
 
 impl<'a> Module<'a> {
@@ -162,6 +169,7 @@ impl<'a> Module<'a> {
             global_values: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
+            boxed_enums: HashSet::new(),
         }
     }
 

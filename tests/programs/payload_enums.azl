@@ -1,0 +1,119 @@
+enum Op { Add, Sub, Mul }
+
+enum Expr {
+    Num(int),
+    Neg(Expr),
+    Binary(Expr, Op, Expr),
+    Var(str),
+    Zero,
+}
+
+enum Token {
+    Number(int),
+    Word(str, int),
+    End,
+}
+
+func eval(e: Expr, x: int): int {
+    return match e {
+        Expr::Num(n) => n,
+        Expr::Neg(inner) => 0 - eval(inner, x),
+        Expr::Binary(l, op, r) => {
+            var a = eval(l, x);
+            var b = eval(r, x);
+            match op {
+                Op::Add => a + b,
+                Op::Sub => a - b,
+                Op::Mul => a * b,
+            }
+        },
+        Expr::Var(_) => x,
+        Expr::Zero => 0,
+    };
+}
+
+func show(e: Expr) {
+    match e {
+        Expr::Num(n) => { printf("%d", n); },
+        Expr::Neg(inner) => {
+            printf("-");
+            show(inner);
+        },
+        Expr::Binary(l, op, r) => {
+            printf("(");
+            show(l);
+            var sym = match op {
+                Op::Add => " + ",
+                Op::Sub => " - ",
+                Op::Mul => " * ",
+            };
+            printf("%s", sym);
+            show(r);
+            printf(")");
+        },
+        Expr::Var(name) => { printf("%s", name); },
+        Expr::Zero => { printf("0"); },
+    }
+}
+
+func describe(t: Token): str {
+    match t {
+        Token::Number(n) => {
+            if n > 100 {
+                return "big number";
+            }
+            return "number";
+        },
+        Token::Word(w, len) => {
+            if len == 0 { return "empty word"; }
+            return w;
+        },
+        _ => { return "end"; },
+    }
+    return "unreachable";
+}
+
+func count_nums(e: Expr): int {
+    return match e {
+        Expr::Num(_) => 1,
+        Expr::Neg(i) => count_nums(i),
+        Expr::Binary(l, _, r) => count_nums(l) + count_nums(r),
+        _ => 0,
+    };
+}
+
+func main {
+    // (x * 3) + -(4 - 1)
+    var e = Expr::Binary(
+        Expr::Binary(Expr::Var("x"), Op::Mul, Expr::Num(3)),
+        Op::Add,
+        Expr::Neg(Expr::Binary(Expr::Num(4), Op::Sub, Expr::Num(1))),
+    );
+    show(e);
+    printf("\n");
+    printf("x=5 -> %d, x=10 -> %d\n", eval(e, 5), eval(e, 10));
+    printf("nums=%d zero=%d\n", count_nums(e), eval(Expr::Zero, 1));
+
+    var tokens: &Token = malloc(4 * sizeof(Token));
+    tokens[0] = Token::Number(7);
+    tokens[1] = Token::Number(700);
+    tokens[2] = Token::Word("hello", 5);
+    tokens[3] = Token::End;
+    var i = 0;
+    while i < 4 {
+        printf("%s\n", describe(tokens[i]));
+        i = i + 1;
+    }
+
+    // Shadowed variables of different types in different scopes
+    var k = 0;
+    while k < 2 {
+        var v = k * 10;
+        if k == 1 {
+            var v = "text";
+            printf("%s\n", v);
+        }
+        printf("%d\n", v);
+        k = k + 1;
+    }
+}

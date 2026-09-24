@@ -12,6 +12,8 @@ pub struct Typechecker<'a> {
     structs: HashMap<String, StructDefinition<'a>>,
     namespaces: HashMap<String, Namespace<'a>>,
     enums: HashMap<String, Vec<String>>,
+    /// Payload types of each variant, for enums declared with any payload ("boxed" enums)
+    enum_payloads: HashMap<String, Vec<Vec<AzulaType<'a>>>>,
     type_aliases: HashMap<String, AzulaType<'a>>,
 
     pub errors: Vec<AzulaError>,
@@ -69,6 +71,7 @@ impl<'a> Typechecker<'a> {
             structs: HashMap::new(),
             namespaces: HashMap::new(),
             enums: HashMap::new(),
+            enum_payloads: HashMap::new(),
             type_aliases: HashMap::new(),
             errors: vec![],
         }
@@ -171,11 +174,14 @@ impl<'a> Typechecker<'a> {
 
                         self.namespaces.insert(struc_name, namespace);
                     }
-                    Statement::Enum { name, variants, .. } => {
+                    Statement::Enum { name, variants, payloads, .. } => {
                         self.enums.insert(
                             name.to_string(),
                             variants.iter().map(|v| v.to_string()).collect(),
                         );
+                        if payloads.iter().any(|p| !p.is_empty()) {
+                            self.enum_payloads.insert(name.to_string(), payloads.clone());
+                        }
                     }
                     Statement::TypeAlias { name, typ, .. } => {
                         self.type_aliases.insert(name.to_string(), typ.clone());
@@ -278,6 +284,7 @@ impl<'a> Typechecker<'a> {
             Statement::Reassign(..) => self.typecheck_reassign(stmt, env),
             Statement::Block(stmts) => {
                 let mut checked = vec![];
+                let env = &mut env.clone();
                 for s in stmts {
                     match self.typecheck_statement(s, env) {
                         Ok((s, _)) => checked.push(s),
@@ -599,8 +606,9 @@ impl<'a> Typechecker<'a> {
             }
 
             let mut stmts = vec![];
+            let mut body_env = env.clone();
             for stmt in body {
-                match self.typecheck_statement(stmt.clone(), env) {
+                match self.typecheck_statement(stmt.clone(), &mut body_env) {
                     Ok((stmt, _)) => stmts.push(stmt),
                     Err(e) => return Err(e),
                 };
@@ -608,7 +616,7 @@ impl<'a> Typechecker<'a> {
 
             let checked_else = match else_branch {
                 Some(else_stmt) => {
-                    match self.typecheck_statement(else_stmt.as_ref().clone(), env) {
+                    match self.typecheck_statement(else_stmt.as_ref().clone(), &mut env.clone()) {
                         Ok((stmt, _)) => Some(Rc::new(stmt)),
                         Err(e) => return Err(e),
                     }
@@ -643,8 +651,9 @@ impl<'a> Typechecker<'a> {
             }
 
             let mut stmts = vec![];
+            let mut body_env = env.clone();
             for stmt in body {
-                match self.typecheck_statement(stmt.clone(), env) {
+                match self.typecheck_statement(stmt.clone(), &mut body_env) {
                     Ok((stmt, _)) => stmts.push(stmt),
                     Err(e) => return Err(e),
                 };
@@ -682,8 +691,9 @@ impl<'a> Typechecker<'a> {
             };
 
             let mut stmts = vec![];
+            let mut body_env = env.clone();
             for stmt in body {
-                match self.typecheck_statement(stmt.clone(), env) {
+                match self.typecheck_statement(stmt.clone(), &mut body_env) {
                     Ok((stmt, _)) => stmts.push(stmt),
                     Err(e) => return Err(e),
                 };
@@ -738,6 +748,47 @@ impl<'a> Typechecker<'a> {
                     ));
                     return Err(format!("Unknown variable {:?}", name));
                 }
+            }
+            Expression::FunctionCall { function, args } if self.as_variant(&function).is_some() => {
+                let (enum_name, variant_name) = self.as_variant(&function).unwrap();
+                let payload = self.variant_payload(&enum_name, &variant_name).unwrap_or_default();
+                if payload.len() != args.len() {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::Custom(format!(
+                            "Variant {}::{} takes {} values, got {}",
+                            enum_name,
+                            variant_name,
+                            payload.len(),
+                            args.len()
+                        )),
+                        expr.span.start,
+                        expr.span.end,
+                    ));
+                    return Err("wrong payload count".to_string());
+                }
+                let mut new_args = vec![];
+                for (arg, expected) in args.into_iter().zip(payload.iter()) {
+                    let (arg, typ) = self.typecheck_expression(arg, env)?;
+                    let expected = self.resolve_type(expected.clone());
+                    if !assignable(&expected, &typ, &arg) {
+                        self.errors.push(AzulaError::new(
+                            ErrorType::MismatchedTypes(format!("{:?}", expected), format!("{:?}", typ)),
+                            arg.span.start,
+                            arg.span.end,
+                        ));
+                        return Err("mismatched payload".to_string());
+                    }
+                    new_args.push(arg);
+                }
+                let typ = AzulaType::Named(enum_name);
+                Ok((
+                    ExpressionNode {
+                        expression: Expression::FunctionCall { function, args: new_args },
+                        typed: typ.clone(),
+                        span: expr.span,
+                    },
+                    typ,
+                ))
             }
             Expression::FunctionCall { mut function, args } => {
                 let func = match self.resolve_function(
@@ -1093,6 +1144,14 @@ impl<'a> Typechecker<'a> {
                         ));
                         return Err(format!("Unknown variant {} on {}", variant_name, ns_name));
                     }
+                    if self.variant_payload(&ns_name, &variant_name).map(|p| !p.is_empty()).unwrap_or(false) {
+                        self.errors.push(AzulaError::new(
+                            ErrorType::Custom(format!("Variant {}::{} needs a payload", ns_name, variant_name)),
+                            expr.span.start,
+                            expr.span.end,
+                        ));
+                        return Err("variant without payload".to_string());
+                    }
                     let typ = AzulaType::Named(ns_name.clone());
                     return Ok((
                         ExpressionNode {
@@ -1240,7 +1299,7 @@ impl<'a> Typechecker<'a> {
                         return Err("integer pattern on non-integer scrutinee".to_string());
                     }
                 }
-                MatchPattern::Variant(pat_enum, variant) => {
+                MatchPattern::Variant(pat_enum, variant) | MatchPattern::Destructure(pat_enum, variant, _) => {
                     if *pat_enum != enum_name.as_str() {
                         self.errors.push(AzulaError::new(
                             ErrorType::UnknownEnum(pat_enum.to_string()),
@@ -1261,25 +1320,45 @@ impl<'a> Typechecker<'a> {
                 }
             }
 
-            let (body_node, body_type) = match self.typecheck_expression(body, env) {
-                Ok(x) => x,
-                Err(e) => return Err(e),
-            };
-
-            if let Some(ref rt) = result_type.clone() {
-                if *rt != body_type {
+            // Bind the payload fields of a destructured variant
+            let mut arm_env = env.clone();
+            if let MatchPattern::Destructure(_, variant, bindings) = &pattern {
+                let payload = self.variant_payload(&enum_name, variant).unwrap_or_default();
+                if payload.len() != bindings.len() {
                     self.errors.push(AzulaError::new(
-                        ErrorType::MismatchedTypes(
-                            format!("{:?}", rt),
-                            format!("{:?}", body_type),
-                        ),
-                        body_node.span.start,
-                        body_node.span.end,
+                        ErrorType::Custom(format!(
+                            "Variant {}::{} has {} fields, pattern binds {}",
+                            enum_name,
+                            variant,
+                            payload.len(),
+                            bindings.len()
+                        )),
+                        body.span.start,
+                        body.span.end,
                     ));
-                    return Err("mismatched arm types".to_string());
+                    return Err("wrong binding count".to_string());
                 }
-            } else {
-                result_type = Some(body_type);
+                for (binding, typ) in bindings.iter().zip(payload) {
+                    if let Some(name) = binding {
+                        arm_env.add_variable(
+                            name.to_string(),
+                            VariableDefinition {
+                                name: name.to_string(),
+                                mutable: false,
+                                typ: self.resolve_type(typ),
+                            },
+                        );
+                    }
+                }
+            }
+
+            let (body_node, body_type) = self.typecheck_expression(body, &arm_env)?;
+
+            // Arms that disagree on their type make the match a statement (Void)
+            match result_type.clone() {
+                Some(rt) if rt != body_type => result_type = Some(AzulaType::Void),
+                Some(_) => {}
+                None => result_type = Some(body_type),
             }
 
             new_arms.push((pattern, body_node));
@@ -1308,6 +1387,28 @@ impl<'a> Typechecker<'a> {
             },
             typ,
         ))
+    }
+
+    /// If `function` names an enum variant (`Enum::Variant`), return (enum, variant).
+    fn as_variant(&self, function: &ExpressionNode<'a>) -> Option<(String, String)> {
+        if let Expression::NamespaceAccess(ns, variant) = &function.expression {
+            if let (Expression::Identifier(ns), Expression::Identifier(variant)) = (&ns.expression, &variant.expression) {
+                if self.enums.contains_key(ns) {
+                    return Some((ns.clone(), variant.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    fn variant_payload(&self, enum_name: &str, variant: &str) -> Option<Vec<AzulaType<'a>>> {
+        let index = self.enums.get(enum_name)?.iter().position(|v| v == variant)?;
+        Some(
+            self.enum_payloads
+                .get(enum_name)
+                .map(|p| p[index].clone())
+                .unwrap_or_default(),
+        )
     }
 
     fn resolve_type(&self, typ: AzulaType<'a>) -> AzulaType<'a> {
@@ -1367,7 +1468,10 @@ impl<'a> Typechecker<'a> {
                 left_typ = right_typ.clone();
             }
 
-            let is_enum = |t: &AzulaType<'a>| matches!(t, AzulaType::Named(n) if self.enums.contains_key(n.as_str()));
+            // Only plain (payload-free) enums can be compared
+            let is_enum = |t: &AzulaType<'a>| {
+                matches!(t, AzulaType::Named(n) if self.enums.contains_key(n.as_str()) && !self.enum_payloads.contains_key(n.as_str()))
+            };
             let is_pointer_like = |t: &AzulaType<'a>| matches!(t, AzulaType::Pointer(_) | AzulaType::Str);
 
             let operand_ok = |t: &AzulaType<'a>| -> bool {
@@ -2036,6 +2140,7 @@ mod tests {
         let root = Statement::Root(vec![Statement::Enum {
             name: "Color",
             variants: vec!["Red", "Green", "Blue"],
+            payloads: vec![vec![], vec![], vec![]],
             span: Span { start: 0, end: 1 },
         }]);
         let mut typechecker = Typechecker::new(root);

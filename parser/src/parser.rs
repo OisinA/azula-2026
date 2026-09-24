@@ -95,6 +95,13 @@ impl<'a> Parser<'a> {
                     return self.parse_reassign(expr.clone());
                 }
 
+                // A `match` used as a statement doesn't need a trailing semicolon
+                if matches!(expr.expression, Expression::Match(..))
+                    && self.lexer.peek().map(|t| t.kind != TokenKind::SemiColon).unwrap_or(true)
+                {
+                    return Some(Statement::ExpressionStatement(expr.clone(), expr.span));
+                }
+
                 if !self.expect_peek(TokenKind::SemiColon) {
                     return None;
                 }
@@ -332,8 +339,9 @@ impl<'a> Parser<'a> {
         }
         self.lexer.next();
 
-        // Parse comma-separated variant names until the closing brace
+        // Parse comma-separated variants (optionally carrying payload types) until the closing brace
         let mut variants = vec![];
+        let mut payloads = vec![];
         while let Some(tok) = self.lexer.peek() {
             if tok.kind == TokenKind::BraceClose {
                 break;
@@ -341,8 +349,15 @@ impl<'a> Parser<'a> {
 
             let tok = self.lexer.next().unwrap();
             match tok.kind {
-                TokenKind::Identifier(val) => variants.push(val),
-                TokenKind::Comma => continue,
+                TokenKind::Identifier(val) => {
+                    variants.push(val);
+                    if self.lexer.peek().map(|t| t.kind == TokenKind::BracketOpen).unwrap_or(false) {
+                        payloads.push(self.parse_type_list(TokenKind::BracketOpen));
+                    } else {
+                        payloads.push(vec![]);
+                    }
+                }
+                TokenKind::Comma | TokenKind::Comment => continue,
                 _ => {
                     self.errors.push(AzulaError::new(
                         ErrorType::ExpectedToken(
@@ -363,6 +378,7 @@ impl<'a> Parser<'a> {
         Some(Statement::Enum {
             name: ident,
             variants,
+            payloads,
             span: Span {
                 start: start_token.span.start,
                 end: start_token.span.end,
@@ -1110,6 +1126,10 @@ impl<'a> Parser<'a> {
         let mut peek = self.lexer.peek().unwrap().kind.clone();
         while peek == TokenKind::Comma {
             self.lexer.next();
+            // Allow a trailing comma
+            if self.lexer.peek().map(|t| t.kind == closing_delimiter).unwrap_or(false) {
+                break;
+            }
             if let Some(expr) = self.parse_expression(LOWEST, true) {
                 expressions.push(expr);
             }
@@ -1350,6 +1370,7 @@ impl<'a> Parser<'a> {
                             | TokenKind::Break
                             | TokenKind::Continue
                             | TokenKind::Function
+                            | TokenKind::For
                     )
                 })
                 .unwrap_or(false);
@@ -1381,6 +1402,11 @@ impl<'a> Parser<'a> {
                     // final expression — no semicolon
                     final_expr = Some(expr);
                     break;
+                }
+                Some(_) if matches!(expr.expression, Expression::Match(..)) => {
+                    // a match statement followed by more statements
+                    let span = expr.span.clone();
+                    stmts.push(Statement::ExpressionStatement(expr, span));
                 }
                 Some(other) => {
                     self.errors.push(AzulaError::new(
@@ -1481,7 +1507,11 @@ impl<'a> Parser<'a> {
                     let variant_tok = self.lexer.next().unwrap();
                     match variant_tok.kind {
                         TokenKind::Identifier(variant_name) => {
-                            MatchPattern::Variant(enum_name, variant_name)
+                            if self.lexer.peek().map(|t| t.kind == TokenKind::BracketOpen).unwrap_or(false) {
+                                MatchPattern::Destructure(enum_name, variant_name, self.parse_pattern_bindings()?)
+                            } else {
+                                MatchPattern::Variant(enum_name, variant_name)
+                            }
                         }
                         _ => {
                             self.errors.push(AzulaError::new(
@@ -1539,6 +1569,30 @@ impl<'a> Parser<'a> {
                 end: close.span.end,
             },
         })
+    }
+
+    /// Parse `(a, _, c)` after a variant name in a match pattern.
+    fn parse_pattern_bindings(&mut self) -> Option<Vec<Option<&'a str>>> {
+        self.lexer.next(); // consume (
+        let mut bindings = vec![];
+        loop {
+            let tok = self.lexer.next()?;
+            match tok.kind {
+                TokenKind::BracketClose => break,
+                TokenKind::Comma => continue,
+                TokenKind::Identifier("_") => bindings.push(None),
+                TokenKind::Identifier(name) => bindings.push(Some(name)),
+                _ => {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::ExpectedToken("identifier".to_string(), Some(format!("{:?}", tok.kind))),
+                        tok.span.start,
+                        tok.span.end,
+                    ));
+                    return None;
+                }
+            }
+        }
+        Some(bindings)
     }
 
     fn parse_array_access(&mut self, left: ExpressionNode<'a>) -> Option<ExpressionNode<'a>> {
