@@ -1,0 +1,5 @@
+// error: can't destructure a value of type int; it isn't a tuple
+func main() {
+    var (a, b) = 5;
+    printf("%d %d\n", a, b);
+}

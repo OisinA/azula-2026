@@ -548,14 +548,26 @@ impl<'a> Function<'a> {
         self.add_instruction(Instruction::StoreStructMember(struc, index, value, struct_name));
     }
 
+    pub fn unreachable(&mut self) {
+        self.add_instruction(Instruction::Unreachable);
+    }
+
     fn add_instruction(&mut self, instruction: Instruction<'a>) {
-        self.blocks
+        let instructions = &mut self
+            .blocks
             .iter_mut()
             .find(|(x, _)| x.clone() == self.current_block)
             .unwrap()
             .1
-            .instructions
-            .push(instruction);
+            .instructions;
+        // Code after a terminator (a return, jump or call of a `!` function) is dead
+        if matches!(
+            instructions.last(),
+            Some(Instruction::Return(_) | Instruction::Jump(_) | Instruction::Jcond(..) | Instruction::Unreachable)
+        ) {
+            return;
+        }
+        instructions.push(instruction);
     }
 }
 

@@ -20,6 +20,10 @@ enum Type {
     // A struct or enum (or a type parameter before substitution)
     Named(str);
     Generic(str, Vec<Type>);
+    // `(A, B)`: the checker turns these into Named tuple structs
+    Tuple(Vec<Type>);
+    // `!`, the type of calls to functions that never return
+    Never;
 }
 
 enum BinOp { Add; Sub; Mul; Div; Mod; Pow; And; Or; Eq; Ne; Lt; Le; Gt; Ge; BitAnd; BitOr; BitXor; Shl; Shr; }
@@ -66,6 +70,10 @@ enum ExprKind {
     Block(Vec<&Stmt>, Option<&Expr>);
     // `"a ${x} b"`: string literals and interpolated expressions
     Interpolate(Vec<&Expr>);
+    // `(a, b)`
+    Tuple(Vec<&Expr>);
+    // `value.method::<Types>` (only as a callee)
+    MethodTurbofish(&Expr, str, Vec<Type>);
 
     // Resolved forms produced by the checker
     Local(str);
@@ -87,6 +95,26 @@ enum Pattern {
     IntValue(int);
     // Enum name, variant name, names bound to the payload ("_" ignores one)
     Variant(str, str, Vec<str>);
+    // `(p, q)`, matching a tuple's elements
+    Tuple(Vec<Pattern>);
+    // A name binding a tuple element
+    Binding(str);
+}
+
+// A test made by a tuple pattern: the element at `path` (field indices from
+// the scrutinee) must equal `value` (its tag, loaded from the cell if `boxed`)
+struct PatTest {
+    path: Vec<int>;
+    value: int;
+    typ: Type;
+    boxed: bool;
+}
+
+// A variable bound by a tuple pattern to the element at `path`
+struct PatBind {
+    path: Vec<int>;
+    ir: str;
+    typ: Type;
 }
 
 struct MatchArm {
@@ -97,6 +125,9 @@ struct MatchArm {
     enum_name: str;
     tag: int;
     bindings: Vec<str>;
+    // For tuple patterns
+    tests: Vec<PatTest>;
+    binds: Vec<PatBind>;
 }
 
 struct Stmt {
@@ -121,6 +152,10 @@ enum StmtKind {
     ForIn(str, &Expr, Option<&Expr>, bool, Vec<&Stmt>);
     // `target op= value`
     CompoundAssign(BinOp, &Expr, &Expr);
+    // `var (a, b) = value;`: names ("_" ignores an element), mutable, value
+    Destructure(Vec<str>, bool, &Expr);
+    // Statements sharing the enclosing scope (made by the checker)
+    Group(Vec<&Stmt>);
     Break;
     Continue;
 }
@@ -269,6 +304,19 @@ func mangle_into(t: Type, sb: &StringBuilder) {
             }
             sb.append(">");
         },
+        Type::Tuple(items) => {
+            sb.append("(");
+            var i = 0;
+            while i < items.len {
+                if i > 0 {
+                    sb.append(",");
+                }
+                mangle_into(items.get(i), sb);
+                i += 1;
+            }
+            sb.append(")");
+        },
+        Type::Never => { sb.append("!"); },
     }
 }
 
@@ -294,6 +342,8 @@ func type_eq(a: Type, b: Type): bool {
         Type::Array(x, n) => match b { Type::Array(y, m) => n == m && type_eq(x, y), _ => false, },
         Type::Named(x) => match b { Type::Named(y) => x == y, _ => false, },
         Type::Generic(_, _) => mangle(a) == mangle(b),
+        Type::Tuple(_) => mangle(a) == mangle(b),
+        Type::Never => match b { Type::Never => true, _ => false, },
     };
 }
 
@@ -316,6 +366,10 @@ func is_float(t: Type): bool {
 
 func is_void(t: Type): bool {
     return match t { Type::Void => true, _ => false, };
+}
+
+func is_never(t: Type): bool {
+    return match t { Type::Never => true, _ => false, };
 }
 
 func is_infer(t: Type): bool {

@@ -1,0 +1,123 @@
+// Tuples, destructuring, tuple patterns, the never type `!` and generic methods.
+
+enum Dir {
+    Up;
+    Down;
+}
+
+enum Shape {
+    Circle(int);
+    Square(int);
+}
+
+struct Box<T> {
+    value: T;
+
+    // Generic methods have their own type parameters
+    func pair<U>(other: U): (T, U) {
+        return (self.value, other);
+    }
+
+    func nest<U>(other: U): Box<(T, U)> {
+        return Box { value: (self.value, other) };
+    }
+}
+
+struct Counter {
+    n: int;
+
+    func tag<T>(value: T): (int, T) {
+        return (self.n, value);
+    }
+
+    func boxed<T>(value: T): Box<T> {
+        return Box { value: value };
+    }
+}
+
+struct Named {
+    entry: (str, int);
+}
+
+func fail(message: str): ! {
+    printf("fatal: %s\n", message);
+    exit(2);
+}
+
+func divmod(a: int, b: int): (int, int) {
+    if b == 0 {
+        fail("division by zero");
+    }
+    return (a / b, a % b);
+}
+
+func classify(d: Dir, n: int): str {
+    return match (d, n) {
+        (Dir::Up, 0) => "up, at zero",
+        (Dir::Up, k) => "up by ${k}",
+        (Dir::Down, _) => "down",
+    };
+}
+
+func describe(p: ((int, int), Shape)): str {
+    return match p {
+        ((0, 0), Shape::Circle) => "circle at the origin",
+        ((x, y), Shape::Square) => "square at ${x},${y}",
+        _ => "something else",
+    };
+}
+
+func main() {
+    // Literals, element access and nesting
+    var t = (1, "two", 3.5);
+    printf("%d %s %.1f\n", t.0, t.1, t.2);
+    var nested = ((1, 2), (3, (4, 5)));
+    printf("%d %d %d\n", nested.0.1, nested.1.1.0 + nested.1.1.1, (4, 5).1);
+
+    // Destructuring (`_` skips an element)
+    var (q, r) = divmod(17, 5);
+    const (_, rem) = divmod(9, 4);
+    printf("17 = 5 * %d + %d; 9 %% 4 = %d\n", q, r, rem);
+    q += 1;
+    printf("%d\n", q);
+
+    // Tuples in fields and collections
+    var named = Named { entry: ("x", 7) };
+    printf("%s=%d\n", named.entry.0, named.entry.1);
+    var list: Vec<(str, int)> = Vec::new();
+    list.push(("a", 1));
+    list.push(("b", 2));
+    var total = 0;
+    for entry in list {
+        total += entry.1;
+    }
+    printf("total %d\n", total);
+
+    // Tuple patterns
+    printf("%s / %s / %s\n", classify(Dir::Up, 0), classify(Dir::Up, 3), classify(Dir::Down, 9));
+    printf("%s\n", describe(((0, 0), Shape::Circle(1))));
+    printf("%s\n", describe(((2, 3), Shape::Square(4))));
+    printf("%s\n", describe(((2, 3), Shape::Circle(4))));
+
+    // `!` fits any type, so a diverging arm doesn't change the match's type
+    var sign = match q {
+        4 => 1,
+        _ => fail("unexpected"),
+    };
+    printf("sign %d\n", sign);
+
+    // Generic methods, inferred or with explicit type arguments
+    var b = Box { value: 10 };
+    var p = b.pair("ten");
+    printf("%d %s\n", p.0, p.1);
+    var n = b.nest::<bool>(true);
+    printf("%d %d\n", n.value.0, n.value.1);
+    var c = Counter { n: 3 };
+    var tagged = c.tag(2.5);
+    printf("%d %.1f\n", tagged.0, tagged.1);
+    var cb = Counter::boxed("static");
+    printf("%s\n", cb.value);
+
+    divmod(1, 0);
+    printf("not reached\n");
+}

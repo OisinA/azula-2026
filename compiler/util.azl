@@ -177,7 +177,7 @@ struct Source {
     }
 
     // Print an error at `pos` and stop.
-    func fail(pos: int, message: str) {
+    func fail(pos: int, message: str): ! {
         var text = self.text.to_str();
         if self.line_starts.len == 0 {
             printf("error: %s\n", message);
@@ -243,7 +243,7 @@ func import_target(line: str): str {
     return substring(line, start, end - start);
 }
 
-func fatal(message: str) {
+func fatal(message: str): ! {
     printf("error: %s\n", message);
     exit(1);
 }

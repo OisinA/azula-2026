@@ -1,0 +1,10 @@
+// error: returns `!` but can reach the end of its body
+func stop(code: int): ! {
+    if code > 0 {
+        exit(code as i32);
+    }
+}
+
+func main() {
+    stop(1);
+}

@@ -354,15 +354,20 @@ impl<'a> Parser<'a> {
 
     /// A function in a type's body. It's a method, receiving `self`, if its body uses `self`.
     fn parse_method(&mut self) -> Option<Statement<'a>> {
-        match self.parse_function()? {
-            Statement::Function { name, mut args, returns, body, span } => {
-                if statement_mentions_self(&body) {
-                    args.insert(0, (AzulaType::Named("__self".to_string()), "self"));
+        fn add_self<'a>(func: Statement<'a>) -> Statement<'a> {
+            match func {
+                Statement::Function { name, mut args, returns, body, span } => {
+                    if statement_mentions_self(&body) {
+                        args.insert(0, (AzulaType::Named("__self".to_string()), "self"));
+                    }
+                    Statement::Function { name, args, returns, body, span }
                 }
-                Some(Statement::Function { name, args, returns, body, span })
+                // A generic method: `func map<U>(...)`
+                Statement::Generic(params, inner) => Statement::Generic(params, Rc::new(add_self(inner.as_ref().clone()))),
+                other => other,
             }
-            other => Some(other),
         }
+        Some(add_self(self.parse_function()?))
     }
 
     /// Record the methods declared in the body of type `name` as an impl block.
@@ -601,6 +606,53 @@ impl<'a> Parser<'a> {
     fn parse_assign(&mut self, mutable: bool) -> Option<Statement<'a>> {
         // var
         let start_token = self.lexer.next().unwrap();
+
+        // `var (a, b) = tuple;`
+        if self.lexer.peek().map(|t| t.kind == TokenKind::BracketOpen).unwrap_or(false) {
+            self.lexer.next();
+            let mut names = vec![];
+            loop {
+                match self.lexer.next() {
+                    Some(Token { kind: TokenKind::Identifier(name), .. }) => names.push(name.to_string()),
+                    Some(t) => {
+                        self.errors.push(AzulaError::new(
+                            ErrorType::Custom("expected a name to bind".to_string()),
+                            t.span.start,
+                            t.span.end,
+                        ));
+                        return None;
+                    }
+                    None => return None,
+                }
+                match self.lexer.next().map(|t| t.kind) {
+                    Some(TokenKind::Comma) => continue,
+                    Some(TokenKind::BracketClose) => break,
+                    _ => {
+                        self.errors.push(AzulaError::new(
+                            ErrorType::Custom("expected `,` or `)`".to_string()),
+                            start_token.span.start,
+                            start_token.span.end,
+                        ));
+                        return None;
+                    }
+                }
+            }
+            if !self.expect_peek(TokenKind::Assign) {
+                return None;
+            }
+            self.lexer.next();
+            let expr = self.parse_expression(LOWEST, true)?;
+            if !self.expect_peek(TokenKind::SemiColon) {
+                return None;
+            }
+            let end_token = self.lexer.next().unwrap();
+            return Some(Statement::Destructure(
+                mutable,
+                names,
+                expr,
+                Span { start: start_token.span.start, end: end_token.span.end },
+            ));
+        }
 
         let tok = self.lexer.next();
         let ident = match tok {
@@ -949,6 +1001,25 @@ impl<'a> Parser<'a> {
                 return AzulaType::Pointer(Rc::new(self.parse_type()));
             }
 
+            if let TokenKind::Bang = tok.kind {
+                return AzulaType::Never;
+            }
+
+            // `(A, B)` is a tuple; `(A)` is just A
+            if let TokenKind::BracketOpen = tok.kind {
+                let mut items = vec![self.parse_type()];
+                while self.lexer.peek().map(|t| t.kind == TokenKind::Comma).unwrap_or(false) {
+                    self.lexer.next();
+                    items.push(self.parse_type());
+                }
+                self.expect_peek(TokenKind::BracketClose);
+                self.lexer.next();
+                if items.len() == 1 {
+                    return items.pop().unwrap();
+                }
+                return AzulaType::Tuple(items);
+            }
+
             if let TokenKind::SquareOpen = tok.kind {
                 let internal_type = self.parse_type();
                 let mut size = None;
@@ -1205,9 +1276,9 @@ impl<'a> Parser<'a> {
                         self.lexer.next();
                         let second_number = self.parse_expression(CALL, false).unwrap();
                         match second_number.expression {
-                            Expression::Integer(y) => Some(ExpressionNode {
+                            Expression::Integer(_) => Some(ExpressionNode {
                                 expression: Expression::Float(
-                                    format!("{}.{}", i, y).parse().unwrap(),
+                                    self.source[tok.span.start..second_number.span.end].replace('_', "").parse().unwrap(),
                                 ),
                                 typed: AzulaType::Float,
                                 span: Span {
@@ -1326,11 +1397,27 @@ impl<'a> Parser<'a> {
             TokenKind::BracketOpen => {
                 let expr = self.parse_expression(LOWEST, true)?;
 
-                self.expect_peek(TokenKind::BracketClose);
+                // `(a, b, ...)` is a tuple
+                if self.lexer.peek().map(|t| t.kind == TokenKind::Comma).unwrap_or(false) {
+                    let mut items = vec![expr];
+                    while self.lexer.peek().map(|t| t.kind == TokenKind::Comma).unwrap_or(false) {
+                        self.lexer.next();
+                        items.push(self.parse_expression(LOWEST, true)?);
+                    }
+                    self.expect_peek(TokenKind::BracketClose);
+                    let end = self.lexer.next()?.span.end;
+                    Some(ExpressionNode {
+                        expression: Expression::Tuple(items),
+                        typed: AzulaType::Infer,
+                        span: Span { start: tok.span.start, end },
+                    })
+                } else {
+                    self.expect_peek(TokenKind::BracketClose);
 
-                self.lexer.next();
+                    self.lexer.next();
 
-                Some(expr)
+                    Some(expr)
+                }
             }
             TokenKind::Bang => {
                 let expr = self.parse_expression(PREFIX, allow_struct_init)?;
@@ -1835,75 +1922,7 @@ impl<'a> Parser<'a> {
                 return None;
             }
 
-            // parse pattern: `_`, integer literal, char literal, or `IDENT::IDENT`
-            let pat_tok = self.lexer.next().unwrap();
-            let pattern = match &pat_tok.kind {
-                TokenKind::Identifier(name) if *name == "_" => MatchPattern::Wildcard,
-                TokenKind::Integer(n) => MatchPattern::Integer(*n),
-                TokenKind::Minus => match self.lexer.next().map(|t| t.kind) {
-                    Some(TokenKind::Integer(n)) => MatchPattern::Integer(-n),
-                    _ => {
-                        self.errors.push(AzulaError::new(
-                            ErrorType::ExpectedExpression("integer".to_string()),
-                            pat_tok.span.start,
-                            pat_tok.span.end,
-                        ));
-                        return None;
-                    }
-                },
-                TokenKind::Char(s) => {
-                    let ascii = if s.starts_with('\\') {
-                        match s.chars().nth(1) {
-                            Some('n') => 10,
-                            Some('t') => 9,
-                            Some('r') => 13,
-                            Some('0') => 0,
-                            Some('\\') => 92,
-                            Some('\'') => 39,
-                            _ => 0,
-                        }
-                    } else {
-                        s.chars().next().map(|c| c as i64).unwrap_or(0)
-                    };
-                    MatchPattern::Integer(ascii)
-                }
-                TokenKind::Identifier(enum_name) => {
-                    // expect ::
-                    if !self.expect_peek(TokenKind::NamespaceAccess) {
-                        return None;
-                    }
-                    self.lexer.next(); // consume ::
-                    let variant_tok = self.lexer.next().unwrap();
-                    match variant_tok.kind {
-                        TokenKind::Identifier(variant_name) => {
-                            if self.lexer.peek().map(|t| t.kind == TokenKind::BracketOpen).unwrap_or(false) {
-                                MatchPattern::Destructure(enum_name, variant_name, self.parse_pattern_bindings()?)
-                            } else {
-                                MatchPattern::Variant(enum_name, variant_name)
-                            }
-                        }
-                        _ => {
-                            self.errors.push(AzulaError::new(
-                                ErrorType::ExpectedToken(
-                                    "Identifier".to_string(),
-                                    Some(format!("{:?}", variant_tok.kind)),
-                                ),
-                                variant_tok.span.start,
-                                variant_tok.span.end,
-                            ));
-                            return None;
-                        }
-                    }
-                }
-                _ => {
-                    self.errors.push(AzulaError::new(
-                        ErrorType::ExpectedExpression(format!("{:?}", pat_tok.kind)),
-                        pat_tok.span.start,
-                        pat_tok.span.end,
-                    ));
-                    return None;
-                }
-            };
+            let pattern = self.parse_pattern(false)?;
 
             // expect =>
             if !self.expect_peek(TokenKind::FatArrow) {
@@ -1941,6 +1960,99 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse `(a, _, c)` after a variant name in a match pattern.
+    /// A match pattern: `_`, an integer or char literal, `Enum::Variant`,
+        /// `Enum::Variant(a, _)`, or a tuple of patterns `(p, q)` (in which a plain
+        /// name binds that element)
+    fn parse_pattern(&mut self, in_tuple: bool) -> Option<MatchPattern<'a>> {
+        let pat_tok = self.lexer.next()?;
+        let pattern = match &pat_tok.kind {
+            TokenKind::Identifier(name) if *name == "_" => MatchPattern::Wildcard,
+            // Inside a tuple pattern, a plain name binds the element
+            TokenKind::Identifier(name)
+                if in_tuple && !self.lexer.peek().map(|t| t.kind == TokenKind::NamespaceAccess).unwrap_or(false) =>
+            {
+                MatchPattern::Binding(name)
+            }
+            TokenKind::BracketOpen => {
+                let mut items = vec![self.parse_pattern(true)?];
+                while self.lexer.peek().map(|t| t.kind == TokenKind::Comma).unwrap_or(false) {
+                    self.lexer.next();
+                    items.push(self.parse_pattern(true)?);
+                }
+                if !self.expect_peek(TokenKind::BracketClose) {
+                    return None;
+                }
+                self.lexer.next();
+                MatchPattern::Tuple(items)
+            }
+            TokenKind::Integer(n) => MatchPattern::Integer(*n),
+            TokenKind::Minus => match self.lexer.next().map(|t| t.kind) {
+                Some(TokenKind::Integer(n)) => MatchPattern::Integer(-n),
+                _ => {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::ExpectedExpression("integer".to_string()),
+                        pat_tok.span.start,
+                        pat_tok.span.end,
+                    ));
+                    return None;
+                }
+            },
+            TokenKind::Char(s) => {
+                let ascii = if s.starts_with('\\') {
+                    match s.chars().nth(1) {
+                        Some('n') => 10,
+                        Some('t') => 9,
+                        Some('r') => 13,
+                        Some('0') => 0,
+                        Some('\\') => 92,
+                        Some('\'') => 39,
+                        _ => 0,
+                    }
+                } else {
+                    s.chars().next().map(|c| c as i64).unwrap_or(0)
+                };
+                MatchPattern::Integer(ascii)
+            }
+            TokenKind::Identifier(enum_name) => {
+                // expect ::
+                if !self.expect_peek(TokenKind::NamespaceAccess) {
+                    return None;
+                }
+                self.lexer.next(); // consume ::
+                let variant_tok = self.lexer.next().unwrap();
+                match variant_tok.kind {
+                    TokenKind::Identifier(variant_name) => {
+                        if self.lexer.peek().map(|t| t.kind == TokenKind::BracketOpen).unwrap_or(false) {
+                            MatchPattern::Destructure(enum_name, variant_name, self.parse_pattern_bindings()?)
+                        } else {
+                            MatchPattern::Variant(enum_name, variant_name)
+                        }
+                    }
+                    _ => {
+                        self.errors.push(AzulaError::new(
+                            ErrorType::ExpectedToken(
+                                "Identifier".to_string(),
+                                Some(format!("{:?}", variant_tok.kind)),
+                            ),
+                            variant_tok.span.start,
+                            variant_tok.span.end,
+                        ));
+                        return None;
+                    }
+                }
+            }
+            _ => {
+                self.errors.push(AzulaError::new(
+                    ErrorType::ExpectedExpression(format!("{:?}", pat_tok.kind)),
+                    pat_tok.span.start,
+                    pat_tok.span.end,
+                ));
+                return None;
+            }
+        };
+            Some(pattern)
+        }
+
     fn parse_pattern_bindings(&mut self) -> Option<Vec<Option<&'a str>>> {
         self.lexer.next(); // consume (
         let mut bindings = vec![];
@@ -1989,10 +2101,32 @@ impl<'a> Parser<'a> {
 
     fn parse_struct_access(&mut self, left: ExpressionNode<'a>) -> Option<ExpressionNode<'a>> {
         self.lexer.next();
-        let index = match self.parse_expression(ACCESS, false) {
+        // `tuple.0`
+        if let Some(Token { kind: TokenKind::Integer(i), span }) = self.lexer.peek().cloned() {
+            self.lexer.next();
+            let field = ExpressionNode { expression: Expression::Identifier(i.to_string()), typed: AzulaType::Infer, span: Span { start: span.start, end: span.end } };
+            return Some(ExpressionNode {
+                expression: Expression::StructAccess(Rc::new(left.clone()), Rc::new(field)),
+                typed: AzulaType::Infer,
+                span: Span { start: left.span.start, end: span.end },
+            });
+        }
+        let mut index = match self.parse_expression(ACCESS, false) {
             Some(expr) => expr,
             None => return None,
         };
+
+        // A generic method with type arguments: `value.method::<T>(...)`
+        if let Expression::Identifier(name) = &index.expression {
+            let mut look = self.lexer.clone();
+            let is_turbofish = look.next().map(|t| t.kind == TokenKind::NamespaceAccess).unwrap_or(false)
+                && look.peek().map(|t| t.kind == TokenKind::Less).unwrap_or(false);
+            if is_turbofish {
+                self.lexer.next(); // consume ::
+                let args = self.parse_type_args();
+                index = ExpressionNode { expression: Expression::Turbofish(name.clone(), args), ..index };
+            }
+        }
 
         Some(ExpressionNode {
             expression: Expression::StructAccess(Rc::new(left.clone()), Rc::new(index.clone())),
@@ -2163,6 +2297,7 @@ fn statement_mentions_self(stmt: &Statement) -> bool {
                 || body.iter().any(statement_mentions_self)
         }
         Statement::CompoundAssign(target, _, value, _) => expression_mentions_self(target) || expression_mentions_self(value),
+        Statement::Destructure(_, _, value, _) => expression_mentions_self(value),
         _ => false,
     }
 }
@@ -2180,7 +2315,7 @@ fn expression_mentions_self(expr: &ExpressionNode) -> bool {
         | Expression::Deref(x)
         | Expression::Alloc(x) => e(x),
         Expression::Cast(x, _) => e(x),
-        Expression::Array(items) | Expression::Interpolation(items) => items.iter().any(expression_mentions_self),
+        Expression::Array(items) | Expression::Interpolation(items) | Expression::Tuple(items) => items.iter().any(expression_mentions_self),
         Expression::ArrayAccess(a, i) => e(a) || e(i),
         Expression::StructInitialisation(_, fields) => fields.iter().any(|(_, v)| expression_mentions_self(v)),
         // Only the object of a field access or path can be `self`
@@ -3381,6 +3516,53 @@ mod tests {
                 span: Span { start: 1, end: 7 }
             }))
         );
+    }
+
+    #[test]
+    fn test_float_leading_zero_fraction() {
+        let input = "1.05";
+        let lexer: Lexer = input.into();
+        let mut parser = Parser::new(input, lexer);
+
+        let expression = parser.parse_expression(LOWEST, true).unwrap();
+        assert!(parser.errors.is_empty());
+        assert_eq!(expression.expression, Expression::Float(1.05));
+    }
+
+    #[test]
+    fn test_tuple_literal_and_access() {
+        let input = "(1, x).1";
+        let lexer: Lexer = input.into();
+        let mut parser = Parser::new(input, lexer);
+
+        let expression = parser.parse_expression(LOWEST, true).unwrap();
+        assert!(parser.errors.is_empty());
+        match expression.expression {
+            Expression::StructAccess(tuple, field) => {
+                assert!(matches!(&tuple.expression, Expression::Tuple(items) if items.len() == 2));
+                assert_eq!(field.expression, Expression::Identifier("1".to_string()));
+            }
+            other => panic!("expected a field access, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_tuple_and_never_types() {
+        let input = "func f(p: (int, &str)): ! { }";
+        let lexer: Lexer = input.into();
+        let mut parser = Parser::new(input, lexer);
+
+        match parser.parse_statement() {
+            Some(Statement::Function { args, returns, .. }) => {
+                assert_eq!(
+                    args[0].0,
+                    AzulaType::Tuple(vec![AzulaType::Int, AzulaType::Pointer(Rc::new(AzulaType::Str))])
+                );
+                assert_eq!(returns, AzulaType::Never);
+            }
+            other => panic!("expected a function, got {:?}", other),
+        }
+        assert!(parser.errors.is_empty());
     }
 
     #[test]

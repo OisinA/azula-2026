@@ -159,6 +159,14 @@ Other things to know:
   compares the pointer), `+` and `+=` concatenate, and `"x = ${expr}"` interpolates
   strings, integers, floats, bools and any value with a `to_str()` method (`\$` is a
   literal `$`).
+- Tuples: `(int, str)` types, `(1, "a")` values, `t.0` elements and `var (a, _) = t;`
+  destructuring. `match` can take tuple patterns such as `(Dir::Up, 0)` or `(x, _)`,
+  whose names bind elements; the arms must cover every case.
+- `!` is the type of functions that never return, such as `exit`. A call to one
+  counts as leaving the function, and a `!` value fits wherever any type is expected
+  (for example in a `match` arm).
+- Methods can have their own type parameters (`func pair<U>(other: U): (T, U)`), inferred
+  from the arguments or given as `value.pair::<str>(...)`.
 - `match` works on enums and integers (including character literals); arms can be
   blocks, and a `match` can be used as a statement or an expression.
 - Methods are declared in a type's body and receive `self` implicitly (a reference for

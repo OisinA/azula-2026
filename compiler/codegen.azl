@@ -43,6 +43,7 @@ struct Gen {
             Type::Bool => "i1",
             Type::Str => "ptr",
             Type::Void => "void",
+            Type::Never => "void",
             Type::Ptr(_) => "ptr",
             Type::Array(_, _) => "ptr",
             Type::Named(name) => {
@@ -483,6 +484,9 @@ struct Gen {
             },
             // Rewritten into a loop by the checker
             StmtKind::ForIn(_, _, _, _, _) => {},
+            // Rewritten into a Group by the checker
+            StmtKind::Destructure(_, _, _) => {},
+            StmtKind::Group(stmts) => { self.block(stmts); },
             StmtKind::Break => { self.branch(self.break_labels.peek()); },
             StmtKind::Continue => { self.branch(self.continue_labels.peek()); },
         }
@@ -868,6 +872,12 @@ struct Gen {
             self.emit(text);
             return "";
         }
+        if is_never(sig.ret) {
+            // The function doesn't come back
+            self.emit(text);
+            self.terminate("unreachable");
+            return "";
+        }
         return self.value(text);
     }
 
@@ -934,13 +944,46 @@ struct Gen {
                 Pattern::Wildcard => true,
                 _ => false,
             };
+            var is_tuple = match arm.pattern {
+                Pattern::Tuple(_) => true,
+                _ => false,
+            };
             if is_wildcard {
+                self.branch(arm_label);
+            } else if is_tuple {
+                // Test the tuple's elements in turn
+                var k = 0;
+                while k < arm.tests.len {
+                    var test = arm.tests.get(k);
+                    var element = self.value(concat3("extractvalue ", self.llvm_type(scrutinee.typ), concat3(" ", v, path_text(test.path))));
+                    var test_type = test.typ;
+                    if test.boxed {
+                        element = self.load(Type::Int, element);
+                        test_type = Type::Int;
+                    }
+                    var cond = self.value(concat3("icmp eq ", self.llvm_type(test_type), concat3(" ", element, concat(", ", self.int_constant(test.value, test_type)))));
+                    var pass = self.new_label("match.test");
+                    self.cond_branch(cond, pass, next_label);
+                    self.start_block(pass);
+                    k += 1;
+                }
                 self.branch(arm_label);
             } else {
                 var cond = self.value(concat3("icmp eq ", self.llvm_type(tag_type), concat3(" ", tag, concat(", ", self.int_constant(arm.tag, tag_type)))));
                 self.cond_branch(cond, arm_label, next_label);
             }
             self.start_block(arm_label);
+
+            // Variables bound to tuple elements
+            var b = 0;
+            while b < arm.binds.len {
+                var bind = arm.binds.get(b);
+                var element = self.value(concat3("extractvalue ", self.llvm_type(scrutinee.typ), concat3(" ", v, path_text(bind.path))));
+                var bind_slot = quote_local(bind.ir);
+                self.alloca(bind_slot, bind.typ);
+                self.store(bind.typ, element, bind_slot);
+                b += 1;
+            }
 
             // Load the payload fields the pattern binds
             var j = 0;
@@ -980,6 +1023,18 @@ struct Gen {
         }
         return "";
     }
+}
+
+// `, 0, 1` for the element at path [0, 1] (for extractvalue)
+func path_text(path: Vec<int>): str {
+    var sb = StringBuilder::new();
+    var i = 0;
+    while i < path.len {
+        sb.append(", ");
+        sb.append_int(path.get(i));
+        i += 1;
+    }
+    return sb.to_str();
 }
 
 func generate(c: &Checker, module_name: str): str {

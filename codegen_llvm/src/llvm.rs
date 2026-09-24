@@ -1324,7 +1324,10 @@ impl<'a> LLVMCodegen<'a> {
                 }
             }
             AzulaType::UnknownType(_) => todo!(),
-            AzulaType::Generic(..) => unreachable!("generic types are instantiated by the typechecker"),
+            AzulaType::Generic(..) | AzulaType::Tuple(..) => {
+                unreachable!("generic and tuple types are instantiated by the typechecker")
+            }
+            AzulaType::Never => unreachable!("values of type ! don't exist"),
             AzulaType::Array(_, _) => {
                 // Arrays are heap-allocated; represented as opaque pointers in LLVM 18
                 self.context
@@ -1386,7 +1389,7 @@ impl<'a> LLVMCodegen<'a> {
         varargs: bool,
     ) -> FunctionType<'a> {
         match t {
-            AzulaType::Void => self.context.void_type().fn_type(args, varargs),
+            AzulaType::Void | AzulaType::Never => self.context.void_type().fn_type(args, varargs),
             _ => self.azula_type_to_llvm_basic_type(t).fn_type(args, varargs),
         }
     }

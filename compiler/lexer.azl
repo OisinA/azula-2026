@@ -227,8 +227,9 @@ func lex_range(src: &Source, start_at: int, stop: int): Vec<Token> {
                     i += 1;
                 }
                 tok.value = value;
-                // A float literal like 1.5
-                if text[i] == '.' && is_digit(text[i + 1] as int) {
+                // A float literal like 1.5 (but not `t.0.1`, which accesses tuple elements)
+                var after_dot = tokens.len > 0 && tokens.get(tokens.len - 1).kind == Tok::Dot;
+                if text[i] == '.' && is_digit(text[i + 1] as int) && !after_dot {
                     i += 1;
                     while is_digit(text[i] as int) {
                         i += 1;

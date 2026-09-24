@@ -327,6 +327,20 @@ struct Parser {
         var tok = self.advance();
         match tok.kind {
             Tok::Amp => { return Type::Ptr(self.parse_type()); },
+            Tok::Bang => { return Type::Never; },
+            // `(A, B)` is a tuple; `(A)` is just A
+            Tok::LParen => {
+                var items: Vec<Type> = Vec::new();
+                items.push(self.parse_type());
+                while self.accept(Tok::Comma) {
+                    items.push(self.parse_type());
+                }
+                self.expect(Tok::RParen, "`)`");
+                if items.len == 1 {
+                    return items.get(0);
+                }
+                return Type::Tuple(items);
+            },
             Tok::AmpAmp => { return Type::Ptr(Type::Ptr(self.parse_type())); },
             Tok::LBracket => {
                 var inner = self.parse_type();
@@ -483,6 +497,20 @@ struct Parser {
 
     func parse_var_decl(mutable: bool): &Stmt {
         var pos = self.advance().pos;
+        // `var (a, b) = tuple;`
+        if self.accept(Tok::LParen) {
+            var names: Vec<str> = Vec::new();
+            while !self.accept(Tok::RParen) {
+                names.push(self.expect_ident("name to bind"));
+                if !self.at(Tok::RParen) {
+                    self.expect(Tok::Comma, "`,` or `)`");
+                }
+            }
+            self.expect(Tok::Assign, "`=`");
+            var tuple = self.parse_expr(PREC_LOWEST, true);
+            self.expect(Tok::Semi, "`;`");
+            return new_stmt(StmtKind::Destructure(names, mutable, tuple), pos);
+        }
         var name = self.expect_ident("variable name");
         var typ = Type::Infer;
         if self.accept(Tok::Colon) {
@@ -574,6 +602,16 @@ struct Parser {
             Tok::KwNull => { return new_expr(ExprKind::Null, pos); },
             Tok::LParen => {
                 var inner = self.parse_expr(PREC_LOWEST, true);
+                // `(a, b, ...)` is a tuple
+                if self.at(Tok::Comma) {
+                    var items: Vec<&Expr> = Vec::new();
+                    items.push(inner);
+                    while self.accept(Tok::Comma) {
+                        items.push(self.parse_expr(PREC_LOWEST, true));
+                    }
+                    self.expect(Tok::RParen, "`)`");
+                    return new_expr(ExprKind::Tuple(items), pos);
+                }
                 self.expect(Tok::RParen, "`)`");
                 return inner;
             },
@@ -657,7 +695,16 @@ struct Parser {
         match tok.kind {
             Tok::KwAs => { return new_expr(ExprKind::Cast(left, self.parse_type()), left.pos); },
             Tok::Dot => {
+                // `tuple.0`
+                if self.at(Tok::Int) {
+                    return new_expr(ExprKind::Field(left, int_to_str(self.advance().value)), left.pos);
+                }
                 var name = self.expect_ident("field or method name");
+                // A generic method with type arguments: `value.method::<T>(...)`
+                if self.at(Tok::ColonColon) && self.peek_at(1).kind == Tok::Lt {
+                    self.advance();
+                    return new_expr(ExprKind::MethodTurbofish(left, name, self.parse_type_args()), left.pos);
+                }
                 return new_expr(ExprKind::Field(left, name), left.pos);
             },
             Tok::ColonColon => {
@@ -725,7 +772,7 @@ struct Parser {
                 continue;
             }
             var arm_pos = self.peek().pos;
-            var pattern = self.parse_pattern();
+            var pattern = self.parse_pattern(false);
             self.expect(Tok::FatArrow, "`=>`");
             var body_pos = self.peek().pos;
             var body = new_expr(ExprKind::Null, body_pos);
@@ -741,20 +788,36 @@ struct Parser {
                 enum_name: "",
                 tag: 0,
                 bindings: Vec::new(),
+                tests: Vec::new(),
+                binds: Vec::new(),
             });
         }
         return new_expr(ExprKind::Match(scrutinee, arms), pos);
     }
 
-    func parse_pattern(): Pattern {
+    // A match pattern. Inside a tuple pattern (`in_tuple`), a plain name binds
+    // the element.
+    func parse_pattern(in_tuple: bool): Pattern {
         var tok = self.advance();
         match tok.kind {
+            Tok::LParen => {
+                var items: Vec<Pattern> = Vec::new();
+                items.push(self.parse_pattern(true));
+                while self.accept(Tok::Comma) {
+                    items.push(self.parse_pattern(true));
+                }
+                self.expect(Tok::RParen, "`)`");
+                return Pattern::Tuple(items);
+            },
             Tok::Int => { return Pattern::IntValue(tok.value); },
             Tok::Char => { return Pattern::IntValue(char_value(tok.text)); },
             Tok::Minus => { return Pattern::IntValue(0 - self.expect(Tok::Int, "integer").value); },
             Tok::Ident => {
                 if tok.text == "_" {
                     return Pattern::Wildcard;
+                }
+                if in_tuple && !self.at(Tok::ColonColon) {
+                    return Pattern::Binding(tok.text);
                 }
                 self.expect(Tok::ColonColon, "`::`");
                 var variant = self.expect_ident("variant name");
@@ -1011,6 +1074,7 @@ func stmt_mentions_self(s: &Stmt): bool {
         StmtKind::Loop(cond, body) => opt_mentions_self(cond) || stmts_mention_self(body),
         StmtKind::ForIn(_, iterable, end, _, body) => expr_mentions_self(iterable) || opt_mentions_self(end) || stmts_mention_self(body),
         StmtKind::CompoundAssign(_, target, value) => expr_mentions_self(target) || expr_mentions_self(value),
+        StmtKind::Destructure(_, _, value) => expr_mentions_self(value),
         _ => false,
     };
 }
@@ -1054,16 +1118,9 @@ func expr_mentions_self(e: &Expr): bool {
             false
         },
         ExprKind::Block(stmts, value) => stmts_mention_self(stmts) || opt_mentions_self(value),
-        ExprKind::Interpolate(parts) => {
-            var i = 0;
-            while i < parts.len {
-                if expr_mentions_self(parts.get(i)) {
-                    return true;
-                }
-                i += 1;
-            }
-            false
-        },
+        ExprKind::Interpolate(parts) => exprs_mention_self(parts),
+        ExprKind::Tuple(items) => exprs_mention_self(items),
+        ExprKind::MethodTurbofish(x, _, _) => expr_mentions_self(x),
         _ => false,
     };
 }

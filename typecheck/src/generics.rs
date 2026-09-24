@@ -6,6 +6,9 @@ use std::{collections::HashMap, rc::Rc};
 use azula_ast::prelude::*;
 use azula_type::prelude::AzulaType;
 
+/// The generic name tuple instances are recorded under
+pub const TUPLE: &str = "()";
+
 pub type Substitution<'a> = HashMap<String, AzulaType<'a>>;
 
 pub fn subst_type<'a>(typ: &AzulaType<'a>, map: &Substitution<'a>) -> AzulaType<'a> {
@@ -16,6 +19,7 @@ pub fn subst_type<'a>(typ: &AzulaType<'a>, map: &Substitution<'a>) -> AzulaType<
         AzulaType::Generic(name, args) => {
             AzulaType::Generic(name.clone(), args.iter().map(|a| subst_type(a, map)).collect())
         }
+        AzulaType::Tuple(items) => AzulaType::Tuple(items.iter().map(|a| subst_type(a, map)).collect()),
         _ => typ.clone(),
     }
 }
@@ -79,6 +83,17 @@ pub fn subst_stmt<'a>(stmt: &Statement<'a>, map: &Substitution<'a>) -> Statement
             subst_body(body, map),
             span.clone(),
         ),
+        Statement::Destructure(mutable, names, value, span) => {
+            Statement::Destructure(*mutable, names.clone(), subst_expr(value, map), span.clone())
+        }
+        Statement::Generic(params, inner) => {
+            // The definition's own parameters shadow the outer ones
+            let mut inner_map = map.clone();
+            for p in params {
+                inner_map.remove(*p);
+            }
+            Statement::Generic(params.clone(), Rc::new(subst_stmt(inner, &inner_map)))
+        }
         Statement::CompoundAssign(target, op, value, span) => {
             Statement::CompoundAssign(subst_expr(target, map), op.clone(), subst_expr(value, map), span.clone())
         }
@@ -101,6 +116,7 @@ pub fn subst_expr<'a>(expr: &ExpressionNode<'a>, map: &Substitution<'a>) -> Expr
         Expression::Pointer(e) => Expression::Pointer(sub(e)),
         Expression::Deref(e) => Expression::Deref(sub(e)),
         Expression::Array(items) => Expression::Array(items.iter().map(|a| subst_expr(a, map)).collect()),
+        Expression::Tuple(items) => Expression::Tuple(items.iter().map(|a| subst_expr(a, map)).collect()),
         Expression::Interpolation(parts) => {
             Expression::Interpolation(parts.iter().map(|a| subst_expr(a, map)).collect())
         }
@@ -148,6 +164,15 @@ pub fn unify<'a>(
         }
         (AzulaType::Pointer(p), AzulaType::Pointer(c)) => unify(p, c, params, instances, bindings),
         (AzulaType::Array(p, _), AzulaType::Array(c, _)) => unify(p, c, params, instances, bindings),
+        (AzulaType::Tuple(pargs), AzulaType::Named(instance)) => {
+            if let Some((generic, cargs)) = instances.get(instance) {
+                if generic == TUPLE && pargs.len() == cargs.len() {
+                    for (p, c) in pargs.iter().zip(cargs) {
+                        unify(p, c, params, instances, bindings);
+                    }
+                }
+            }
+        }
         (AzulaType::Generic(name, pargs), AzulaType::Named(instance)) => {
             if let Some((generic, cargs)) = instances.get(instance) {
                 if generic == name {

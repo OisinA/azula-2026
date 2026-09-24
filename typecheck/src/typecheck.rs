@@ -8,7 +8,7 @@ use azula_ast::prelude::*;
 use azula_error::prelude::*;
 use azula_type::prelude::AzulaType;
 
-use crate::generics::{subst_stmt, subst_type, unify, Substitution};
+use crate::generics::{subst_stmt, subst_type, unify, Substitution, TUPLE};
 
 pub struct Typechecker<'a> {
     ast: Statement<'a>,
@@ -27,6 +27,9 @@ pub struct Typechecker<'a> {
     generic_enums: HashMap<String, (Vec<String>, Vec<&'a str>, Vec<Vec<AzulaType<'a>>>)>,
     generic_impls: HashMap<String, Vec<(Vec<String>, Statement<'a>)>>,
     generic_funcs: HashMap<String, (Vec<String>, Statement<'a>)>,
+    /// Generic methods, keyed by the (generic) type they belong to: the type's
+    /// parameters (as named in the impl), the method's parameters, and the method
+    generic_methods: HashMap<String, Vec<(Vec<String>, Vec<String>, Statement<'a>)>>,
     /// Instantiated generic types: instance name (`Vec<int>`) -> (generic, arguments)
     instances: HashMap<String, (String, Vec<AzulaType<'a>>)>,
     /// Instantiated generic functions and methods (by mangled name)
@@ -40,6 +43,8 @@ pub struct Typechecker<'a> {
     /// (used to infer generic arguments, e.g. `var v: Vec<int> = Vec::new()`)
     expected: Option<AzulaType<'a>>,
     current_return: AzulaType<'a>,
+    /// For naming temporaries
+    temp_counter: usize,
 
     pub errors: Vec<AzulaError>,
 }
@@ -110,12 +115,14 @@ impl<'a> Typechecker<'a> {
             generic_enums: HashMap::new(),
             generic_impls: HashMap::new(),
             generic_funcs: HashMap::new(),
+            generic_methods: HashMap::new(),
             instances: HashMap::new(),
             instantiated_functions: HashSet::new(),
             pending: vec![],
             output: vec![],
             expected: None,
             current_return: AzulaType::Void,
+            temp_counter: 0,
             errors: vec![],
         }
     }
@@ -198,20 +205,34 @@ impl<'a> Typechecker<'a> {
                     );
                     root.push(Statement::ExternFunction { name, varargs, args, returns, span });
                 }
-                Statement::Impl { ref struct_impl, ref funcs, .. } => {
+                Statement::Impl { struct_impl, trait_impl, funcs, span } => {
                     let struct_name = self.resolve_type(struct_impl.clone()).to_string();
                     let mut namespace = self.namespaces.remove(&struct_name).unwrap_or(Namespace {
                         name: struct_name.clone(),
                         funcs: HashMap::new(),
                     });
+                    let mut plain = vec![];
                     for func in funcs {
-                        if let Statement::Function { name, args, returns, .. } = func {
-                            let def = self.signature(name, args, returns);
-                            namespace.funcs.insert(name, def);
+                        match &func {
+                            Statement::Function { name, args, returns, .. } => {
+                                let def = self.signature(name, args, returns);
+                                namespace.funcs.insert(name, def);
+                                plain.push(func);
+                            }
+                            // Generic methods are instantiated when called
+                            Statement::Generic(params, inner) => {
+                                let params = params.iter().map(|p| p.to_string()).collect();
+                                self.generic_methods.entry(struct_name.clone()).or_default().push((
+                                    vec![],
+                                    params,
+                                    inner.as_ref().clone(),
+                                ));
+                            }
+                            _ => plain.push(func),
                         }
                     }
                     self.namespaces.insert(struct_name, namespace);
-                    root.push(stmt);
+                    root.push(Statement::Impl { struct_impl, trait_impl, funcs: plain, span });
                 }
                 Statement::Assign(..) => match self.typecheck_global_assign(stmt) {
                     Ok(stmt) => root.push(stmt),
@@ -289,9 +310,17 @@ impl<'a> Typechecker<'a> {
             Statement::Impl { struct_impl, funcs, .. } => {
                 if let AzulaType::Generic(name, args) = struct_impl {
                     let impl_params: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-                    let entry = self.generic_impls.entry(name.clone()).or_default();
                     for func in funcs {
-                        entry.push((impl_params.clone(), func.clone()));
+                        if let Statement::Generic(params, inner) = func {
+                            let params = params.iter().map(|p| p.to_string()).collect();
+                            self.generic_methods.entry(name.clone()).or_default().push((
+                                impl_params.clone(),
+                                params,
+                                inner.as_ref().clone(),
+                            ));
+                        } else {
+                            self.generic_impls.entry(name.clone()).or_default().push((impl_params.clone(), func.clone()));
+                        }
                     }
                 }
             }
@@ -311,6 +340,108 @@ impl<'a> Typechecker<'a> {
 
     fn error(&mut self, message: String, span: &Span) {
         self.errors.push(AzulaError::new(ErrorType::Custom(message), span.start, span.end));
+    }
+
+    /// The struct standing for tuple type `(items)`, with fields named `0`, `1`, ...
+    fn instantiate_tuple(&mut self, items: Vec<AzulaType<'a>>) -> AzulaType<'a> {
+        let name = AzulaType::Tuple(items.clone()).mangle();
+        if !self.structs.contains_key(&name) {
+            let attributes: Vec<_> = items.iter().enumerate().map(|(i, t)| (t.clone(), leak(i.to_string()))).collect();
+            let struct_name = leak(name.clone());
+            self.structs.insert(name.clone(), StructDefinition { name: struct_name, attrs: attributes.clone() });
+            self.instances.insert(name.clone(), (TUPLE.to_string(), items));
+            self.output.push(Statement::Struct { name: struct_name, attributes, span: dummy_span() });
+        }
+        AzulaType::Named(name)
+    }
+
+    /// The element types of `typ`, if it is a tuple
+    fn tuple_items(&self, typ: &AzulaType<'a>) -> Option<Vec<AzulaType<'a>>> {
+        match typ {
+            AzulaType::Named(name) => match self.instances.get(name) {
+                Some((generic, items)) if generic == TUPLE => Some(items.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// `(a, b)` becomes a literal of the tuple's struct
+    fn typecheck_tuple(
+        &mut self,
+        items: Vec<ExpressionNode<'a>>,
+        span: Span,
+        env: &Environment<'a>,
+        expected: Option<AzulaType<'a>>,
+    ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
+        let expected_items = expected
+            .and_then(|t| self.tuple_items(&t))
+            .filter(|e| e.len() == items.len());
+        let mut checked = vec![];
+        let mut types = vec![];
+        for (i, item) in items.into_iter().enumerate() {
+            let (node, typ) = match &expected_items {
+                Some(e) => self.typecheck_expecting(item, env, &e[i])?,
+                None => self.typecheck_expression(item, env)?,
+            };
+            // Integer literals take the expected element type
+            let typ = match &expected_items {
+                Some(e) if is_integer_literal(&node) && is_integer_type(&e[i]) => e[i].clone(),
+                _ => typ,
+            };
+            let mut node = node;
+            node.typed = typ.clone();
+            types.push(typ);
+            checked.push((leak(i.to_string()), node));
+        }
+        let typ = self.instantiate_tuple(types);
+        let name = typ.to_string();
+        let struc = ExpressionNode { expression: Expression::Identifier(name), typed: typ.clone(), span: span.clone() };
+        Ok((
+            ExpressionNode { expression: Expression::StructInitialisation(Rc::new(struc), checked), typed: typ.clone(), span },
+            typ,
+        ))
+    }
+
+    /// `var (a, b) = value;` becomes `const $tupleN = value; var a = $tupleN.0; var b = $tupleN.1;`
+    fn typecheck_destructure(
+        &mut self,
+        stmt: Statement<'a>,
+        env: &mut Environment<'a>,
+    ) -> Result<(Statement<'a>, AzulaType<'a>), String> {
+        if let Statement::Destructure(mutable, names, value, span) = stmt {
+            let temp = format!("$tuple{}", self.temp_counter);
+            self.temp_counter += 1;
+            let value_span = value.span.clone();
+            let (first, _) = self.typecheck_statement(Statement::Assign(false, temp.clone(), None, value, span.clone()), env)?;
+            let typ = env.variable_definitions[&temp].typ.clone();
+            let items = match self.tuple_items(&typ) {
+                Some(items) => items,
+                None => {
+                    self.error(format!("Can't destructure a value of type {}; it isn't a tuple", typ.mangle()), &value_span);
+                    return Err("not a tuple".to_string());
+                }
+            };
+            if items.len() != names.len() {
+                self.error(format!("This tuple has {} elements, but {} names are given", items.len(), names.len()), &span);
+                return Err("wrong tuple arity".to_string());
+            }
+            let mut stmts = vec![first];
+            for (i, name) in names.into_iter().enumerate() {
+                if name == "_" {
+                    continue;
+                }
+                let node = |e| ExpressionNode { expression: e, typed: AzulaType::Infer, span: span.clone() };
+                let access = node(Expression::StructAccess(
+                    Rc::new(node(Expression::Identifier(temp.clone()))),
+                    Rc::new(node(Expression::Identifier(i.to_string()))),
+                ));
+                let (stmt, _) = self.typecheck_statement(Statement::Assign(mutable, name, None, access, span.clone()), env)?;
+                stmts.push(stmt);
+            }
+            return Ok((Statement::Group(stmts), AzulaType::Void));
+        }
+        unreachable!()
     }
 
     /// Instantiate the generic type `name<args>` (if not done already), returning the instance type.
@@ -520,6 +651,7 @@ impl<'a> Typechecker<'a> {
             Statement::For(..) => self.typecheck_for(stmt, env),
             Statement::ForIn(..) => self.typecheck_for_in(stmt, env),
             Statement::CompoundAssign(..) => self.typecheck_compound_assign(stmt, env),
+            Statement::Destructure(..) => self.typecheck_destructure(stmt, env),
             Statement::Break(span) => Ok((Statement::Break(span), AzulaType::Void)),
             Statement::Continue(span) => Ok((Statement::Continue(span), AzulaType::Void)),
             Statement::Reassign(..) => self.typecheck_reassign(stmt, env),
@@ -575,6 +707,10 @@ impl<'a> Typechecker<'a> {
             }
             if failed {
                 return Err(format!("errors in function {}", name));
+            }
+            if returns == AzulaType::Never && !always_returns(&statements) {
+                self.error(format!("Function {} returns `!` but can reach the end of its body", name), &span);
+                return Err("never function finishes".to_string());
             }
             if returns != AzulaType::Void && !always_returns(&statements) {
                 self.error(format!("Function {} might not return a value", name), &span);
@@ -819,6 +955,10 @@ impl<'a> Typechecker<'a> {
     ) -> Result<(Statement<'a>, AzulaType<'a>), String> {
         if let Statement::Return(value, span) = stmt {
             let expected = self.current_return.clone();
+            if expected == AzulaType::Never {
+                self.error("A function returning `!` can't return".to_string(), &span);
+                return Err("return from never function".to_string());
+            }
             let value = match value {
                 None => {
                     if expected != AzulaType::Void {
@@ -1116,6 +1256,7 @@ impl<'a> Typechecker<'a> {
         match expr.expression {
             Expression::Infix(..) => self.typecheck_infix_expression(expr, env),
             Expression::Interpolation(parts) => self.typecheck_interpolation(parts, expr.span, env),
+            Expression::Tuple(items) => self.typecheck_tuple(items, expr.span, env, expected),
             Expression::Integer(_) => {
                 expr.typed = AzulaType::Int;
                 Ok((expr.clone(), AzulaType::Int))
@@ -1569,6 +1710,124 @@ impl<'a> Typechecker<'a> {
         }
     }
 
+    /// Whether the pattern `rows` (each matching values of `types`) together
+    /// match every value
+    fn patterns_exhaustive(&self, rows: Vec<Vec<MatchPattern<'a>>>, types: &[AzulaType<'a>]) -> bool {
+        let is_wild = |p: &MatchPattern| matches!(p, MatchPattern::Wildcard | MatchPattern::Binding(_));
+        if types.is_empty() {
+            return !rows.is_empty();
+        }
+        let (first, rest) = (&types[0], &types[1..]);
+        if let Some(items) = self.tuple_items(first) {
+            // Expand the tuple's elements into columns
+            let expanded = rows
+                .into_iter()
+                .map(|row| {
+                    let mut new_row = match &row[0] {
+                        MatchPattern::Tuple(inner) => inner.clone(),
+                        _ => vec![MatchPattern::Wildcard; items.len()],
+                    };
+                    new_row.extend(row[1..].iter().cloned());
+                    new_row
+                })
+                .collect();
+            let mut new_types = items.clone();
+            new_types.extend(rest.iter().cloned());
+            return self.patterns_exhaustive(expanded, &new_types);
+        }
+        if let Some(variants) = self.enums.get(&first.to_string()) {
+            // Every variant must be matched by the rows that allow it
+            return variants.iter().all(|variant| {
+                let remaining = rows
+                    .iter()
+                    .filter(|row| match &row[0] {
+                        MatchPattern::Variant(_, v) | MatchPattern::Destructure(_, v, _) => v == variant,
+                        p => is_wild(p),
+                    })
+                    .map(|row| row[1..].to_vec())
+                    .collect();
+                self.patterns_exhaustive(remaining, rest)
+            });
+        }
+        // Integers and other values can only be covered by wildcards
+        let remaining = rows.iter().filter(|row| is_wild(&row[0])).map(|row| row[1..].to_vec()).collect();
+        self.patterns_exhaustive(remaining, rest)
+    }
+
+    /// Check a tuple pattern against the tuple's element `types`, binding its
+    /// names in `env`. Returns the pattern with enum names resolved, and whether
+    /// it matches every tuple.
+    fn check_tuple_pattern(
+        &mut self,
+        items: Vec<MatchPattern<'a>>,
+        types: Vec<AzulaType<'a>>,
+        env: &mut Environment<'a>,
+        span: &Span,
+    ) -> Result<(MatchPattern<'a>, bool), String> {
+        if items.len() != types.len() {
+            self.error(format!("This pattern has {} elements, but the tuple has {}", items.len(), types.len()), span);
+            return Err("wrong tuple pattern arity".to_string());
+        }
+        let mut irrefutable = true;
+        let mut resolved = vec![];
+        for (item, typ) in items.into_iter().zip(types) {
+            let item = match item {
+                MatchPattern::Wildcard => MatchPattern::Wildcard,
+                MatchPattern::Binding(name) => {
+                    env.add_variable(
+                        name.to_string(),
+                        VariableDefinition { name: name.to_string(), mutable: false, typ: typ.clone() },
+                    );
+                    MatchPattern::Binding(name)
+                }
+                MatchPattern::Integer(n) => {
+                    if !is_integer_type(&typ) {
+                        self.error(format!("An integer pattern can't match a value of type {}", typ.mangle()), span);
+                        return Err("bad pattern".to_string());
+                    }
+                    irrefutable = false;
+                    MatchPattern::Integer(n)
+                }
+                MatchPattern::Variant(pat_enum, variant) => {
+                    let name = typ.to_string();
+                    let generic = self.instances.get(&name).map(|(g, _)| g.clone());
+                    let is_enum = self.enums.contains_key(&name);
+                    if !is_enum || (pat_enum != name.as_str() && generic.as_deref() != Some(pat_enum)) {
+                        self.error(format!("The pattern {}::{} can't match a value of type {}", pat_enum, variant, typ.mangle()), span);
+                        return Err("bad pattern".to_string());
+                    }
+                    if !self.enums[&name].contains(&variant.to_string()) {
+                        self.errors.push(AzulaError::new(
+                            ErrorType::UnknownVariant(variant.to_string(), name.clone()),
+                            span.start,
+                            span.end,
+                        ));
+                        return Err("unknown variant".to_string());
+                    }
+                    irrefutable = false;
+                    MatchPattern::Variant(leak(name), variant)
+                }
+                MatchPattern::Destructure(..) => {
+                    self.error("Variant payloads can't be destructured inside a tuple pattern; match on the element instead".to_string(), span);
+                    return Err("bad pattern".to_string());
+                }
+                MatchPattern::Tuple(inner) => match self.tuple_items(&typ) {
+                    Some(inner_types) => {
+                        let (pattern, inner_irrefutable) = self.check_tuple_pattern(inner, inner_types, env, span)?;
+                        irrefutable &= inner_irrefutable;
+                        pattern
+                    }
+                    None => {
+                        self.error(format!("A tuple pattern can't match a value of type {}", typ.mangle()), span);
+                        return Err("bad pattern".to_string());
+                    }
+                },
+            };
+            resolved.push(item);
+        }
+        Ok((MatchPattern::Tuple(resolved), irrefutable))
+    }
+
     fn typecheck_match(
         &mut self,
         scrutinee: Rc<ExpressionNode<'a>>,
@@ -1585,8 +1844,11 @@ impl<'a> Typechecker<'a> {
         // Dispatch based on scrutinee type: enum match or integer match
         let is_integer_match = matches!(scrut_type, AzulaType::Int | AzulaType::SizedSignedInt(_) | AzulaType::SizedUnsignedInt(_));
 
+        let tuple_types = self.tuple_items(&scrut_type);
         let (enum_name, variants) = if is_integer_match {
             (String::new(), vec![])
+        } else if tuple_types.is_some() {
+            (scrut_type.to_string(), vec![])
         } else {
             let name = match &scrut_type {
                 AzulaType::Named(n) => n.clone(),
@@ -1619,10 +1881,20 @@ impl<'a> Typechecker<'a> {
         let mut new_arms = vec![];
 
         for (pattern, body) in arms {
+            if tuple_types.is_some() != matches!(pattern, MatchPattern::Tuple(_)) && pattern != MatchPattern::Wildcard {
+                let message = if tuple_types.is_some() {
+                    format!("Patterns matching the tuple {} must be tuples like (a, _)", scrut_type.mangle())
+                } else {
+                    format!("A tuple pattern can't match a value of type {}", scrut_type.mangle())
+                };
+                self.error(message, &body.span);
+                return Err("bad tuple pattern".to_string());
+            }
             match &pattern {
                 MatchPattern::Wildcard => {
                     has_wildcard = true;
                 }
+                MatchPattern::Tuple(_) | MatchPattern::Binding(_) => {}
                 MatchPattern::Integer(_) => {
                     if !is_integer_match {
                         self.errors.push(AzulaError::new(
@@ -1658,6 +1930,17 @@ impl<'a> Typechecker<'a> {
 
             // Bind the payload fields of a destructured variant
             let mut arm_env = env.clone();
+            let pattern = match (pattern, &tuple_types) {
+                (MatchPattern::Tuple(items), Some(types)) => {
+                    let (pattern, irrefutable) =
+                        self.check_tuple_pattern(items, types.clone(), &mut arm_env, &body.span)?;
+                    if irrefutable {
+                        has_wildcard = true;
+                    }
+                    pattern
+                }
+                (pattern, _) => pattern,
+            };
             if let MatchPattern::Destructure(_, variant, bindings) = &pattern {
                 let payload = self.variant_payload(&enum_name, variant).unwrap_or_default();
                 if payload.len() != bindings.len() {
@@ -1695,10 +1978,11 @@ impl<'a> Typechecker<'a> {
 
             // Arms that always return don't produce a value, so don't affect the
             // match's type. Arms that disagree make the match a statement (Void).
-            let diverges = match &body_node.expression {
-                Expression::Block(stmts, None) => always_returns(stmts),
-                _ => false,
-            };
+            let diverges = body_type == AzulaType::Never
+                || match &body_node.expression {
+                    Expression::Block(stmts, None) => always_returns(stmts),
+                    _ => false,
+                };
             if !diverges {
                 match result_type.clone() {
                     Some(rt) if rt != body_type => result_type = Some(AzulaType::Void),
@@ -1718,7 +2002,18 @@ impl<'a> Typechecker<'a> {
         }
 
         // Exhaustiveness: enum match requires all variants covered or wildcard;
-        // integer match just requires a wildcard (infinite domain).
+        // integer and tuple matches just require a wildcard (or a tuple pattern
+        // matching anything).
+        if !has_wildcard && tuple_types.is_some() {
+            let rows: Vec<Vec<MatchPattern<'a>>> = new_arms.iter().map(|(p, _)| vec![p.clone()]).collect();
+            if !self.patterns_exhaustive(rows, &[scrut_type.clone()]) {
+                self.error(
+                    "This match isn't exhaustive: some tuples match none of the arms (add a `_` arm?)".to_string(),
+                    &span,
+                );
+                return Err("non-exhaustive match".to_string());
+            }
+        }
         if !has_wildcard && !is_integer_match {
             let uncovered: Vec<_> = variants.iter().filter(|v| !covered.contains(v)).collect();
             if !uncovered.is_empty() {
@@ -1901,18 +2196,145 @@ impl<'a> Typechecker<'a> {
                 Ok(ExpressionNode { expression: Expression::Identifier(instance), ..function })
             }
             Expression::NamespaceAccess(ns, member) => {
-                let member_name = match &member.expression {
-                    Expression::Identifier(m) => m.clone(),
+                let (member_name, type_args) = match &member.expression {
+                    Expression::Identifier(m) => (m.clone(), None),
+                    Expression::Turbofish(m, t) => (m.clone(), Some(t.clone())),
                     _ => return Ok(function),
                 };
                 let ns = self.concretize_namespace(ns.deref().clone(), &member_name, Some(args), env, expected)?;
+                // A static generic method
+                let member = match &ns.expression {
+                    Expression::Identifier(type_name) => {
+                        match self.concretize_generic_method(type_name, &member_name, type_args, false, args, env, expected, &member.span)? {
+                            Some(instance) => Rc::new(ExpressionNode { expression: Expression::Identifier(instance), ..member.as_ref().clone() }),
+                            None => member,
+                        }
+                    }
+                    _ => member,
+                };
                 Ok(ExpressionNode {
                     expression: Expression::NamespaceAccess(Rc::new(ns), member),
                     ..function
                 })
             }
+            Expression::StructAccess(receiver, member) => {
+                let (member_name, type_args) = match &member.expression {
+                    Expression::Identifier(m) => (m.clone(), None),
+                    Expression::Turbofish(m, t) => (m.clone(), Some(t.clone())),
+                    _ => return Ok(function),
+                };
+                // The receiver's type decides which methods there are
+                let error_count = self.errors.len();
+                let receiver_type = match self.typecheck_expression(receiver.as_ref().clone(), env) {
+                    Ok((_, t)) => t,
+                    Err(_) => {
+                        self.errors.truncate(error_count);
+                        return Ok(function);
+                    }
+                };
+                let type_name = match &receiver_type {
+                    AzulaType::Pointer(inner) => inner.to_string(),
+                    t => t.to_string(),
+                };
+                match self.concretize_generic_method(&type_name, &member_name, type_args, true, args, env, expected, &member.span)? {
+                    Some(instance) => Ok(ExpressionNode {
+                        expression: Expression::StructAccess(
+                            receiver,
+                            Rc::new(ExpressionNode { expression: Expression::Identifier(instance), ..member.as_ref().clone() }),
+                        ),
+                        ..function
+                    }),
+                    None => Ok(function),
+                }
+            }
             _ => Ok(function),
         }
+    }
+
+    /// If `method` is a generic method of type `type_name`, instantiate it (with
+    /// `type_args`, or type arguments inferred from the call) and return the
+    /// instance's name, such as `map<int>`.
+    #[allow(clippy::too_many_arguments)]
+    fn concretize_generic_method(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        type_args: Option<Vec<AzulaType<'a>>>,
+        is_call_on_value: bool,
+        args: &[ExpressionNode<'a>],
+        env: &Environment<'a>,
+        expected: &Option<AzulaType<'a>>,
+        span: &Span,
+    ) -> Result<Option<String>, String> {
+        // For an instance such as `Vec<int>`, look in the generic `Vec`
+        let (base, base_args) = match self.instances.get(type_name) {
+            Some((generic, args)) if generic != TUPLE => (generic.clone(), args.clone()),
+            _ => (type_name.to_string(), vec![]),
+        };
+        let found = self
+            .generic_methods
+            .get(&base)
+            .and_then(|methods| {
+                methods.iter().find(|(_, _, f)| matches!(f, Statement::Function { name, .. } if *name == method))
+            })
+            .cloned();
+        let (impl_params, params, func) = match found {
+            Some(found) => found,
+            None => {
+                if type_args.is_some() {
+                    self.error(format!("{} has no generic method {}", type_name, method), span);
+                    return Err("not a generic method".to_string());
+                }
+                return Ok(None);
+            }
+        };
+        let impl_map: Substitution<'a> = impl_params.iter().cloned().zip(base_args.iter().cloned()).collect();
+        let func = subst_stmt(&func, &impl_map);
+        let type_args = match type_args {
+            Some(t) => t.into_iter().map(|t| self.resolve_type(t)).collect(),
+            None => {
+                let (fargs, returns) = match &func {
+                    Statement::Function { args, returns, .. } => (args.clone(), returns.clone()),
+                    _ => unreachable!(),
+                };
+                let takes_self = fargs.first().map(|(_, n)| *n == "self").unwrap_or(false);
+                let patterns: Vec<_> = fargs
+                    .iter()
+                    .skip(if takes_self && is_call_on_value { 1 } else { 0 })
+                    .map(|(t, _)| t.clone())
+                    .collect();
+                let (mut patterns, mut concrete) = self.types_for_inference(&patterns, args, env);
+                if let Some(expected) = expected {
+                    patterns.push(returns);
+                    concrete.push(expected.clone());
+                }
+                self.infer_type_args(method, &params, &None, &patterns, &concrete, span).ok_or("cannot infer")?
+            }
+        };
+        if type_args.len() != params.len() {
+            self.error(format!("{} expects {} type arguments, got {}", method, params.len(), type_args.len()), span);
+            return Err("wrong type argument count".to_string());
+        }
+        let instance = AzulaType::Generic(method.to_string(), type_args.clone()).mangle();
+        let key = format!("{}_{}", type_name, instance);
+        if !self.instantiated_functions.contains(&key) {
+            self.instantiated_functions.insert(key);
+            let map: Substitution<'a> = params.iter().cloned().zip(type_args).collect();
+            if let Statement::Function { args: fargs, returns, body, span, .. } = subst_stmt(&func, &map) {
+                let instance_name = leak(instance.clone());
+                let def = self.signature(instance_name, &fargs, &returns);
+                let namespace = self.namespaces.entry(type_name.to_string()).or_insert(Namespace {
+                    name: type_name.to_string(),
+                    funcs: HashMap::new(),
+                });
+                namespace.funcs.insert(instance_name, def);
+                self.pending.push((
+                    Some(AzulaType::Named(type_name.to_string())),
+                    Statement::Function { name: instance_name, args: fargs, returns, body, span },
+                ));
+            }
+        }
+        Ok(Some(instance))
     }
 
     /// Turn the namespace part of `Name::member` into a concrete type name when
@@ -2106,6 +2528,10 @@ impl<'a> Typechecker<'a> {
             AzulaType::Generic(name, args) => {
                 let args = args.into_iter().map(|a| self.resolve_type(a)).collect();
                 self.instantiate_type(&name, args)
+            }
+            AzulaType::Tuple(items) => {
+                let items = items.into_iter().map(|a| self.resolve_type(a)).collect();
+                self.instantiate_tuple(items)
             }
             _ => typ,
         }
@@ -2690,17 +3116,19 @@ fn statement_always_returns(stmt: &Statement) -> bool {
         // Infinite loops only finish through `break`
         Statement::For(None, body, _) => !contains_break(body),
         Statement::While(cond, body, _) if cond.expression == Expression::Boolean(true) => !contains_break(body),
+        // Calls of functions returning `!`
+        Statement::ExpressionStatement(expr, _) if expr.typed == AzulaType::Never => true,
         Statement::ExpressionStatement(expr, _) => match &expr.expression {
-            Expression::Match(_, arms) => arms.iter().all(|(_, arm)| match &arm.expression {
-                Expression::Block(stmts, None) => always_returns(stmts),
-                _ => false,
+            Expression::Match(_, arms) => arms.iter().all(|(_, arm)| {
+                arm.typed == AzulaType::Never
+                    || match &arm.expression {
+                        Expression::Block(stmts, None) => always_returns(stmts),
+                        _ => false,
+                    }
             }),
-            Expression::FunctionCall { function, .. } => matches!(
-                &function.expression,
-                Expression::Identifier(name) if name == "exit" || name == "abort"
-            ),
             _ => false,
         },
+        Statement::Group(stmts) => always_returns(stmts),
         _ => false,
     }
 }
@@ -2742,7 +3170,8 @@ fn is_integer_literal(expr: &ExpressionNode) -> bool {
 
 /// Whether a value of type `got` (produced by `expr`) can be stored in a slot of type `expected`.
 fn assignable(expected: &AzulaType, got: &AzulaType, expr: &ExpressionNode) -> bool {
-    if expected == got {
+    // `!` never produces a value, so it fits anywhere
+    if expected == got || *got == AzulaType::Never {
         return true;
     }
     if is_integer_type(expected) && is_integer_type(got) {

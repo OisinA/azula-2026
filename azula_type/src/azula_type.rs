@@ -18,6 +18,11 @@ pub enum AzulaType<'a> {
     /// A generic type applied to arguments, e.g. `Vec<int>`. The typechecker
     /// replaces these with `Named` instances (see `mangle`).
     Generic(String, Vec<AzulaType<'a>>),
+    /// `!`, the type of expressions that never produce a value (calls of
+    /// functions that don't return)
+    Never,
+    /// `(A, B)`: the typechecker replaces these with `Named` tuple structs
+    Tuple(Vec<AzulaType<'a>>),
 }
 
 impl<'a> From<&'a str> for AzulaType<'a> {
@@ -83,7 +88,8 @@ impl<'a> ToString for AzulaType<'a> {
                 Some(s) => format!("[{:?}; {:?}]", typ.to_string(), s),
                 None => format!("[{:?}]", typ.to_string()),
             },
-            AzulaType::Generic(..) => self.mangle(),
+            AzulaType::Generic(..) | AzulaType::Tuple(..) => self.mangle(),
+            AzulaType::Never => "!".to_string(),
         }
     }
 }
@@ -100,6 +106,10 @@ impl<'a> AzulaType<'a> {
                 "{}<{}>",
                 name,
                 args.iter().map(|a| a.mangle()).collect::<Vec<_>>().join(",")
+            ),
+            AzulaType::Tuple(items) => format!(
+                "({})",
+                items.iter().map(|a| a.mangle()).collect::<Vec<_>>().join(",")
             ),
             _ => self.to_string(),
         }

@@ -36,6 +36,10 @@ pub enum Statement<'a> {
     /// `for name in iterable { }`, or `for name in start..end` (the second
     /// expression and whether the range includes its end)
     ForIn(String, ExpressionNode<'a>, Option<ExpressionNode<'a>>, bool, Body<'a>, Span),
+    /// `var (a, _, c) = tuple;` (`_` ignores an element)
+    Destructure(bool, Vec<String>, ExpressionNode<'a>, Span),
+    /// Statements that share the enclosing scope (produced by the typechecker)
+    Group(Body<'a>),
     /// `target op= value`
     CompoundAssign(ExpressionNode<'a>, Operator, ExpressionNode<'a>, Span),
     Break(Span),
@@ -91,6 +95,8 @@ pub enum Expression<'a> {
     /// `"text ${expr} text"`: the pieces to convert to strings and join
     Interpolation(Vec<ExpressionNode<'a>>),
     Array(Vec<ExpressionNode<'a>>),
+    /// `(a, b)`
+    Tuple(Vec<ExpressionNode<'a>>),
     ArrayAccess(Rc<ExpressionNode<'a>>, Rc<ExpressionNode<'a>>),
     StructInitialisation(Rc<ExpressionNode<'a>>, Vec<(&'a str, ExpressionNode<'a>)>),
     StructAccess(Rc<ExpressionNode<'a>>, Rc<ExpressionNode<'a>>),
@@ -117,6 +123,10 @@ pub enum MatchPattern<'a> {
     Integer(i64),
     /// _
     Wildcard,
+    /// A name binding a tuple element
+    Binding(&'a str),
+    /// (p, q, ...)
+    Tuple(Vec<MatchPattern<'a>>),
 }
 
 #[derive(Debug, PartialEq, Clone)]

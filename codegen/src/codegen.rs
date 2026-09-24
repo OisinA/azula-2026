@@ -273,6 +273,11 @@ impl<'a> Codegen<'a> {
         match stmt {
             Statement::Assign(..) => self.codegen_assign(stmt, func),
             Statement::Return(..) => self.codegen_return(stmt, func),
+            Statement::Group(stmts) => {
+                for stmt in stmts {
+                    self.codegen_statement(stmt, func);
+                }
+            }
             Statement::ExpressionStatement(expr, ..) => {
                 self.codegen_expr(expr.clone(), func, true);
             }
@@ -567,6 +572,21 @@ impl<'a> Codegen<'a> {
         func: &mut Function<'a>,
         resolve_pointer: bool,
     ) -> Value {
+        // A call of a function returning `!` never comes back
+        let never = expr.typed == AzulaType::Never && matches!(expr.expression, Expression::FunctionCall { .. });
+        let value = self.codegen_expr_inner(expr, func, resolve_pointer);
+        if never {
+            func.unreachable();
+        }
+        value
+    }
+
+    fn codegen_expr_inner(
+        &mut self,
+        expr: ExpressionNode<'a>,
+        func: &mut Function<'a>,
+        resolve_pointer: bool,
+    ) -> Value {
         match expr.expression {
             Expression::Infix(..) => self.codegen_infix(expr, func, resolve_pointer),
             Expression::Integer(val) => func.const_int(val),
@@ -676,7 +696,9 @@ impl<'a> Codegen<'a> {
                 func.sub(zero, val)
             }
             Expression::Pointer(expr) => self.codegen_address(expr.deref().clone(), func),
-            Expression::Interpolation(_) => unreachable!("interpolation is rewritten by the typechecker"),
+            Expression::Interpolation(_) | Expression::Tuple(_) => {
+                unreachable!("interpolations and tuples are rewritten by the typechecker")
+            }
             Expression::Deref(pointer) => {
                 let ptr = self.codegen_expr(pointer.deref().clone(), func, true);
                 let zero = func.const_int(0);
@@ -996,6 +1018,13 @@ impl<'a> Codegen<'a> {
             let is_wildcard = matches!(pattern, MatchPattern::Wildcard);
             match &pattern {
                 MatchPattern::Wildcard => func.jump(arm_block.clone()),
+                MatchPattern::Tuple(items) => {
+                    let mut tests = 0;
+                    let prefix = format!("match-test-{}-{}", n, i);
+                    self.codegen_tuple_test(items, scrut_val.clone(), &enum_name, &prefix, &mut tests, &next_block, func);
+                    func.jump(arm_block.clone());
+                }
+                MatchPattern::Binding(_) => unreachable!("bindings only appear inside tuple patterns"),
                 MatchPattern::Integer(value) => {
                     let expected = func.const_int(*value);
                     let cond = func.eq(tag_val.clone(), expected);
@@ -1012,6 +1041,9 @@ impl<'a> Codegen<'a> {
             func.current_block = arm_block.clone();
             self.scopes.push(HashMap::new());
 
+            if let MatchPattern::Tuple(items) = &pattern {
+                self.bind_tuple_pattern(items, scrut_val.clone(), &enum_name, func);
+            }
             if let MatchPattern::Destructure(enum_name, variant, bindings) = &pattern {
                 let struct_name = format!("{}.{}", enum_name, variant);
                 for (field, binding) in bindings.iter().enumerate() {
@@ -1050,6 +1082,71 @@ impl<'a> Codegen<'a> {
             Value::LiteralInteger(0)
         } else {
             func.load(result_var, result_type)
+        }
+    }
+
+    /// Branch to `fail` unless the tuple `value` (of struct `tuple`) matches `items`
+    fn codegen_tuple_test(
+        &mut self,
+        items: &[MatchPattern<'a>],
+        value: Value,
+        tuple: &str,
+        prefix: &str,
+        tests: &mut usize,
+        fail: &str,
+        func: &mut Function<'a>,
+    ) {
+        for (index, item) in items.iter().enumerate() {
+            let cond = match item {
+                MatchPattern::Wildcard | MatchPattern::Binding(_) => continue,
+                MatchPattern::Integer(expected) => {
+                    let element = func.access_struct_member(value.clone(), index, true, tuple.to_string());
+                    let expected = func.const_int(*expected);
+                    func.eq(element, expected)
+                }
+                MatchPattern::Variant(enum_name, variant) => {
+                    let element = func.access_struct_member(value.clone(), index, true, tuple.to_string());
+                    let tag = if self.module.boxed_enums.contains(&enum_name.to_string()) {
+                        func.access_struct_member(element, 0, true, format!("{}.__tag", enum_name))
+                    } else {
+                        element
+                    };
+                    let expected = func.const_int(self.variant_index(enum_name, variant) as i64);
+                    func.eq(tag, expected)
+                }
+                MatchPattern::Tuple(inner) => {
+                    let element = func.access_struct_member(value.clone(), index, true, tuple.to_string());
+                    let inner_tuple = self.module.structs[tuple].attributes[index].0.to_string();
+                    self.codegen_tuple_test(inner, element, &inner_tuple, prefix, tests, fail, func);
+                    continue;
+                }
+                MatchPattern::Destructure(..) => unreachable!(),
+            };
+            let pass = format!("{}-{}", prefix, tests);
+            *tests += 1;
+            func.jcond(cond, pass.clone(), fail.to_string());
+            func.blocks.push((pass.clone(), Block::new()));
+            func.current_block = pass;
+        }
+    }
+
+    /// Declare the variables bound by a tuple pattern
+    fn bind_tuple_pattern(&mut self, items: &[MatchPattern<'a>], value: Value, tuple: &str, func: &mut Function<'a>) {
+        for (index, item) in items.iter().enumerate() {
+            match item {
+                MatchPattern::Binding(name) => {
+                    let typ = self.module.structs[tuple].attributes[index].0.clone();
+                    let element = func.access_struct_member(value.clone(), index, true, tuple.to_string());
+                    let unique = self.declare_variable(name, typ.clone(), func);
+                    func.store(unique, element, typ);
+                }
+                MatchPattern::Tuple(inner) => {
+                    let element = func.access_struct_member(value.clone(), index, true, tuple.to_string());
+                    let inner_tuple = self.module.structs[tuple].attributes[index].0.to_string();
+                    self.bind_tuple_pattern(inner, element, &inner_tuple, func);
+                }
+                _ => {}
+            }
         }
     }
 

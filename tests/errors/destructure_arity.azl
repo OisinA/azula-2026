@@ -1,0 +1,5 @@
+// error: this tuple has 3 elements, but 2 names are given
+func main() {
+    var (a, b) = (1, 2, 3);
+    printf("%d %d\n", a, b);
+}

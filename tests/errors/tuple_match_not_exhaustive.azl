@@ -1,0 +1,14 @@
+// error: this match isn't exhaustive
+enum Dir {
+    Up;
+    Down;
+}
+
+func main() {
+    var pair = (Dir::Up, 1);
+    var n = match pair {
+        (Dir::Up, _) => 1,
+        (Dir::Down, 0) => 2,
+    };
+    printf("%d\n", n);
+}
