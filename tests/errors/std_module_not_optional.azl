@@ -1,0 +1,4 @@
+// error: there's no standard library module `std/vec.azl`
+import "std/vec.azl" as vec
+
+func main() {}

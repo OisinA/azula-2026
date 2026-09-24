@@ -205,7 +205,7 @@ Other things to know:
     `index_of`, `contains`, `sort()` (a stable sort using `<`) and `sort_by(less)`.
   - Files and the environment: `read_file(path)` and `write_file`/`append_file`
     (returning `Result`s), `file_exists`, `read_line()` from standard input,
-    `args()` (Linux) and `env(name)`.
+    `args()` and `env(name)`.
   - Maths: `x.sqrt()`, `x.pow(y)`, `floor`, `ceil`, `round`, `abs`, `sin`, `cos`, `tan`,
     `exp`, `ln`, `min`, `max` on floats; `abs`, `min`, `max`, `pow` on ints; `PI` and `E`.
 - Printing: `print(x)` and `println(x)` take any value whose type is `Show` (strings,
@@ -235,7 +235,7 @@ Other things to know:
   the standard library's are. Paths are relative to the importing file; see
   [`examples/modules`](examples/modules). Paths starting `std/` name optional
   standard library modules, which aren't loaded unless imported.
-- Networking: `import "std/net.azl" as net` gives TCP servers and clients (Linux).
+- Networking: `import "std/net.azl" as net` gives TCP servers and clients (Linux and macOS).
   `net::TcpListener::bind(port)` returns a `Result`; `listener.accept()` waits for
   a connection, a `net::TcpStream`, and `net::TcpStream::connect(host, port)` makes one.
   Streams have `read_str()` (what has arrived, or `""` once the other end closes),

@@ -152,13 +152,15 @@ func add_module(src: &Source, path: str, file: str, alias: str, modules: &Map<st
                 var target_file = target;
                 // `std/...` names a module of the standard library
                 if imp.path.starts_with("std/") {
+                    // (the same list as STD_MODULES in the Rust compiler)
                     var std_name = imp.path.slice(4, imp.path.len());
+                    var known = std_name == "net.azl" || std_name == "os.azl";
                     if std_name == "os.azl" {
                         std_name = "os_${host_platform()}.azl";
                     }
                     target = join_path(stdlib, std_name);
                     target_file = imp.path;
-                    if !file_exists(target) {
+                    if !known || !file_exists(target) {
                         printf("error: %s:%ld: there's no standard library module `%s`\n", file, number + 1, imp.path);
                         exit(1);
                     }

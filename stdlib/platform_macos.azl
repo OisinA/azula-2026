@@ -5,6 +5,7 @@
 extern func _NSGetArgc(): &i32;
 extern func _NSGetArgv(): &&str;
 extern func _NSGetExecutablePath(str, &u32): i32;
+extern func realpath(str, str): str;
 
 // The program's command-line arguments
 func platform_args(): Vec<str> {
@@ -19,7 +20,9 @@ func platform_args(): Vec<str> {
     return out;
 }
 
-// The path of the running executable, or null if it can't be found
+// The path of the running executable, or null if it can't be found.
+// _NSGetExecutablePath can give a relative path or a symlink (such as one
+// on the PATH), so it's resolved like Linux's /proc/self/exe.
 func platform_executable_path(): str {
     var size: u32 = 4096;
     var path: str = malloc(4096 * sizeof(u8));
@@ -27,5 +30,11 @@ func platform_executable_path(): str {
         free(path);
         return null;
     }
-    return path;
+    var resolved: str = malloc(4096 * sizeof(u8));
+    if realpath(path, resolved) == null {
+        free(resolved);
+        return path;
+    }
+    free(path);
+    return resolved;
 }

@@ -9,6 +9,7 @@
 import "std/os.azl" as os
 
 extern func socket(i32, i32, i32): i32;
+extern func setsockopt(i32, i32, i32, &i32, i32): i32;
 extern func bind(i32, &u8, i32): i32;
 extern func listen(i32, i32): i32;
 extern func accept(i32, &u8, &i32): i32;
