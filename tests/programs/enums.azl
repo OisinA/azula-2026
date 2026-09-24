@@ -1,4 +1,4 @@
-enum Colour { Red, Green, Blue }
+enum Colour { Red; Green; Blue; }
 
 func name(c: Colour): str {
     return match c {

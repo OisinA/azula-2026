@@ -1,17 +1,17 @@
-enum Op { Add, Sub, Mul }
+enum Op { Add; Sub; Mul; }
 
 enum Expr {
-    Num(int),
-    Neg(Expr),
-    Binary(Expr, Op, Expr),
-    Var(str),
-    Zero,
+    Num(int);
+    Neg(Expr);
+    Binary(Expr, Op, Expr);
+    Var(str);
+    Zero;
 }
 
 enum Token {
-    Number(int),
-    Word(str, int),
-    End,
+    Number(int);
+    Word(str, int);
+    End;
 }
 
 func eval(e: Expr, x: int): int {

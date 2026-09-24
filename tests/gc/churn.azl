@@ -1,7 +1,7 @@
 // Lots of short-lived trees, lists and strings alongside long-lived data
 enum Tree {
-    Leaf(int),
-    Node(Tree, Tree),
+    Leaf(int);
+    Node(Tree, Tree);
 }
 
 func build(depth: int, value: int): Tree {
@@ -18,7 +18,7 @@ func sum(t: Tree): int {
     };
 }
 
-struct Item { name: str, value: int, next: &Item, }
+struct Item { name: str; value: int; next: &Item; }
 
 func main {
     // Keep one long-lived tree while churning through lots of short-lived ones
@@ -39,7 +39,7 @@ func main {
         var sb = StringBuilder::new();
         sb.append("item");
         sb.append_int(i);
-        head = alloc(Item { name: sb.build(), value: i, next: head });
+        head = new Item { name: sb.build(), value: i, next: head };
         if i % 1000 == 999 {
             head = null;
         }

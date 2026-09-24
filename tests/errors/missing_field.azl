@@ -1,5 +1,5 @@
 // error: missing field `y`
-struct P { x: int, y: int, }
+struct P { x: int; y: int; }
 func main {
     var p = P { x: 1 };
 }

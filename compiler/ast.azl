@@ -5,191 +5,191 @@
 // simpler, fully resolved forms for the code generator.
 
 enum Type {
-    Int,
-    SInt(int),
-    UInt(int),
-    Float,
-    SFloat(int),
-    Bool,
-    Str,
-    Void,
-    Infer,
-    Ptr(Type),
+    Int;
+    SInt(int);
+    UInt(int);
+    Float;
+    SFloat(int);
+    Bool;
+    Str;
+    Void;
+    Infer;
+    Ptr(Type);
     // Element type and size (-1 when not given)
-    Array(Type, int),
+    Array(Type, int);
     // A struct or enum (or a type parameter before substitution)
-    Named(str),
-    Generic(str, Vec<Type>),
+    Named(str);
+    Generic(str, Vec<Type>);
 }
 
-enum BinOp { Add, Sub, Mul, Div, Mod, Pow, And, Or, Eq, Ne, Lt, Le, Gt, Ge, BitAnd, BitOr, BitXor, Shl, Shr }
+enum BinOp { Add; Sub; Mul; Div; Mod; Pow; And; Or; Eq; Ne; Lt; Le; Gt; Ge; BitAnd; BitOr; BitXor; Shl; Shr; }
 
-enum UnOp { Neg, Not, BitNot }
+enum UnOp { Neg; Not; BitNot; }
 
 struct Expr {
-    kind: ExprKind,
-    typ: Type,
-    pos: int,
+    kind: ExprKind;
+    typ: Type;
+    pos: int;
 }
 
 struct FieldInit {
-    name: str,
-    value: &Expr,
-    pos: int,
+    name: str;
+    value: &Expr;
+    pos: int;
 }
 
 enum ExprKind {
-    IntLit(int),
-    FloatLit(str),
-    BoolLit(bool),
-    StrLit(str),
-    Null,
-    Ident(str),
-    Binary(BinOp, &Expr, &Expr),
-    Unary(UnOp, &Expr),
-    AddrOf(&Expr),
-    Call(&Expr, Vec<&Expr>),
-    Index(&Expr, &Expr),
-    Field(&Expr, str),
+    IntLit(int);
+    FloatLit(str);
+    BoolLit(bool);
+    StrLit(str);
+    Null;
+    Ident(str);
+    Binary(BinOp, &Expr, &Expr);
+    Unary(UnOp, &Expr);
+    AddrOf(&Expr);
+    Call(&Expr, Vec<&Expr>);
+    Index(&Expr, &Expr);
+    Field(&Expr, str);
     // `ns::member`, where ns is an Ident or Turbofish
-    Path(&Expr, str),
+    Path(&Expr, str);
     // `Name::<Types>`
-    Turbofish(str, Vec<Type>),
-    StructLit(&Expr, Vec<FieldInit>),
-    ArrayLit(Vec<&Expr>),
-    Cast(&Expr, Type),
-    SizeOf(Type),
-    Alloc(&Expr),
+    Turbofish(str, Vec<Type>);
+    StructLit(&Expr, Vec<FieldInit>);
+    ArrayLit(Vec<&Expr>);
+    Cast(&Expr, Type);
+    SizeOf(Type);
+    Alloc(&Expr);
     // `alloc(value) in arena`
-    AllocIn(&Expr, &Expr),
-    Match(&Expr, Vec<&MatchArm>),
-    Block(Vec<&Stmt>, Option<&Expr>),
+    AllocIn(&Expr, &Expr);
+    Match(&Expr, Vec<&MatchArm>);
+    Block(Vec<&Stmt>, Option<&Expr>);
 
     // Resolved forms produced by the checker
-    Local(str),
-    Global(str),
+    Local(str);
+    Global(str);
     // Load through a pointer
-    Deref(&Expr),
+    Deref(&Expr);
     // Call of a function by its symbol name
-    CallFn(str, Vec<&Expr>),
+    CallFn(str, Vec<&Expr>);
     // Field by index
-    FieldAt(&Expr, int),
+    FieldAt(&Expr, int);
     // Struct literal with its fields in declaration order
-    StructValue(str, Vec<&Expr>),
+    StructValue(str, Vec<&Expr>);
     // Enum value: enum name, variant tag, payload
-    EnumValue(str, int, Vec<&Expr>),
+    EnumValue(str, int, Vec<&Expr>);
 }
 
 enum Pattern {
-    Wildcard,
-    IntValue(int),
+    Wildcard;
+    IntValue(int);
     // Enum name, variant name, names bound to the payload ("_" ignores one)
-    Variant(str, str, Vec<str>),
+    Variant(str, str, Vec<str>);
 }
 
 struct MatchArm {
-    pattern: Pattern,
-    body: &Expr,
-    pos: int,
+    pattern: Pattern;
+    body: &Expr;
+    pos: int;
     // Filled in by the checker
-    enum_name: str,
-    tag: int,
-    bindings: Vec<str>,
+    enum_name: str;
+    tag: int;
+    bindings: Vec<str>;
 }
 
 struct Stmt {
-    kind: StmtKind,
-    pos: int,
+    kind: StmtKind;
+    pos: int;
     // For variable declarations: the unique name and type assigned by the checker
-    ir_name: str,
-    typ: Type,
+    ir_name: str;
+    typ: Type;
 }
 
 enum StmtKind {
     // name, mutable, type annotation (Infer if none), value
-    VarDecl(str, bool, Type, &Expr),
-    Assign(&Expr, &Expr),
-    ExprStmt(&Expr),
-    Return(Option<&Expr>),
-    If(&Expr, Vec<&Stmt>, Vec<&Stmt>),
+    VarDecl(str, bool, Type, &Expr);
+    Assign(&Expr, &Expr);
+    ExprStmt(&Expr);
+    Return(Option<&Expr>);
+    If(&Expr, Vec<&Stmt>, Vec<&Stmt>);
     // A `while` or `for` loop; no condition loops forever
-    Loop(Option<&Expr>, Vec<&Stmt>),
-    Break,
-    Continue,
+    Loop(Option<&Expr>, Vec<&Stmt>);
+    Break;
+    Continue;
 }
 
 struct Param {
-    name: str,
-    typ: Type,
+    name: str;
+    typ: Type;
 }
 
 struct FuncDecl {
-    name: str,
-    type_params: Vec<str>,
-    params: Vec<Param>,
-    ret: Type,
-    body: Vec<&Stmt>,
-    pos: int,
-    is_extern: bool,
-    is_varargs: bool,
+    name: str;
+    type_params: Vec<str>;
+    params: Vec<Param>;
+    ret: Type;
+    body: Vec<&Stmt>;
+    pos: int;
+    is_extern: bool;
+    is_varargs: bool;
     // The symbol this function is emitted as (set by the checker)
-    symbol: str,
+    symbol: str;
 }
 
 struct StructDecl {
-    name: str,
-    type_params: Vec<str>,
-    fields: Vec<Param>,
-    pos: int,
+    name: str;
+    type_params: Vec<str>;
+    fields: Vec<Param>;
+    pos: int;
 }
 
 struct Variant {
-    name: str,
-    payload: Vec<Type>,
+    name: str;
+    payload: Vec<Type>;
 }
 
 struct EnumDecl {
-    name: str,
-    type_params: Vec<str>,
-    variants: Vec<Variant>,
-    pos: int,
+    name: str;
+    type_params: Vec<str>;
+    variants: Vec<Variant>;
+    pos: int;
 }
 
 struct ImplDecl {
-    target: Type,
-    type_params: Vec<str>,
-    methods: Vec<&FuncDecl>,
-    pos: int,
+    target: Type;
+    type_params: Vec<str>;
+    methods: Vec<&FuncDecl>;
+    pos: int;
 }
 
 struct GlobalDecl {
-    name: str,
-    typ: Type,
-    value: &Expr,
-    pos: int,
+    name: str;
+    typ: Type;
+    value: &Expr;
+    pos: int;
 }
 
 struct AliasDecl {
-    name: str,
-    typ: Type,
-    pos: int,
+    name: str;
+    typ: Type;
+    pos: int;
 }
 
 struct Program {
-    funcs: Vec<&FuncDecl>,
-    structs: Vec<&StructDecl>,
-    enums: Vec<&EnumDecl>,
-    impls: Vec<&ImplDecl>,
-    globals: Vec<&GlobalDecl>,
-    aliases: Vec<&AliasDecl>,
+    funcs: Vec<&FuncDecl>;
+    structs: Vec<&StructDecl>;
+    enums: Vec<&EnumDecl>;
+    impls: Vec<&ImplDecl>;
+    globals: Vec<&GlobalDecl>;
+    aliases: Vec<&AliasDecl>;
 }
 
 func new_expr(kind: ExprKind, pos: int): &Expr {
-    return alloc(Expr { kind: kind, typ: Type::Infer, pos: pos });
+    return new Expr { kind: kind, typ: Type::Infer, pos: pos };
 }
 
 func new_stmt(kind: StmtKind, pos: int): &Stmt {
-    return alloc(Stmt { kind: kind, pos: pos, ir_name: "", typ: Type::Infer });
+    return new Stmt { kind: kind, pos: pos, ir_name: "", typ: Type::Infer };
 }
 
 // ---------------------------------------------------------------------------

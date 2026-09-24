@@ -1,17 +1,16 @@
-struct Inner { a: int, b: int, }
-struct Outer { inner: Inner, name: str, count: int, }
-struct Node { value: int, next: &Node, }
+struct Inner { a: int; b: int; }
+struct Outer { inner: Inner; name: str; count: int;
 
-impl Outer {
-    func bump(self: &Outer) {
+    func bump() {
         self.count = self.count + 1;
         self.inner.a = self.inner.a + 10;
     }
 
-    func total(self: Outer): int {
+    func total(): int {
         return self.inner.a + self.inner.b + self.count;
     }
 }
+struct Node { value: int; next: &Node; }
 
 func sum_list(n: &Node): int {
     var total = 0;
@@ -43,7 +42,7 @@ func main {
     var list: &Node = null;
     var i = 1;
     while i <= 4 {
-        list = alloc(Node { value: i, next: list });
+        list = new Node { value: i, next: list };
         i = i + 1;
     }
     printf("list sum %d\n", sum_list(list));

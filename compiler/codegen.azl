@@ -4,103 +4,31 @@
 // block; expressions produce SSA values named %t1, %t2, ...
 
 struct Gen {
-    c: &Checker,
-    strings: StringBuilder,
-    string_count: int,
+    c: &Checker;
+    strings: StringBuilder;
+    string_count: int;
 
     // State for the function being generated
-    body: StringBuilder,
-    allocas: StringBuilder,
-    tmp_count: int,
-    label_count: int,
-    terminated: bool,
-    continue_labels: Vec<str>,
-    break_labels: Vec<str>,
-    ret: Type,
-    is_main: bool,
-}
+    body: StringBuilder;
+    allocas: StringBuilder;
+    tmp_count: int;
+    label_count: int;
+    terminated: bool;
+    continue_labels: Vec<str>;
+    break_labels: Vec<str>;
+    ret: Type;
+    is_main: bool;
 
-func generate(c: &Checker, module_name: str): str {
-    var g = Gen {
-        c: c,
-        strings: StringBuilder::new(),
-        string_count: 0,
-        body: StringBuilder::new(),
-        allocas: StringBuilder::new(),
-        tmp_count: 0,
-        label_count: 0,
-        terminated: false,
-        continue_labels: Vec::new(),
-        break_labels: Vec::new(),
-        ret: Type::Void,
-        is_main: false,
-    };
-    return g.module(module_name);
-}
-
-// Escape bytes for an LLVM c"..." string
-func llvm_escape(s: str, sb: &StringBuilder) {
-    var i = 0;
-    while s[i] != 0 {
-        var c: int = s[i];
-        if c < 0 {
-            c = c + 256;
-        }
-        if c >= 32 && c < 127 && c != '"' && c != '\\' {
-            sb.append_char(c);
-        } else {
-            sb.append_char('\\');
-            var digits = "0123456789ABCDEF";
-            sb.append_char(digits[c / 16] as int);
-            sb.append_char(digits[c % 16] as int);
-        }
-        i = i + 1;
-    }
-}
-
-// Builtins the code generator implements itself rather than calling
-func is_intrinsic(symbol: str): bool {
-    return str_eq(symbol, "ptr_add") || str_eq(symbol, "gc_state") || str_eq(symbol, "gc_stack_pointer")
-        || str_eq(symbol, "gc_spill_registers") || !str_eq(link_name(symbol), symbol);
-}
-
-// The symbol a call to `symbol` links against (c_malloc calls C's malloc, ...)
-func link_name(symbol: str): str {
-    if str_eq(symbol, "c_malloc") || str_eq(symbol, "c_calloc") || str_eq(symbol, "c_realloc") || str_eq(symbol, "c_free") {
-        return substring(symbol, 2, strlen(symbol) - 2);
-    }
-    return symbol;
-}
-
-func quote_global(name: str): str {
-    return concat3("@\"", name, "\"");
-}
-
-func quote_local(name: str): str {
-    return concat3("%\"", name, "\"");
-}
-
-// The bit pattern of a double, in LLVM's hexadecimal float syntax
-func double_bits(text: str): str {
-    var cell: &float = malloc(sizeof(float));
-    cell[0] = strtod(text, null);
-    var bits = (cell as &int)[0];
-    var buf: str = malloc(24 * sizeof(u8));
-    snprintf(buf, 24, "0x%016lX", bits);
-    return buf;
-}
-
-impl Gen {
     // -----------------------------------------------------------------------
     // Types
     // -----------------------------------------------------------------------
 
-    func is_boxed_enum(self: &Gen, t: Type): bool {
+    func is_boxed_enum(t: Type): bool {
         var info = self.c.enum_named(named_of(t));
         return info != null && info.boxed;
     }
 
-    func llvm_type(self: &Gen, t: Type): str {
+    func llvm_type(t: Type): str {
         return match t {
             Type::Int => "i64",
             Type::SInt(bits) => concat("i", int_to_str(bits)),
@@ -135,7 +63,7 @@ impl Gen {
     }
 
     // Integer width of a type, or 0 if it isn't an integer-like type
-    func int_width(self: &Gen, t: Type): int {
+    func int_width(t: Type): int {
         return match t {
             Type::Int => 64,
             Type::SInt(bits) => bits,
@@ -155,17 +83,17 @@ impl Gen {
     // Emitting instructions
     // -----------------------------------------------------------------------
 
-    func fresh(self: &Gen): str {
+    func fresh(): str {
         self.tmp_count = self.tmp_count + 1;
         return concat("%t", int_to_str(self.tmp_count));
     }
 
-    func new_label(self: &Gen, hint: str): str {
+    func new_label(hint: str): str {
         self.label_count = self.label_count + 1;
         return concat3(hint, ".", int_to_str(self.label_count));
     }
 
-    func emit(self: &Gen, line: str) {
+    func emit(line: str) {
         if self.terminated {
             // Code after a return/break: give it its own (unreachable) block
             self.start_block(self.new_label("dead"));
@@ -176,32 +104,32 @@ impl Gen {
     }
 
     // Emit `name = instruction` into a fresh temporary and return its name
-    func value(self: &Gen, instruction: str): str {
+    func value(instruction: str): str {
         var t = self.fresh();
         self.emit(concat3(t, " = ", instruction));
         return t;
     }
 
-    func terminate(self: &Gen, line: str) {
+    func terminate(line: str) {
         self.emit(line);
         self.terminated = true;
     }
 
-    func start_block(self: &Gen, label: str) {
+    func start_block(label: str) {
         self.body.append(label);
         self.body.append(":\n");
         self.terminated = false;
     }
 
-    func branch(self: &Gen, label: str) {
+    func branch(label: str) {
         self.terminate(concat("br label %", label));
     }
 
-    func cond_branch(self: &Gen, cond: str, yes: str, no: str) {
+    func cond_branch(cond: str, yes: str, no: str) {
         self.terminate(concat3("br i1 ", cond, concat3(", label %", yes, concat(", label %", no))));
     }
 
-    func alloca(self: &Gen, name: str, t: Type) {
+    func alloca(name: str, t: Type) {
         self.allocas.append("  ");
         self.allocas.append(name);
         self.allocas.append(" = alloca ");
@@ -209,22 +137,22 @@ impl Gen {
         self.allocas.append_char('\n');
     }
 
-    func temp_slot(self: &Gen, t: Type): str {
+    func temp_slot(t: Type): str {
         self.tmp_count = self.tmp_count + 1;
         var name = concat("%slot", int_to_str(self.tmp_count));
         self.alloca(name, t);
         return name;
     }
 
-    func load(self: &Gen, t: Type, ptr: str): str {
+    func load(t: Type, ptr: str): str {
         return self.value(concat3("load ", self.llvm_type(t), concat(", ptr ", ptr)));
     }
 
-    func store(self: &Gen, t: Type, value: str, ptr: str) {
+    func store(t: Type, value: str, ptr: str) {
         self.emit(concat3("store ", self.llvm_type(t), concat3(" ", value, concat(", ptr ", ptr))));
     }
 
-    func string_constant(self: &Gen, s: str): str {
+    func string_constant(s: str): str {
         var name = concat("@.str.", int_to_str(self.string_count));
         self.string_count = self.string_count + 1;
         self.strings.append(name);
@@ -237,7 +165,7 @@ impl Gen {
     }
 
     // Convert integer `v` of type `from` to type `to` if their widths differ
-    func coerce(self: &Gen, v: str, from: Type, to: Type): str {
+    func coerce(v: str, from: Type, to: Type): str {
         var fw = self.int_width(from);
         var tw = self.int_width(to);
         if fw == 0 || tw == 0 || fw == tw {
@@ -253,14 +181,14 @@ impl Gen {
         return self.value(concat3(op, " ", concat3(self.llvm_type(from), " ", concat3(v, " to ", self.llvm_type(to)))));
     }
 
-    func size_of(self: &Gen, llvm: str): str {
+    func size_of(llvm: str): str {
         var p = self.value(concat3("getelementptr ", llvm, ", ptr null, i32 1"));
         return self.value(concat3("ptrtoint ptr ", p, " to i64"));
     }
 
     // Allocate `size` bytes to hold a value of type `t`: from the collected heap
     // when the program has the GC (unscanned if `t` holds no pointers), else malloc
-    func allocate(self: &Gen, size: str, t: Type): str {
+    func allocate(size: str, t: Type): str {
         var function = "malloc";
         if self.c.has_gc {
             function = "gc_malloc";
@@ -275,7 +203,7 @@ impl Gen {
     // Module
     // -----------------------------------------------------------------------
 
-    func module(self: &Gen, name: str): str {
+    func module(name: str): str {
         var out = StringBuilder::new();
         out.append("; ModuleID = '");
         out.append(name);
@@ -384,7 +312,7 @@ impl Gen {
     }
 
     // The text of a constant's value
-    func constant(self: &Gen, e: &Expr, t: Type): str {
+    func constant(e: &Expr, t: Type): str {
         return match e.kind {
             ExprKind::IntLit(v) => int_to_str(v),
             ExprKind::Unary(_, inner) => concat("-", self.constant(inner, t)),
@@ -404,7 +332,7 @@ impl Gen {
     // Functions and statements
     // -----------------------------------------------------------------------
 
-    func function(self: &Gen, f: &FuncDecl, out: &StringBuilder) {
+    func function(f: &FuncDecl, out: &StringBuilder) {
         self.body = StringBuilder::new();
         self.allocas = StringBuilder::new();
         self.tmp_count = 0;
@@ -464,7 +392,7 @@ impl Gen {
         out.append("}\n\n");
     }
 
-    func return_void(self: &Gen) {
+    func return_void() {
         if self.is_main {
             self.terminate("ret i32 0");
         } else {
@@ -472,7 +400,7 @@ impl Gen {
         }
     }
 
-    func block(self: &Gen, body: Vec<&Stmt>) {
+    func block(body: Vec<&Stmt>) {
         var i = 0;
         while i < body.len {
             self.stmt(body.get(i));
@@ -480,7 +408,7 @@ impl Gen {
         }
     }
 
-    func stmt(self: &Gen, s: &Stmt) {
+    func stmt(s: &Stmt) {
         match s.kind {
             StmtKind::VarDecl(_, _, _, value) => {
                 var slot = quote_local(s.ir_name);
@@ -555,7 +483,7 @@ impl Gen {
     // -----------------------------------------------------------------------
 
     // Can we take the address of `e` without copying it?
-    func addressable(self: &Gen, e: &Expr): bool {
+    func addressable(e: &Expr): bool {
         return match e.kind {
             ExprKind::Local(_) => true,
             ExprKind::Global(_) => true,
@@ -573,7 +501,7 @@ impl Gen {
     }
 
     // A pointer to the storage of `e` (a temporary copy if it isn't an lvalue)
-    func address(self: &Gen, e: &Expr): str {
+    func address(e: &Expr): str {
         match e.kind {
             ExprKind::Local(ir) => { return quote_local(ir); },
             ExprKind::Global(name) => { return quote_global(name); },
@@ -603,7 +531,7 @@ impl Gen {
         }
     }
 
-    func expr(self: &Gen, e: &Expr): str {
+    func expr(e: &Expr): str {
         match e.kind {
             ExprKind::IntLit(v) => { return self.int_constant(v, e.typ); },
             ExprKind::FloatLit(text) => {
@@ -715,7 +643,7 @@ impl Gen {
         }
     }
 
-    func int_constant(self: &Gen, v: int, t: Type): str {
+    func int_constant(v: int, t: Type): str {
         var bits = self.int_width(t);
         if bits > 0 && bits < 64 {
             // Wrap into the range of the type
@@ -741,7 +669,7 @@ impl Gen {
         return int_to_str(v);
     }
 
-    func binary(self: &Gen, op: BinOp, l: &Expr, r: &Expr): str {
+    func binary(op: BinOp, l: &Expr, r: &Expr): str {
         if op == BinOp::And || op == BinOp::Or {
             // Short-circuit through a stack slot
             var slot = self.temp_slot(Type::Bool);
@@ -829,7 +757,7 @@ impl Gen {
         return self.value(concat3(iop, " ", operands));
     }
 
-    func cast(self: &Gen, v: str, from: Type, to: Type): str {
+    func cast(v: str, from: Type, to: Type): str {
         var fw = self.int_width(from);
         var tw = self.int_width(to);
         var from_ll = self.llvm_type(from);
@@ -860,7 +788,7 @@ impl Gen {
         return self.value(concat3(conversion, " ", concat3(from_ll, " ", concat3(v, " to ", to_ll))));
     }
 
-    func call(self: &Gen, e: &Expr, symbol: str, args: Vec<&Expr>): str {
+    func call(e: &Expr, symbol: str, args: Vec<&Expr>): str {
         if str_eq(symbol, "gc_state") {
             return "@__azula_gc_state";
         }
@@ -928,7 +856,7 @@ impl Gen {
         return self.value(text);
     }
 
-    func enum_value(self: &Gen, name: str, tag: int, payload: Vec<&Expr>): str {
+    func enum_value(name: str, tag: int, payload: Vec<&Expr>): str {
         var info = self.c.enum_named(name);
         if !info.boxed {
             return int_to_str(tag);
@@ -962,7 +890,7 @@ impl Gen {
         return cell;
     }
 
-    func match_expr(self: &Gen, e: &Expr, scrutinee: &Expr, arms: Vec<&MatchArm>): str {
+    func match_expr(e: &Expr, scrutinee: &Expr, arms: Vec<&MatchArm>): str {
         var v = self.expr(scrutinee);
         var boxed = self.is_boxed_enum(scrutinee.typ);
         var tag = v;
@@ -1038,3 +966,74 @@ impl Gen {
         return "";
     }
 }
+
+func generate(c: &Checker, module_name: str): str {
+    var g = Gen {
+        c: c,
+        strings: StringBuilder::new(),
+        string_count: 0,
+        body: StringBuilder::new(),
+        allocas: StringBuilder::new(),
+        tmp_count: 0,
+        label_count: 0,
+        terminated: false,
+        continue_labels: Vec::new(),
+        break_labels: Vec::new(),
+        ret: Type::Void,
+        is_main: false,
+    };
+    return g.module(module_name);
+}
+
+// Escape bytes for an LLVM c"..." string
+func llvm_escape(s: str, sb: &StringBuilder) {
+    var i = 0;
+    while s[i] != 0 {
+        var c: int = s[i];
+        if c < 0 {
+            c = c + 256;
+        }
+        if c >= 32 && c < 127 && c != '"' && c != '\\' {
+            sb.append_char(c);
+        } else {
+            sb.append_char('\\');
+            var digits = "0123456789ABCDEF";
+            sb.append_char(digits[c / 16] as int);
+            sb.append_char(digits[c % 16] as int);
+        }
+        i = i + 1;
+    }
+}
+
+// Builtins the code generator implements itself rather than calling
+func is_intrinsic(symbol: str): bool {
+    return str_eq(symbol, "ptr_add") || str_eq(symbol, "gc_state") || str_eq(symbol, "gc_stack_pointer")
+        || str_eq(symbol, "gc_spill_registers") || !str_eq(link_name(symbol), symbol);
+}
+
+// The symbol a call to `symbol` links against (c_malloc calls C's malloc, ...)
+func link_name(symbol: str): str {
+    if str_eq(symbol, "c_malloc") || str_eq(symbol, "c_calloc") || str_eq(symbol, "c_realloc") || str_eq(symbol, "c_free") {
+        return substring(symbol, 2, strlen(symbol) - 2);
+    }
+    return symbol;
+}
+
+func quote_global(name: str): str {
+    return concat3("@\"", name, "\"");
+}
+
+func quote_local(name: str): str {
+    return concat3("%\"", name, "\"");
+}
+
+// The bit pattern of a double, in LLVM's hexadecimal float syntax
+func double_bits(text: str): str {
+    var cell: &float = malloc(sizeof(float));
+    cell[0] = strtod(text, null);
+    var bits = (cell as &int)[0];
+    var buf: str = malloc(24 * sizeof(u8));
+    snprintf(buf, 24, "0x%016lX", bits);
+    return buf;
+}
+

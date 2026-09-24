@@ -1,21 +1,19 @@
 enum Option<T> {
-    Some(T),
-    None,
-}
+    Some(T);
+    None;
 
-impl Option<T> {
-    func is_some(self: Option<T>): bool {
+    func is_some(): bool {
         return match self {
             Option::Some(_) => true,
             Option::None => false,
         };
     }
 
-    func is_none(self: Option<T>): bool {
+    func is_none(): bool {
         return !self.is_some();
     }
 
-    func unwrap(self: Option<T>): T {
+    func unwrap(): T {
         match self {
             Option::Some(value) => { return value; },
             Option::None => {
@@ -25,10 +23,11 @@ impl Option<T> {
         }
     }
 
-    func unwrap_or(self: Option<T>, default: T): T {
+    func unwrap_or(default: T): T {
         match self {
             Option::Some(value) => { return value; },
             Option::None => { return default; },
         }
     }
 }
+

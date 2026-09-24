@@ -16,12 +16,12 @@ extern func readlink(str, str, int): int;
 extern func mkdir(str, i32): i32;
 
 struct Options {
-    command: str,
-    file: str,
-    output: str,
-    emit_llvm: bool,
-    release: bool,
-    stdlib: str,
+    command: str;
+    file: str;
+    output: str;
+    emit_llvm: bool;
+    release: bool;
+    stdlib: str;
 }
 
 func usage() {

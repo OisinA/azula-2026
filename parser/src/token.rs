@@ -71,6 +71,7 @@ pub enum TokenKind<'a> {
     Null,     // null
     Type,     // type
     SizeOf,   // sizeof
+    Extend,   // extend
 
     Import, // import
 

@@ -1,0 +1,6 @@
+// error: `new` needs a struct literal
+struct Point { x: int; }
+func main {
+    var arena = Arena::new();
+    var p = new Point in arena;
+}

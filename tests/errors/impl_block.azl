@@ -1,0 +1,6 @@
+// error: `impl` blocks are gone
+struct Point { x: int; }
+impl Point {
+    func get(self: &Point): int { return self.x; }
+}
+func main {}

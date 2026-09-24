@@ -1,11 +1,9 @@
 // A growable array.
 struct Vec<T> {
-    data: &T,
-    len: int,
-    cap: int,
-}
+    data: &T;
+    len: int;
+    cap: int;
 
-impl Vec<T> {
     func new(): Vec<T> {
         return Vec::<T>::with_capacity(8);
     }
@@ -18,7 +16,7 @@ impl Vec<T> {
         return Vec { data: malloc(cap * sizeof(T)), len: 0, cap: cap };
     }
 
-    func push(self: &Vec<T>, value: T) {
+    func push(value: T) {
         if self.len == self.cap {
             self.cap = self.cap * 2;
             self.data = realloc(self.data, self.cap * sizeof(T));
@@ -27,46 +25,47 @@ impl Vec<T> {
         self.len = self.len + 1;
     }
 
-    func check_index(self: Vec<T>, index: int) {
+    func check_index(index: int) {
         if index < 0 || index >= self.len {
             printf("Vec index %ld out of bounds (length %ld)\n", index, self.len);
             exit(1);
         }
     }
 
-    func get(self: Vec<T>, index: int): T {
+    func get(index: int): T {
         self.check_index(index);
         return self.data[index];
     }
 
-    func set(self: &Vec<T>, index: int, value: T) {
+    func set(index: int, value: T) {
         self.check_index(index);
         self.data[index] = value;
     }
 
-    func length(self: Vec<T>): int {
+    func length(): int {
         return self.len;
     }
 
-    func is_empty(self: Vec<T>): bool {
+    func is_empty(): bool {
         return self.len == 0;
     }
 
-    func pop(self: &Vec<T>): T {
+    func pop(): T {
         self.check_index(self.len - 1);
         self.len = self.len - 1;
         return self.data[self.len];
     }
 
-    func peek(self: Vec<T>): T {
+    func peek(): T {
         return self.get(self.len - 1);
     }
 
-    func clear(self: &Vec<T>) {
+    func clear() {
         self.len = 0;
     }
 
-    func free_data(self: Vec<T>) {
+    func free_data() {
         free(self.data);
     }
 }
+

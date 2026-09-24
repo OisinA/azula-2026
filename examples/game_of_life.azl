@@ -4,27 +4,25 @@ const WIDTH: int = 10;
 const HEIGHT: int = 8;
 
 struct Grid {
-    cells: &bool,
-}
+    cells: &bool;
 
-impl Grid {
     func new(): Grid {
         var cells: &bool = calloc(WIDTH * HEIGHT, sizeof(bool));
         return Grid { cells: cells };
     }
 
-    func get(self: Grid, x: int, y: int): bool {
+    func get(x: int, y: int): bool {
         // Wrap around the edges
         var wx = (x + WIDTH) % WIDTH;
         var wy = (y + HEIGHT) % HEIGHT;
         return self.cells[wy * WIDTH + wx];
     }
 
-    func set(self: Grid, x: int, y: int, alive: bool) {
+    func set(x: int, y: int, alive: bool) {
         self.cells[y * WIDTH + x] = alive;
     }
 
-    func neighbours(self: Grid, x: int, y: int): int {
+    func neighbours(x: int, y: int): int {
         var count = 0;
         var dy = -1;
         while dy <= 1 {
@@ -40,7 +38,7 @@ impl Grid {
         return count;
     }
 
-    func step(self: Grid): Grid {
+    func step(): Grid {
         var next = Grid::new();
         var y = 0;
         while y < HEIGHT {
@@ -56,7 +54,7 @@ impl Grid {
         return next;
     }
 
-    func show(self: Grid) {
+    func show() {
         var y = 0;
         while y < HEIGHT {
             var x = 0;

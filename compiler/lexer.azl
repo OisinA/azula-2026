@@ -1,79 +1,80 @@
 // Turns source text into tokens.
 
 enum Tok {
-    Ident,
-    Int,
-    Float,
-    Str,
-    Char,
-    LParen,
-    RParen,
-    LBracket,
-    RBracket,
-    LBrace,
-    RBrace,
-    Dot,
-    Comma,
-    Semi,
-    Colon,
-    ColonColon,
-    Plus,
-    Minus,
-    Star,
-    StarStar,
-    Slash,
-    Percent,
-    Assign,
-    EqEq,
-    NotEq,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    Shl,
-    Shr,
-    Amp,
-    AmpAmp,
-    Pipe,
-    PipePipe,
-    Caret,
-    Tilde,
-    Bang,
-    FatArrow,
-    KwFunc,
-    KwReturn,
-    KwVar,
-    KwConst,
-    KwTrue,
-    KwFalse,
-    KwIf,
-    KwElse,
-    KwBreak,
-    KwContinue,
-    KwExtern,
-    KwVarargs,
-    KwWhile,
-    KwStruct,
-    KwImpl,
-    KwFor,
-    KwEnum,
-    KwMatch,
-    KwAs,
-    KwAlloc,
-    KwNull,
-    KwType,
-    KwImport,
-    KwSizeof,
-    Eof,
+    Ident;
+    Int;
+    Float;
+    Str;
+    Char;
+    LParen;
+    RParen;
+    LBracket;
+    RBracket;
+    LBrace;
+    RBrace;
+    Dot;
+    Comma;
+    Semi;
+    Colon;
+    ColonColon;
+    Plus;
+    Minus;
+    Star;
+    StarStar;
+    Slash;
+    Percent;
+    Assign;
+    EqEq;
+    NotEq;
+    Lt;
+    Le;
+    Gt;
+    Ge;
+    Shl;
+    Shr;
+    Amp;
+    AmpAmp;
+    Pipe;
+    PipePipe;
+    Caret;
+    Tilde;
+    Bang;
+    FatArrow;
+    KwFunc;
+    KwReturn;
+    KwVar;
+    KwConst;
+    KwTrue;
+    KwFalse;
+    KwIf;
+    KwElse;
+    KwBreak;
+    KwContinue;
+    KwExtern;
+    KwVarargs;
+    KwWhile;
+    KwStruct;
+    KwImpl;
+    KwFor;
+    KwEnum;
+    KwMatch;
+    KwAs;
+    KwAlloc;
+    KwNull;
+    KwType;
+    KwImport;
+    KwSizeof;
+    KwExtend;
+    Eof;
 }
 
 struct Token {
-    kind: Tok,
+    kind: Tok;
     // Identifier name, or the raw (still escaped) contents of a string/char literal
-    text: str,
+    text: str;
     // Value of an integer literal
-    value: int,
-    pos: int,
+    value: int;
+    pos: int;
 }
 
 func is_digit(c: int): bool {
@@ -122,11 +123,11 @@ func keyword_kind(word: str): Tok {
     if str_eq(word, "enum") { return Tok::KwEnum; }
     if str_eq(word, "match") { return Tok::KwMatch; }
     if str_eq(word, "as") { return Tok::KwAs; }
-    if str_eq(word, "alloc") { return Tok::KwAlloc; }
     if str_eq(word, "null") { return Tok::KwNull; }
     if str_eq(word, "type") { return Tok::KwType; }
     if str_eq(word, "import") { return Tok::KwImport; }
     if str_eq(word, "sizeof") { return Tok::KwSizeof; }
+    if str_eq(word, "extend") { return Tok::KwExtend; }
     return Tok::Ident;
 }
 

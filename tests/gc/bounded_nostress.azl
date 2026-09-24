@@ -2,8 +2,8 @@
 // staying small because garbage is reclaimed.
 
 struct Chunk {
-    data: &int,
-    size: int,
+    data: &int;
+    size: int;
 }
 
 func main {

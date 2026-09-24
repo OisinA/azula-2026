@@ -254,10 +254,10 @@ impl<'a> Lexer<'a> {
             "enum" => Token::new(TokenKind::Enum, start, self.index),
             "match" => Token::new(TokenKind::Match, start, self.index),
             "as" => Token::new(TokenKind::As, start, self.index),
-            "alloc" => Token::new(TokenKind::Alloc, start, self.index),
             "null" => Token::new(TokenKind::Null, start, self.index),
             "type" => Token::new(TokenKind::Type, start, self.index),
             "sizeof" => Token::new(TokenKind::SizeOf, start, self.index),
+            "extend" => Token::new(TokenKind::Extend, start, self.index),
             "import" => Token::new(TokenKind::Import, start, self.index),
             _ => Token::new(TokenKind::Identifier(value), start, self.index),
         }

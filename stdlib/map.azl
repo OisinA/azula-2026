@@ -1,23 +1,11 @@
 // A hash map from strings to values, using open addressing. Keys are not
 // copied, so they must stay alive as long as the map does.
 struct Map<V> {
-    keys: &str,
-    values: &V,
-    cap: int,
-    count: int,
-}
+    keys: &str;
+    values: &V;
+    cap: int;
+    count: int;
 
-func map_hash(key: str): int {
-    var h = 5381;
-    var i = 0;
-    while key[i] != 0 {
-        h = ((h << 5) + h) ^ (key[i] as int);
-        i = i + 1;
-    }
-    return h & 0x7fffffffffffffff;
-}
-
-impl Map<V> {
     func new(): Map<V> {
         return Map::<V>::with_capacity(16);
     }
@@ -32,7 +20,7 @@ impl Map<V> {
     }
 
     // The slot holding `key`, or the empty slot where it would go
-    func slot(self: Map<V>, key: str): int {
+    func slot(key: str): int {
         var index = map_hash(key) % self.cap;
         while self.keys[index] != null {
             if strcmp(self.keys[index], key) == 0 {
@@ -43,7 +31,7 @@ impl Map<V> {
         return index;
     }
 
-    func insert(self: &Map<V>, key: str, value: V) {
+    func insert(key: str, value: V) {
         if (self.count + 1) * 2 > self.cap {
             self.grow();
         }
@@ -55,7 +43,7 @@ impl Map<V> {
         self.values[index] = value;
     }
 
-    func grow(self: &Map<V>) {
+    func grow() {
         var bigger = Map::<V>::with_capacity(self.cap * 2);
         var i = 0;
         while i < self.cap {
@@ -71,7 +59,7 @@ impl Map<V> {
         self.cap = bigger.cap;
     }
 
-    func get(self: Map<V>, key: str): Option<V> {
+    func get(key: str): Option<V> {
         var index = self.slot(key);
         if self.keys[index] == null {
             return Option::None;
@@ -79,16 +67,16 @@ impl Map<V> {
         return Option::Some(self.values[index]);
     }
 
-    func contains(self: Map<V>, key: str): bool {
+    func contains(key: str): bool {
         return self.keys[self.slot(key)] != null;
     }
 
-    func length(self: Map<V>): int {
+    func length(): int {
         return self.count;
     }
 
     // All keys, in no particular order
-    func key_list(self: Map<V>): Vec<str> {
+    func key_list(): Vec<str> {
         var keys: Vec<str> = Vec::new();
         var i = 0;
         while i < self.cap {
@@ -100,3 +88,14 @@ impl Map<V> {
         return keys;
     }
 }
+
+func map_hash(key: str): int {
+    var h = 5381;
+    var i = 0;
+    while key[i] != 0 {
+        h = ((h << 5) + h) ^ (key[i] as int);
+        i = i + 1;
+    }
+    return h & 0x7fffffffffffffff;
+}
+

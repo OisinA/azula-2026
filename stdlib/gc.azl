@@ -36,56 +36,56 @@ const GC_STATE_SIZE: int = 512;
 
 struct GcPage {
     // Address of the first object
-    start: int,
-    object_size: int,
+    start: int;
+    object_size: int;
     // Number of objects the page holds (1 for large objects)
-    capacity: int,
+    capacity: int;
     // Number of GC pages spanned (more than 1 only for large objects)
-    page_count: int,
+    page_count: int;
     // Size class, or -1 for a large object
-    size_class: int,
-    live: int,
+    size_class: int;
+    live: int;
     // Slots before this one are all in use
-    cursor: int,
+    cursor: int;
     // Whether the page is on its size class's list of pages with free space
-    available: bool,
-    next_available: &GcPage,
+    available: bool;
+    next_available: &GcPage;
     // One byte (0 or 1) per object each, padded to a multiple of 8 objects
-    used: str,
-    marks: str,
-    atomic: str,
+    used: str;
+    marks: str;
+    atomic: str;
 }
 
 struct GcState {
-    initialised: bool,
+    initialised: bool;
     // Address just above main's frame; 0 until main has started (no collections)
-    stack_base: int,
+    stack_base: int;
     // Page table: page number -> descriptor (open addressing; -1 marks a removed key)
-    table_keys: &int,
-    table_pages: &&GcPage,
-    table_cap: int,
-    table_count: int,
-    pages: &&GcPage,
-    page_count: int,
-    page_cap: int,
+    table_keys: &int;
+    table_pages: &&GcPage;
+    table_cap: int;
+    table_count: int;
+    pages: &&GcPage;
+    page_count: int;
+    page_cap: int;
     // For each size class, the pages with free objects
-    available: &&GcPage,
-    heap_min: int,
-    heap_max: int,
-    allocated: int,
-    threshold: int,
-    live_bytes: int,
-    mark_stack: &int,
-    mark_len: int,
-    mark_cap: int,
-    collections: int,
-    allocations: int,
-    stress: int,
-    verbose: bool,
+    available: &&GcPage;
+    heap_min: int;
+    heap_max: int;
+    allocated: int;
+    threshold: int;
+    live_bytes: int;
+    mark_stack: &int;
+    mark_len: int;
+    mark_cap: int;
+    collections: int;
+    allocations: int;
+    stress: int;
+    verbose: bool;
     // Extra memory to scan for pointers: (start, end) address pairs
-    roots: &int,
-    root_len: int,
-    root_cap: int,
+    roots: &int;
+    root_len: int;
+    root_cap: int;
 }
 
 func gc(): &GcState {

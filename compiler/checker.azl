@@ -6,409 +6,92 @@
 // methods are instantiated on demand for each set of type arguments used.
 
 struct VarInfo {
-    typ: Type,
-    mutable: bool,
-    ir: str,
+    typ: Type;
+    mutable: bool;
+    ir: str;
 }
 
 struct StructInfo {
-    name: str,
-    fields: Vec<Param>,
+    name: str;
+    fields: Vec<Param>;
 }
 
 struct EnumInfo {
-    name: str,
-    variants: Vec<str>,
-    payloads: Vec<Vec<Type>>,
+    name: str;
+    variants: Vec<str>;
+    payloads: Vec<Vec<Type>>;
     // Enums with any payload are boxed: values are pointers to heap cells
-    boxed: bool,
+    boxed: bool;
 }
 
 struct FuncSig {
-    symbol: str,
-    params: Vec<Type>,
-    ret: Type,
-    is_varargs: bool,
-    is_extern: bool,
+    symbol: str;
+    params: Vec<Type>;
+    ret: Type;
+    is_varargs: bool;
+    is_extern: bool;
+    // Whether the first parameter is `self`
+    is_method: bool;
 }
 
 struct Instance {
-    generic: str,
-    args: Vec<Type>,
+    generic: str;
+    args: Vec<Type>;
 }
 
 // A method of a generic type, with the names the impl gave the type's parameters
 struct GenericMethod {
-    params: Vec<str>,
-    decl: &FuncDecl,
+    params: Vec<str>;
+    decl: &FuncDecl;
 }
 
 struct Checker {
-    src: &Source,
-    structs: Map<&StructInfo>,
-    enums: Map<&EnumInfo>,
+    src: &Source;
+    structs: Map<&StructInfo>;
+    enums: Map<&EnumInfo>;
     // Signatures by symbol: functions by name, methods as `Type.method`
-    funcs: Map<&FuncSig>,
-    generic_structs: Map<&StructDecl>,
-    generic_enums: Map<&EnumDecl>,
-    generic_funcs: Map<&FuncDecl>,
-    generic_methods: Map<Vec<GenericMethod>>,
-    instances: Map<Instance>,
-    instantiated: Map<bool>,
-    aliases: Map<Type>,
-    globals: Map<Type>,
+    funcs: Map<&FuncSig>;
+    generic_structs: Map<&StructDecl>;
+    generic_enums: Map<&EnumDecl>;
+    generic_funcs: Map<&FuncDecl>;
+    generic_methods: Map<Vec<GenericMethod>>;
+    instances: Map<Instance>;
+    instantiated: Map<bool>;
+    aliases: Map<Type>;
+    globals: Map<Type>;
 
     // Results, in a deterministic order
-    out_structs: Vec<&StructInfo>,
-    out_enums: Vec<&EnumInfo>,
-    out_funcs: Vec<&FuncDecl>,
-    out_globals: Vec<&GlobalDecl>,
-    extern_symbols: Vec<str>,
-    pending: Vec<&FuncDecl>,
+    out_structs: Vec<&StructInfo>;
+    out_enums: Vec<&EnumInfo>;
+    out_funcs: Vec<&FuncDecl>;
+    out_globals: Vec<&GlobalDecl>;
+    extern_symbols: Vec<str>;
+    pending: Vec<&FuncDecl>;
 
     // State for the function being checked
-    scopes: Vec<Map<VarInfo>>,
-    var_counter: int,
-    current_return: Type,
-    loop_depth: int,
+    scopes: Vec<Map<VarInfo>>;
+    var_counter: int;
+    current_return: Type;
+    loop_depth: int;
     // Whether the program includes the garbage collector (stdlib/gc.azl)
-    has_gc: bool,
-}
+    has_gc: bool;
 
-func new_checker(src: &Source): &Checker {
-    var c = alloc(Checker {
-        src: src,
-        structs: Map::new(),
-        enums: Map::new(),
-        funcs: Map::new(),
-        generic_structs: Map::new(),
-        generic_enums: Map::new(),
-        generic_funcs: Map::new(),
-        generic_methods: Map::new(),
-        instances: Map::new(),
-        instantiated: Map::new(),
-        aliases: Map::new(),
-        globals: Map::new(),
-        out_structs: Vec::new(),
-        out_enums: Vec::new(),
-        out_funcs: Vec::new(),
-        out_globals: Vec::new(),
-        extern_symbols: Vec::new(),
-        pending: Vec::new(),
-        scopes: Vec::new(),
-        var_counter: 0,
-        current_return: Type::Void,
-        loop_depth: 0,
-        has_gc: false,
-    });
-    c.add_builtins();
-    return c;
-}
-
-func types1(a: Type): Vec<Type> {
-    var v: Vec<Type> = Vec::new();
-    v.push(a);
-    return v;
-}
-
-func types2(a: Type, b: Type): Vec<Type> {
-    var v = types1(a);
-    v.push(b);
-    return v;
-}
-
-func types3(a: Type, b: Type, c: Type): Vec<Type> {
-    var v = types2(a, b);
-    v.push(c);
-    return v;
-}
-
-func types4(a: Type, b: Type, c: Type, d: Type): Vec<Type> {
-    var v = types3(a, b, c);
-    v.push(d);
-    return v;
-}
-
-// Substitute type arguments for type parameters
-func subst_type(t: Type, params: Vec<str>, args: Vec<Type>): Type {
-    return match t {
-        Type::Named(name) => {
-            var i = 0;
-            while i < params.len {
-                if str_eq(params.get(i), name) {
-                    return args.get(i);
-                }
-                i = i + 1;
-            }
-            t
-        },
-        Type::Ptr(inner) => Type::Ptr(subst_type(inner, params, args)),
-        Type::Array(inner, size) => Type::Array(subst_type(inner, params, args), size),
-        Type::Generic(name, targs) => {
-            var out: Vec<Type> = Vec::new();
-            var i = 0;
-            while i < targs.len {
-                out.push(subst_type(targs.get(i), params, args));
-                i = i + 1;
-            }
-            Type::Generic(name, out)
-        },
-        _ => t,
-    };
-}
-
-// ---------------------------------------------------------------------------
-// Copying generic definitions (with their type parameters substituted)
-// ---------------------------------------------------------------------------
-
-struct Copier {
-    params: Vec<str>,
-    args: Vec<Type>,
-}
-
-impl Copier {
-    func typ(self: &Copier, t: Type): Type {
-        return subst_type(t, self.params, self.args);
-    }
-
-    func exprs(self: &Copier, list: Vec<&Expr>): Vec<&Expr> {
-        var out: Vec<&Expr> = Vec::new();
-        var i = 0;
-        while i < list.len {
-            out.push(self.expr(list.get(i)));
-            i = i + 1;
-        }
-        return out;
-    }
-
-    func stmts(self: &Copier, list: Vec<&Stmt>): Vec<&Stmt> {
-        var out: Vec<&Stmt> = Vec::new();
-        var i = 0;
-        while i < list.len {
-            out.push(self.stmt(list.get(i)));
-            i = i + 1;
-        }
-        return out;
-    }
-
-    func opt_expr(self: &Copier, e: Option<&Expr>): Option<&Expr> {
-        return match e {
-            Option::Some(x) => Option::Some(self.expr(x)),
-            Option::None => Option::None,
-        };
-    }
-
-    func expr(self: &Copier, e: &Expr): &Expr {
-        var kind = match e.kind {
-            ExprKind::Binary(op, l, r) => ExprKind::Binary(op, self.expr(l), self.expr(r)),
-            ExprKind::Unary(op, x) => ExprKind::Unary(op, self.expr(x)),
-            ExprKind::AddrOf(x) => ExprKind::AddrOf(self.expr(x)),
-            ExprKind::Call(f, args) => ExprKind::Call(self.expr(f), self.exprs(args)),
-            ExprKind::Index(a, i) => ExprKind::Index(self.expr(a), self.expr(i)),
-            ExprKind::Field(x, name) => ExprKind::Field(self.expr(x), name),
-            ExprKind::Path(ns, member) => ExprKind::Path(self.expr(ns), member),
-            ExprKind::Turbofish(name, targs) => {
-                var out: Vec<Type> = Vec::new();
-                var i = 0;
-                while i < targs.len {
-                    out.push(self.typ(targs.get(i)));
-                    i = i + 1;
-                }
-                ExprKind::Turbofish(name, out)
-            },
-            ExprKind::StructLit(name, fields) => {
-                var out: Vec<FieldInit> = Vec::new();
-                var i = 0;
-                while i < fields.len {
-                    var f = fields.get(i);
-                    out.push(FieldInit { name: f.name, value: self.expr(f.value), pos: f.pos });
-                    i = i + 1;
-                }
-                ExprKind::StructLit(self.expr(name), out)
-            },
-            ExprKind::ArrayLit(items) => ExprKind::ArrayLit(self.exprs(items)),
-            ExprKind::Cast(x, t) => ExprKind::Cast(self.expr(x), self.typ(t)),
-            ExprKind::SizeOf(t) => ExprKind::SizeOf(self.typ(t)),
-            ExprKind::Alloc(x) => ExprKind::Alloc(self.expr(x)),
-            ExprKind::AllocIn(x, arena) => ExprKind::AllocIn(self.expr(x), self.expr(arena)),
-            ExprKind::Match(scrutinee, arms) => {
-                var out: Vec<&MatchArm> = Vec::new();
-                var i = 0;
-                while i < arms.len {
-                    var arm = arms.get(i);
-                    out.push(alloc(MatchArm {
-                        pattern: arm.pattern,
-                        body: self.expr(arm.body),
-                        pos: arm.pos,
-                        enum_name: "",
-                        tag: 0,
-                        bindings: Vec::new(),
-                    }));
-                    i = i + 1;
-                }
-                ExprKind::Match(self.expr(scrutinee), out)
-            },
-            ExprKind::Block(stmts, value) => ExprKind::Block(self.stmts(stmts), self.opt_expr(value)),
-            _ => e.kind,
-        };
-        return new_expr(kind, e.pos);
-    }
-
-    func stmt(self: &Copier, s: &Stmt): &Stmt {
-        var kind = match s.kind {
-            StmtKind::VarDecl(name, mutable, t, value) => StmtKind::VarDecl(name, mutable, self.typ(t), self.expr(value)),
-            StmtKind::Assign(target, value) => StmtKind::Assign(self.expr(target), self.expr(value)),
-            StmtKind::ExprStmt(e) => StmtKind::ExprStmt(self.expr(e)),
-            StmtKind::Return(value) => StmtKind::Return(self.opt_expr(value)),
-            StmtKind::If(cond, then_body, else_body) => StmtKind::If(self.expr(cond), self.stmts(then_body), self.stmts(else_body)),
-            StmtKind::Loop(cond, body) => StmtKind::Loop(self.opt_expr(cond), self.stmts(body)),
-            _ => s.kind,
-        };
-        return new_stmt(kind, s.pos);
-    }
-
-    func copy_func(self: &Copier, decl: &FuncDecl, symbol: str): &FuncDecl {
-        var params: Vec<Param> = Vec::new();
-        var i = 0;
-        while i < decl.params.len {
-            var p = decl.params.get(i);
-            params.push(Param { name: p.name, typ: self.typ(p.typ) });
-            i = i + 1;
-        }
-        return alloc(FuncDecl {
-            name: decl.name,
-            type_params: Vec::new(),
-            params: params,
-            ret: self.typ(decl.ret),
-            body: self.stmts(decl.body),
-            pos: decl.pos,
-            is_extern: false,
-            is_varargs: false,
-            symbol: symbol,
-        });
-    }
-}
-
-// Does executing `body` always end in a return (or never finish)?
-func always_returns(body: Vec<&Stmt>): bool {
-    if body.len == 0 {
-        return false;
-    }
-    var last = body.get(body.len - 1);
-    return match last.kind {
-        StmtKind::Return(_) => true,
-        StmtKind::If(_, then_body, else_body) => always_returns(then_body) && always_returns(else_body),
-        StmtKind::Loop(cond, loop_body) => {
-            var infinite = match cond {
-                Option::None => true,
-                Option::Some(c) => match c.kind {
-                    ExprKind::BoolLit(b) => b,
-                    _ => false,
-                },
-            };
-            infinite && !contains_break(loop_body)
-        },
-        StmtKind::ExprStmt(e) => match e.kind {
-            ExprKind::Match(_, arms) => {
-                var i = 0;
-                var all = true;
-                while i < arms.len {
-                    var arm_returns = match arms.get(i).body.kind {
-                        ExprKind::Block(stmts, value) => value.is_none() && always_returns(stmts),
-                        _ => false,
-                    };
-                    if !arm_returns {
-                        all = false;
-                    }
-                    i = i + 1;
-                }
-                all
-            },
-            ExprKind::Call(f, _) => match f.kind {
-                ExprKind::Ident(name) => str_eq(name, "exit") || str_eq(name, "abort"),
-                _ => false,
-            },
-            ExprKind::CallFn(name, _) => str_eq(name, "exit") || str_eq(name, "abort"),
-            _ => false,
-        },
-        _ => false,
-    };
-}
-
-// Does `body` contain a `break` for this loop (not a nested one)?
-func contains_break(body: Vec<&Stmt>): bool {
-    var i = 0;
-    while i < body.len {
-        var found = match body.get(i).kind {
-            StmtKind::Break => true,
-            StmtKind::If(_, then_body, else_body) => contains_break(then_body) || contains_break(else_body),
-            StmtKind::ExprStmt(e) => match e.kind {
-                ExprKind::Match(_, arms) => {
-                    var j = 0;
-                    var any = false;
-                    while j < arms.len {
-                        match arms.get(j).body.kind {
-                            ExprKind::Block(stmts, _) => {
-                                if contains_break(stmts) {
-                                    any = true;
-                                }
-                            },
-                            _ => {},
-                        }
-                        j = j + 1;
-                    }
-                    any
-                },
-                _ => false,
-            },
-            _ => false,
-        };
-        if found {
-            return true;
-        }
-        i = i + 1;
-    }
-    return false;
-}
-
-func is_int_literal(e: &Expr): bool {
-    return match e.kind {
-        ExprKind::IntLit(_) => true,
-        ExprKind::Unary(op, inner) => op == UnOp::Neg && is_int_literal(inner),
-        _ => false,
-    };
-}
-
-// Can a value of type `got` (from expression `e`) be stored where `expected` is wanted?
-func assignable(expected: Type, got: Type, e: &Expr): bool {
-    if type_eq(expected, got) {
-        return true;
-    }
-    if is_integer(expected) && is_integer(got) {
-        return is_int_literal(e) || type_eq(got, Type::Int) || type_eq(expected, Type::Int);
-    }
-    if is_pointer_like(expected) && is_pointer_like(got) {
-        return type_eq(expected, Type::Str) || type_eq(got, Type::Str);
-    }
-    return false;
-}
-
-impl Checker {
-    func fail(self: &Checker, pos: int, message: str) {
+    func fail(pos: int, message: str) {
         self.src.fail(pos, message);
     }
 
-    func add_builtin(self: &Checker, name: str, params: Vec<Type>, ret: Type, is_varargs: bool) {
-        self.funcs.insert(name, alloc(FuncSig {
+    func add_builtin(name: str, params: Vec<Type>, ret: Type, is_varargs: bool) {
+        self.funcs.insert(name, new FuncSig {
             symbol: name,
             params: params,
             ret: ret,
             is_varargs: is_varargs,
             is_extern: true,
-        }));
+            is_method: false,
+        });
     }
 
-    func add_builtins(self: &Checker) {
+    func add_builtins() {
         var i32t = Type::SInt(32);
         self.add_builtin("printf", types1(Type::Str), i32t, true);
         self.add_builtin("strlen", types1(Type::Str), Type::Int, false);
@@ -439,7 +122,9 @@ impl Checker {
     // Program
     // -----------------------------------------------------------------------
 
-    func check_program(self: &Checker, program: &Program) {
+    func check_program(program: &Program) {
+        Checker::resolve_receivers(program);
+
         // Pass 0: names of everything declared, so order doesn't matter
         var i = 0;
         while i < program.aliases.len {
@@ -455,7 +140,7 @@ impl Checker {
             if s.type_params.len > 0 {
                 self.generic_structs.insert(s.name, s);
             } else {
-                var info = alloc(StructInfo { name: s.name, fields: s.fields });
+                var info = new StructInfo { name: s.name, fields: s.fields };
                 self.structs.insert(s.name, info);
                 self.out_structs.push(info);
             }
@@ -481,7 +166,7 @@ impl Checker {
                     }
                     j = j + 1;
                 }
-                var info = alloc(EnumInfo { name: e.name, variants: names, payloads: payloads, boxed: boxed });
+                var info = new EnumInfo { name: e.name, variants: names, payloads: payloads, boxed: boxed };
                 self.enums.insert(e.name, info);
                 self.out_enums.push(info);
             }
@@ -599,7 +284,51 @@ impl Checker {
         }
     }
 
-    func resolve_params(self: &Checker, params: Vec<Param>, pos: int): Vec<Param> {
+    // Give methods their receiver type and resolve `Self`: in a type's methods,
+    // `self` is a reference (`&T`) for structs and a value for other types
+    func resolve_receivers(program: &Program) {
+        var structs: Map<bool> = Map::new();
+        var i = 0;
+        while i < program.structs.len {
+            structs.insert(program.structs.get(i).name, true);
+            i = i + 1;
+        }
+        i = 0;
+        while i < program.impls.len {
+            var imp = program.impls.get(i);
+            var base = named_of(imp.target);
+            match imp.target {
+                Type::Generic(name, _) => { base = name; },
+                _ => {},
+            }
+            var receiver = imp.target;
+            if structs.contains(base) {
+                receiver = Type::Ptr(imp.target);
+            }
+            var params: Vec<str> = Vec::new();
+            params.push("Self");
+            params.push("__self");
+            var args: Vec<Type> = Vec::new();
+            args.push(imp.target);
+            args.push(receiver);
+            var copier = Copier { params: params, args: args };
+            var methods: Vec<&FuncDecl> = Vec::new();
+            var j = 0;
+            while j < imp.methods.len {
+                var m = imp.methods.get(j);
+                var copy = copier.copy_func(m, m.symbol);
+                copy.type_params = m.type_params;
+                copy.is_extern = m.is_extern;
+                copy.is_varargs = m.is_varargs;
+                methods.push(copy);
+                j = j + 1;
+            }
+            imp.methods = methods;
+            i = i + 1;
+        }
+    }
+
+    func resolve_params(params: Vec<Param>, pos: int): Vec<Param> {
         var out: Vec<Param> = Vec::new();
         var i = 0;
         while i < params.len {
@@ -610,7 +339,7 @@ impl Checker {
         return out;
     }
 
-    func resolve_payloads(self: &Checker, payloads: Vec<Vec<Type>>, pos: int): Vec<Vec<Type>> {
+    func resolve_payloads(payloads: Vec<Vec<Type>>, pos: int): Vec<Vec<Type>> {
         var out: Vec<Vec<Type>> = Vec::new();
         var i = 0;
         while i < payloads.len {
@@ -627,7 +356,7 @@ impl Checker {
         return out;
     }
 
-    func check_unique(self: &Checker, names: &Map<bool>, name: str, pos: int) {
+    func check_unique(names: &Map<bool>, name: str, pos: int) {
         if names.contains(name) {
             self.fail(pos, concat3("`", name, "` is defined more than once"));
         }
@@ -635,7 +364,7 @@ impl Checker {
     }
 
     // Record the signature of a (non-generic) function under `symbol`
-    func declare_func(self: &Checker, f: &FuncDecl, symbol: str) {
+    func declare_func(f: &FuncDecl, symbol: str) {
         // Externs may redeclare the compiler's built-in C functions
         var existing = self.funcs.get(symbol);
         if existing.is_some() && (!f.is_extern || !existing.unwrap().is_extern) {
@@ -650,16 +379,17 @@ impl Checker {
             params.push(f.params.get(i).typ);
             i = i + 1;
         }
-        self.funcs.insert(symbol, alloc(FuncSig {
+        self.funcs.insert(symbol, new FuncSig {
             symbol: symbol,
             params: params,
             ret: f.ret,
             is_varargs: f.is_varargs,
             is_extern: f.is_extern,
-        }));
+            is_method: f.params.len > 0 && str_eq(f.params.get(0).name, "self"),
+        });
     }
 
-    func check_global(self: &Checker, g: &GlobalDecl) {
+    func check_global(g: &GlobalDecl) {
         var expected = self.resolve_type(g.typ, g.pos);
         var valid = match g.value.kind {
             ExprKind::IntLit(_) => true,
@@ -689,7 +419,7 @@ impl Checker {
     // Types and generics
     // -----------------------------------------------------------------------
 
-    func resolve_type(self: &Checker, t: Type, pos: int): Type {
+    func resolve_type(t: Type, pos: int): Type {
         return match t {
             Type::Named(name) => {
                 var alias = self.aliases.get(name);
@@ -721,7 +451,7 @@ impl Checker {
         };
     }
 
-    func type_params_of(self: &Checker, name: str): Vec<str> {
+    func type_params_of(name: str): Vec<str> {
         match self.generic_structs.get(name) {
             Option::Some(s) => { return s.type_params; },
             Option::None => {},
@@ -734,7 +464,7 @@ impl Checker {
     }
 
     // The concrete type for generic `name` applied to `args`, creating it if needed
-    func instantiate_type(self: &Checker, name: str, args: Vec<Type>, pos: int): Type {
+    func instantiate_type(name: str, args: Vec<Type>, pos: int): Type {
         var inst = mangle(Type::Generic(name, args));
         if self.instances.contains(inst) {
             return Type::Named(inst);
@@ -750,7 +480,7 @@ impl Checker {
 
         match self.generic_structs.get(name) {
             Option::Some(decl) => {
-                var info = alloc(StructInfo { name: inst, fields: Vec::new() });
+                var info = new StructInfo { name: inst, fields: Vec::new() };
                 self.structs.insert(inst, info);
                 self.out_structs.push(info);
                 var fields: Vec<Param> = Vec::new();
@@ -766,7 +496,7 @@ impl Checker {
         }
         match self.generic_enums.get(name) {
             Option::Some(decl) => {
-                var info = alloc(EnumInfo { name: inst, variants: Vec::new(), payloads: Vec::new(), boxed: false });
+                var info = new EnumInfo { name: inst, variants: Vec::new(), payloads: Vec::new(), boxed: false };
                 self.enums.insert(inst, info);
                 self.out_enums.push(info);
                 var i = 0;
@@ -801,20 +531,21 @@ impl Checker {
                 j = j + 1;
             }
             var symbol = concat3(inst, ".", m.decl.name);
-            self.funcs.insert(symbol, alloc(FuncSig {
+            self.funcs.insert(symbol, new FuncSig {
                 symbol: symbol,
                 params: sig_params,
                 ret: self.resolve_type(subst_type(m.decl.ret, m.params, args), m.decl.pos),
                 is_varargs: false,
                 is_extern: false,
-            }));
+                is_method: m.decl.params.len > 0 && str_eq(m.decl.params.get(0).name, "self"),
+            });
             i = i + 1;
         }
         return Type::Named(inst);
     }
 
     // Make sure the body of `type_name.method` exists if it's a generic method
-    func instantiate_method(self: &Checker, type_name: str, method: str) {
+    func instantiate_method(type_name: str, method: str) {
         var symbol = concat3(type_name, ".", method);
         if self.instantiated.contains(symbol) {
             return;
@@ -838,7 +569,7 @@ impl Checker {
     }
 
     // The symbol of generic function `name` instantiated with `args`
-    func instantiate_function(self: &Checker, name: str, args: Vec<Type>, pos: int): str {
+    func instantiate_function(name: str, args: Vec<Type>, pos: int): str {
         var symbol = mangle(Type::Generic(name, args));
         if self.instantiated.contains(symbol) {
             return symbol;
@@ -856,7 +587,7 @@ impl Checker {
     }
 
     // Match a generic `pattern` type against a `concrete` one, binding type parameters
-    func unify(self: &Checker, pattern: Type, concrete: Type, params: Vec<str>, bindings: &Map<Type>) {
+    func unify(pattern: Type, concrete: Type, params: Vec<str>, bindings: &Map<Type>) {
         match pattern {
             Type::Named(name) => {
                 if contains_str(params, name) && !bindings.contains(name) && !is_infer(concrete) {
@@ -896,7 +627,7 @@ impl Checker {
     // Work out the type arguments for generic `name`: from the expected type if
     // that is an instance of the same generic, otherwise by matching `patterns`
     // against the types of `args`.
-    func infer_type_args(self: &Checker, name: str, params: Vec<str>, expected: Type, patterns: Vec<Type>, args: Vec<&Expr>, pos: int): Vec<Type> {
+    func infer_type_args(name: str, params: Vec<str>, expected: Type, patterns: Vec<Type>, args: Vec<&Expr>, pos: int): Vec<Type> {
         match self.instances.get(named_of(expected)) {
             Option::Some(inst) => {
                 if str_eq(inst.generic, name) {
@@ -921,7 +652,7 @@ impl Checker {
     }
 
     // Bind type parameters by matching `patterns` against the types of `args`
-    func bind_params(self: &Checker, params: Vec<str>, patterns: Vec<Type>, args: Vec<&Expr>): Map<Type> {
+    func bind_params(params: Vec<str>, patterns: Vec<Type>, args: Vec<&Expr>): Map<Type> {
         var bindings: Map<Type> = Map::new();
         var i = 0;
         while i < patterns.len && i < args.len {
@@ -933,7 +664,7 @@ impl Checker {
 
     // The return type of a call to generic function `name`, if its type
     // arguments can be inferred from `args` (Infer otherwise)
-    func peek_generic_call(self: &Checker, name: str, args: Vec<&Expr>, pos: int): Type {
+    func peek_generic_call(name: str, args: Vec<&Expr>, pos: int): Type {
         var decl = self.generic_funcs.get(name).unwrap();
         var patterns: Vec<Type> = Vec::new();
         var i = 0;
@@ -957,7 +688,7 @@ impl Checker {
 
     // The type of an expression if it can be known without checking it (used for
     // inferring type arguments; Infer when unknown)
-    func peek_type(self: &Checker, e: &Expr): Type {
+    func peek_type(e: &Expr): Type {
         return match e.kind {
             ExprKind::IntLit(_) => Type::Int,
             ExprKind::FloatLit(_) => Type::Float,
@@ -1058,7 +789,7 @@ impl Checker {
     }
 
     // The struct a value of type `t` (or a pointer to it) is, or null
-    func struct_of(self: &Checker, t: Type): &StructInfo {
+    func struct_of(t: Type): &StructInfo {
         var name = named_of(t);
         match t {
             Type::Ptr(inner) => { name = named_of(inner); },
@@ -1073,7 +804,7 @@ impl Checker {
 
     // Resolve the `ns` of `ns::member` to a concrete type name, instantiating
     // generics (explicitly or by inference from `args` and `expected`)
-    func resolve_namespace(self: &Checker, ns: &Expr, member: str, args: Vec<&Expr>, expected: Type): str {
+    func resolve_namespace(ns: &Expr, member: str, args: Vec<&Expr>, expected: Type): str {
         return match ns.kind {
             ExprKind::Turbofish(name, targs) => {
                 var resolved: Vec<Type> = Vec::new();
@@ -1140,22 +871,22 @@ impl Checker {
     // Variables
     // -----------------------------------------------------------------------
 
-    func push_scope(self: &Checker) {
+    func push_scope() {
         self.scopes.push(Map::new());
     }
 
-    func pop_scope(self: &Checker) {
+    func pop_scope() {
         self.scopes.pop();
     }
 
-    func declare_var(self: &Checker, name: str, typ: Type, mutable: bool): str {
+    func declare_var(name: str, typ: Type, mutable: bool): str {
         self.var_counter = self.var_counter + 1;
         var ir = concat3(name, ".", int_to_str(self.var_counter));
         self.scopes.data[self.scopes.len - 1].insert(name, VarInfo { typ: typ, mutable: mutable, ir: ir });
         return ir;
     }
 
-    func lookup_var(self: &Checker, name: str): Option<VarInfo> {
+    func lookup_var(name: str): Option<VarInfo> {
         var i = self.scopes.len - 1;
         while i >= 0 {
             var found = self.scopes.get(i).get(name);
@@ -1171,7 +902,7 @@ impl Checker {
     // Functions and statements
     // -----------------------------------------------------------------------
 
-    func check_function(self: &Checker, f: &FuncDecl) {
+    func check_function(f: &FuncDecl) {
         self.scopes = Vec::new();
         self.push_scope();
         self.var_counter = 0;
@@ -1192,7 +923,7 @@ impl Checker {
         self.out_funcs.push(f);
     }
 
-    func check_block(self: &Checker, body: Vec<&Stmt>) {
+    func check_block(body: Vec<&Stmt>) {
         self.push_scope();
         var i = 0;
         while i < body.len {
@@ -1202,7 +933,7 @@ impl Checker {
         self.pop_scope();
     }
 
-    func check_stmt(self: &Checker, s: &Stmt) {
+    func check_stmt(s: &Stmt) {
         match s.kind {
             StmtKind::VarDecl(name, mutable, annotation, value) => {
                 var declared = self.resolve_type(annotation, s.pos);
@@ -1286,14 +1017,14 @@ impl Checker {
         }
     }
 
-    func check_condition(self: &Checker, cond: &Expr) {
+    func check_condition(cond: &Expr) {
         var t = self.check_expr(cond, Type::Bool);
         if !is_bool(t) {
             self.fail(cond.pos, concat("condition must be a bool, found ", mangle(t)));
         }
     }
 
-    func expect_assignable(self: &Checker, expected: Type, got: Type, e: &Expr) {
+    func expect_assignable(expected: Type, got: Type, e: &Expr) {
         if !assignable(expected, got, e) {
             self.fail(e.pos, concat3("expected ", mangle(expected), concat(", found ", mangle(got))));
         }
@@ -1305,13 +1036,13 @@ impl Checker {
 
     // Check `e`, which should have type `expected` if that isn't Infer, and
     // return its type
-    func check_expr(self: &Checker, e: &Expr, expected: Type): Type {
+    func check_expr(e: &Expr, expected: Type): Type {
         var t = self.check_expr_kind(e, expected);
         e.typ = t;
         return t;
     }
 
-    func check_expr_kind(self: &Checker, e: &Expr, expected: Type): Type {
+    func check_expr_kind(e: &Expr, expected: Type): Type {
         match e.kind {
             ExprKind::IntLit(_) => {
                 if is_integer(expected) {
@@ -1510,7 +1241,7 @@ impl Checker {
         }
     }
 
-    func check_binary(self: &Checker, e: &Expr, op: BinOp, l: &Expr, r: &Expr, expected: Type): Type {
+    func check_binary(e: &Expr, op: BinOp, l: &Expr, r: &Expr, expected: Type): Type {
         if op == BinOp::And || op == BinOp::Or {
             var lt = self.check_expr(l, Type::Bool);
             var rt = self.check_expr(r, Type::Bool);
@@ -1569,7 +1300,7 @@ impl Checker {
         return Type::Bool;
     }
 
-    func enum_named(self: &Checker, name: str): &EnumInfo {
+    func enum_named(name: str): &EnumInfo {
         var found = self.enums.get(name);
         if found.is_none() {
             return null;
@@ -1578,7 +1309,7 @@ impl Checker {
     }
 
     // The signature for `symbol`, or an error mentioning `what`
-    func sig_for(self: &Checker, symbol: str, what: str, pos: int): &FuncSig {
+    func sig_for(symbol: str, what: str, pos: int): &FuncSig {
         var found = self.funcs.get(symbol);
         if found.is_none() {
             self.fail(pos, what);
@@ -1586,7 +1317,7 @@ impl Checker {
         return found.unwrap();
     }
 
-    func variant_tag(self: &Checker, info: &EnumInfo, variant: str, pos: int): int {
+    func variant_tag(info: &EnumInfo, variant: str, pos: int): int {
         var i = 0;
         while i < info.variants.len {
             if str_eq(info.variants.get(i), variant) {
@@ -1598,7 +1329,7 @@ impl Checker {
         return 0;
     }
 
-    func check_args(self: &Checker, sig: &FuncSig, args: Vec<&Expr>, first_param: int, pos: int) {
+    func check_args(sig: &FuncSig, args: Vec<&Expr>, first_param: int, pos: int) {
         var expected_count = sig.params.len - first_param;
         if args.len < expected_count || (!sig.is_varargs && args.len != expected_count) {
             self.fail(pos, concat3("`", sig.symbol, concat3("` takes ", int_to_str(expected_count), concat(" arguments, got ", int_to_str(args.len)))));
@@ -1620,7 +1351,7 @@ impl Checker {
         }
     }
 
-    func check_call(self: &Checker, e: &Expr, callee: &Expr, args: Vec<&Expr>, expected: Type): Type {
+    func check_call(e: &Expr, callee: &Expr, args: Vec<&Expr>, expected: Type): Type {
         match callee.kind {
             ExprKind::Ident(name) => {
                 var symbol = name;
@@ -1658,7 +1389,7 @@ impl Checker {
             ExprKind::Path(ns, member) => {
                 var type_name = self.resolve_namespace(ns, member, args, expected);
                 var info = self.enum_named(type_name);
-                if info != null {
+                if info != null && contains_str(info.variants, member) {
                     // Constructing an enum variant with a payload
                     var tag = self.variant_tag(info, member, e.pos);
                     var payload = info.payloads.get(tag);
@@ -1695,8 +1426,8 @@ impl Checker {
                 self.instantiate_method(type_name, method);
                 var symbol = concat3(type_name, ".", method);
                 var sig = self.sig_for(symbol, concat3("no method `", method, concat("` on ", mangle(t))), callee.pos);
-                if sig.params.len == 0 {
-                    self.fail(callee.pos, concat3("`", method, "` is not a method"));
+                if !sig.is_method {
+                    self.fail(callee.pos, concat3("`", method, concat3("` doesn't use `self`, so it's a static function: call it as ", type_name, concat3("::", method, "()"))));
                 }
                 // Pass the receiver by pointer or by value, as the method wants
                 var receiver = obj;
@@ -1729,7 +1460,7 @@ impl Checker {
         }
     }
 
-    func check_struct_lit(self: &Checker, e: &Expr, name_expr: &Expr, fields: Vec<FieldInit>, expected: Type): Type {
+    func check_struct_lit(e: &Expr, name_expr: &Expr, fields: Vec<FieldInit>, expected: Type): Type {
         var name = match name_expr.kind {
             ExprKind::Ident(n) => n,
             ExprKind::Turbofish(n, _) => n,
@@ -1821,7 +1552,7 @@ impl Checker {
         return Type::Named(name);
     }
 
-    func check_match(self: &Checker, e: &Expr, scrutinee: &Expr, arms: Vec<&MatchArm>, expected: Type): Type {
+    func check_match(e: &Expr, scrutinee: &Expr, arms: Vec<&MatchArm>, expected: Type): Type {
         var st = self.check_expr(scrutinee, Type::Infer);
         var enum_name = named_of(st);
         var info = self.enum_named(enum_name);
@@ -1902,12 +1633,10 @@ impl Checker {
         }
         return result;
     }
-}
 
-impl Checker {
     // With the GC, malloc & co. allocate from the collected heap. Allocations
     // sized by a pointer-free type (`n * sizeof(int)`) aren't scanned.
-    func managed_allocator(self: &Checker, symbol: str, args: Vec<&Expr>): str {
+    func managed_allocator(symbol: str, args: Vec<&Expr>): str {
         if !self.has_gc {
             return symbol;
         }
@@ -1933,7 +1662,7 @@ impl Checker {
     }
 
     // Is `size` a multiple of the size of a type that holds no pointers?
-    func pointer_free_size(self: &Checker, size: &Expr): bool {
+    func pointer_free_size(size: &Expr): bool {
         return match size.kind {
             ExprKind::SizeOf(t) => !self.has_pointers(t),
             ExprKind::Binary(op, l, r) => op == BinOp::Mul && (self.pointer_free_size(l) || self.pointer_free_size(r)),
@@ -1942,7 +1671,7 @@ impl Checker {
     }
 
     // Can a value of type `t` hold a pointer to the heap?
-    func has_pointers(self: &Checker, t: Type): bool {
+    func has_pointers(t: Type): bool {
         return match t {
             Type::Int => false,
             Type::SInt(_) => false,
@@ -1971,6 +1700,322 @@ impl Checker {
             _ => true,
         };
     }
+}
+
+func new_checker(src: &Source): &Checker {
+    var c = new Checker {
+        src: src,
+        structs: Map::new(),
+        enums: Map::new(),
+        funcs: Map::new(),
+        generic_structs: Map::new(),
+        generic_enums: Map::new(),
+        generic_funcs: Map::new(),
+        generic_methods: Map::new(),
+        instances: Map::new(),
+        instantiated: Map::new(),
+        aliases: Map::new(),
+        globals: Map::new(),
+        out_structs: Vec::new(),
+        out_enums: Vec::new(),
+        out_funcs: Vec::new(),
+        out_globals: Vec::new(),
+        extern_symbols: Vec::new(),
+        pending: Vec::new(),
+        scopes: Vec::new(),
+        var_counter: 0,
+        current_return: Type::Void,
+        loop_depth: 0,
+        has_gc: false,
+    };
+    c.add_builtins();
+    return c;
+}
+
+func types1(a: Type): Vec<Type> {
+    var v: Vec<Type> = Vec::new();
+    v.push(a);
+    return v;
+}
+
+func types2(a: Type, b: Type): Vec<Type> {
+    var v = types1(a);
+    v.push(b);
+    return v;
+}
+
+func types3(a: Type, b: Type, c: Type): Vec<Type> {
+    var v = types2(a, b);
+    v.push(c);
+    return v;
+}
+
+func types4(a: Type, b: Type, c: Type, d: Type): Vec<Type> {
+    var v = types3(a, b, c);
+    v.push(d);
+    return v;
+}
+
+// Substitute type arguments for type parameters
+func subst_type(t: Type, params: Vec<str>, args: Vec<Type>): Type {
+    return match t {
+        Type::Named(name) => {
+            var i = 0;
+            while i < params.len {
+                if str_eq(params.get(i), name) {
+                    return args.get(i);
+                }
+                i = i + 1;
+            }
+            t
+        },
+        Type::Ptr(inner) => Type::Ptr(subst_type(inner, params, args)),
+        Type::Array(inner, size) => Type::Array(subst_type(inner, params, args), size),
+        Type::Generic(name, targs) => {
+            var out: Vec<Type> = Vec::new();
+            var i = 0;
+            while i < targs.len {
+                out.push(subst_type(targs.get(i), params, args));
+                i = i + 1;
+            }
+            Type::Generic(name, out)
+        },
+        _ => t,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Copying generic definitions (with their type parameters substituted)
+// ---------------------------------------------------------------------------
+
+struct Copier {
+    params: Vec<str>;
+    args: Vec<Type>;
+
+    func typ(t: Type): Type {
+        return subst_type(t, self.params, self.args);
+    }
+
+    func exprs(list: Vec<&Expr>): Vec<&Expr> {
+        var out: Vec<&Expr> = Vec::new();
+        var i = 0;
+        while i < list.len {
+            out.push(self.expr(list.get(i)));
+            i = i + 1;
+        }
+        return out;
+    }
+
+    func stmts(list: Vec<&Stmt>): Vec<&Stmt> {
+        var out: Vec<&Stmt> = Vec::new();
+        var i = 0;
+        while i < list.len {
+            out.push(self.stmt(list.get(i)));
+            i = i + 1;
+        }
+        return out;
+    }
+
+    func opt_expr(e: Option<&Expr>): Option<&Expr> {
+        return match e {
+            Option::Some(x) => Option::Some(self.expr(x)),
+            Option::None => Option::None,
+        };
+    }
+
+    func expr(e: &Expr): &Expr {
+        var kind = match e.kind {
+            ExprKind::Binary(op, l, r) => ExprKind::Binary(op, self.expr(l), self.expr(r)),
+            ExprKind::Unary(op, x) => ExprKind::Unary(op, self.expr(x)),
+            ExprKind::AddrOf(x) => ExprKind::AddrOf(self.expr(x)),
+            ExprKind::Call(f, args) => ExprKind::Call(self.expr(f), self.exprs(args)),
+            ExprKind::Index(a, i) => ExprKind::Index(self.expr(a), self.expr(i)),
+            ExprKind::Field(x, name) => ExprKind::Field(self.expr(x), name),
+            ExprKind::Path(ns, member) => ExprKind::Path(self.expr(ns), member),
+            ExprKind::Turbofish(name, targs) => {
+                var out: Vec<Type> = Vec::new();
+                var i = 0;
+                while i < targs.len {
+                    out.push(self.typ(targs.get(i)));
+                    i = i + 1;
+                }
+                ExprKind::Turbofish(name, out)
+            },
+            ExprKind::StructLit(name, fields) => {
+                var out: Vec<FieldInit> = Vec::new();
+                var i = 0;
+                while i < fields.len {
+                    var f = fields.get(i);
+                    out.push(FieldInit { name: f.name, value: self.expr(f.value), pos: f.pos });
+                    i = i + 1;
+                }
+                ExprKind::StructLit(self.expr(name), out)
+            },
+            ExprKind::ArrayLit(items) => ExprKind::ArrayLit(self.exprs(items)),
+            ExprKind::Cast(x, t) => ExprKind::Cast(self.expr(x), self.typ(t)),
+            ExprKind::SizeOf(t) => ExprKind::SizeOf(self.typ(t)),
+            ExprKind::Alloc(x) => ExprKind::Alloc(self.expr(x)),
+            ExprKind::AllocIn(x, arena) => ExprKind::AllocIn(self.expr(x), self.expr(arena)),
+            ExprKind::Match(scrutinee, arms) => {
+                var out: Vec<&MatchArm> = Vec::new();
+                var i = 0;
+                while i < arms.len {
+                    var arm = arms.get(i);
+                    out.push(new MatchArm {
+                        pattern: arm.pattern,
+                        body: self.expr(arm.body),
+                        pos: arm.pos,
+                        enum_name: "",
+                        tag: 0,
+                        bindings: Vec::new(),
+                    });
+                    i = i + 1;
+                }
+                ExprKind::Match(self.expr(scrutinee), out)
+            },
+            ExprKind::Block(stmts, value) => ExprKind::Block(self.stmts(stmts), self.opt_expr(value)),
+            _ => e.kind,
+        };
+        return new_expr(kind, e.pos);
+    }
+
+    func stmt(s: &Stmt): &Stmt {
+        var kind = match s.kind {
+            StmtKind::VarDecl(name, mutable, t, value) => StmtKind::VarDecl(name, mutable, self.typ(t), self.expr(value)),
+            StmtKind::Assign(target, value) => StmtKind::Assign(self.expr(target), self.expr(value)),
+            StmtKind::ExprStmt(e) => StmtKind::ExprStmt(self.expr(e)),
+            StmtKind::Return(value) => StmtKind::Return(self.opt_expr(value)),
+            StmtKind::If(cond, then_body, else_body) => StmtKind::If(self.expr(cond), self.stmts(then_body), self.stmts(else_body)),
+            StmtKind::Loop(cond, body) => StmtKind::Loop(self.opt_expr(cond), self.stmts(body)),
+            _ => s.kind,
+        };
+        return new_stmt(kind, s.pos);
+    }
+
+    func copy_func(decl: &FuncDecl, symbol: str): &FuncDecl {
+        var params: Vec<Param> = Vec::new();
+        var i = 0;
+        while i < decl.params.len {
+            var p = decl.params.get(i);
+            params.push(Param { name: p.name, typ: self.typ(p.typ) });
+            i = i + 1;
+        }
+        return new FuncDecl {
+            name: decl.name,
+            type_params: Vec::new(),
+            params: params,
+            ret: self.typ(decl.ret),
+            body: self.stmts(decl.body),
+            pos: decl.pos,
+            is_extern: false,
+            is_varargs: false,
+            symbol: symbol,
+        };
+    }
+}
+
+// Does executing `body` always end in a return (or never finish)?
+func always_returns(body: Vec<&Stmt>): bool {
+    if body.len == 0 {
+        return false;
+    }
+    var last = body.get(body.len - 1);
+    return match last.kind {
+        StmtKind::Return(_) => true,
+        StmtKind::If(_, then_body, else_body) => always_returns(then_body) && always_returns(else_body),
+        StmtKind::Loop(cond, loop_body) => {
+            var infinite = match cond {
+                Option::None => true,
+                Option::Some(c) => match c.kind {
+                    ExprKind::BoolLit(b) => b,
+                    _ => false,
+                },
+            };
+            infinite && !contains_break(loop_body)
+        },
+        StmtKind::ExprStmt(e) => match e.kind {
+            ExprKind::Match(_, arms) => {
+                var i = 0;
+                var all = true;
+                while i < arms.len {
+                    var arm_returns = match arms.get(i).body.kind {
+                        ExprKind::Block(stmts, value) => value.is_none() && always_returns(stmts),
+                        _ => false,
+                    };
+                    if !arm_returns {
+                        all = false;
+                    }
+                    i = i + 1;
+                }
+                all
+            },
+            ExprKind::Call(f, _) => match f.kind {
+                ExprKind::Ident(name) => str_eq(name, "exit") || str_eq(name, "abort"),
+                _ => false,
+            },
+            ExprKind::CallFn(name, _) => str_eq(name, "exit") || str_eq(name, "abort"),
+            _ => false,
+        },
+        _ => false,
+    };
+}
+
+// Does `body` contain a `break` for this loop (not a nested one)?
+func contains_break(body: Vec<&Stmt>): bool {
+    var i = 0;
+    while i < body.len {
+        var found = match body.get(i).kind {
+            StmtKind::Break => true,
+            StmtKind::If(_, then_body, else_body) => contains_break(then_body) || contains_break(else_body),
+            StmtKind::ExprStmt(e) => match e.kind {
+                ExprKind::Match(_, arms) => {
+                    var j = 0;
+                    var any = false;
+                    while j < arms.len {
+                        match arms.get(j).body.kind {
+                            ExprKind::Block(stmts, _) => {
+                                if contains_break(stmts) {
+                                    any = true;
+                                }
+                            },
+                            _ => {},
+                        }
+                        j = j + 1;
+                    }
+                    any
+                },
+                _ => false,
+            },
+            _ => false,
+        };
+        if found {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+func is_int_literal(e: &Expr): bool {
+    return match e.kind {
+        ExprKind::IntLit(_) => true,
+        ExprKind::Unary(op, inner) => op == UnOp::Neg && is_int_literal(inner),
+        _ => false,
+    };
+}
+
+// Can a value of type `got` (from expression `e`) be stored where `expected` is wanted?
+func assignable(expected: Type, got: Type, e: &Expr): bool {
+    if type_eq(expected, got) {
+        return true;
+    }
+    if is_integer(expected) && is_integer(got) {
+        return is_int_literal(e) || type_eq(got, Type::Int) || type_eq(expected, Type::Int);
+    }
+    if is_pointer_like(expected) && is_pointer_like(got) {
+        return type_eq(expected, Type::Str) || type_eq(got, Type::Str);
+    }
+    return false;
 }
 
 func arm_diverges(arm: &MatchArm): bool {

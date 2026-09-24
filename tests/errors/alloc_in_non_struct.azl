@@ -1,5 +1,0 @@
-// error: alloc needs a struct literal
-func main {
-    var arena = Arena::new();
-    var p = alloc(5) in arena;
-}

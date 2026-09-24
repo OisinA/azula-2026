@@ -71,19 +71,17 @@ More complete programs are in [`examples/`](examples).
 
 
 ```
-// Structs, with methods in impl blocks
+// Structs, with methods in their body (`self` is implicit)
 struct Point {
-    x: int,
-    y: int,
-}
+    x: int;
+    y: int;
 
-impl Point {
-    func length_squared(self: Point): int {
+    func length_squared(): int {
         return self.x * self.x + self.y * self.y;
     }
 
-    // Methods taking &Self can modify the value they're called on
-    func shift(self: &Point, dx: int) {
+    // `self` is a reference, so methods can modify the value they're called on
+    func shift(dx: int) {
         self.x = self.x + dx;
     }
 }
@@ -91,9 +89,9 @@ impl Point {
 // Enums can carry payloads; values of these enums are immutable and
 // heap-allocated, so they can be recursive
 enum Expr {
-    Num(int),
-    Add(Expr, Expr),
-    Neg(Expr),
+    Num(int);
+    Add(Expr, Expr);
+    Neg(Expr);
 }
 
 func eval(e: Expr): int {
@@ -115,8 +113,8 @@ func max<T>(a: T, b: T): T {
 }
 
 struct Pair<A, B> {
-    first: A,
-    second: B,
+    first: A;
+    second: B;
 }
 
 func main {
@@ -155,13 +153,17 @@ Other things to know:
 - Loops are `while cond { }`, `for cond { }` and `for { }`, with `break` and `continue`.
 - `match` works on enums and integers (including character literals); arms can be
   blocks, and a `match` can be used as a statement or an expression.
+- Methods are declared in a type's body and receive `self` implicitly (a reference for
+  structs, the value for enums); a function there that doesn't use `self` is static and is
+  called as `Type::name()`. `extend Type { ... }` adds methods to a type from elsewhere.
+- Struct fields and enum variants end with `;`, and `new Type { ... }` allocates on the heap.
 - `extern func name(types): type;` (optionally `extern varargs func`) declares C functions;
   `stdlib/libc.azl` declares the common ones.
 - Memory: see below.
 
 ## Memory management
 
-Programs built by the self-hosted compiler are garbage collected. `alloc(Struct { ... })`,
+Programs built by the self-hosted compiler are garbage collected. `new Struct { ... }`,
 enum values with payloads, array literals and `malloc`/`calloc`/`realloc` all allocate from
 a conservative, non-moving mark-and-sweep collector (`stdlib/gc.azl`, written in Azula).
 `free` still releases memory immediately, but is never required.
@@ -170,7 +172,7 @@ For many short-lived objects with a shared lifetime, use an arena:
 
 ```
 var arena = Arena::new();
-var node = alloc(Node { value: 1, next: null }) in arena;
+var node = new Node { value: 1, next: null } in arena;
 ...
 arena.free_all();   // frees everything allocated in the arena at once
 ```

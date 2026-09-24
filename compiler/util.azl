@@ -125,23 +125,12 @@ func file_exists(path: str): bool {
 // All source files are concatenated into one text. For each line of that text
 // we remember the file and line number it came from.
 struct Source {
-    text: StringBuilder,
-    line_starts: Vec<int>,
-    line_files: Vec<str>,
-    line_numbers: Vec<int>,
-}
+    text: StringBuilder;
+    line_starts: Vec<int>;
+    line_files: Vec<str>;
+    line_numbers: Vec<int>;
 
-func new_source(): &Source {
-    return alloc(Source {
-        text: StringBuilder::new(),
-        line_starts: Vec::new(),
-        line_files: Vec::new(),
-        line_numbers: Vec::new(),
-    });
-}
-
-impl Source {
-    func add_line(self: &Source, line: str, file: str, number: int) {
+    func add_line(line: str, file: str, number: int) {
         self.line_starts.push(self.text.len);
         self.line_files.push(file);
         self.line_numbers.push(number);
@@ -151,7 +140,7 @@ impl Source {
 
     // Add a file line by line; `import "..."` lines are handed to `on_import`
     // by returning them in `imports` and blanked out.
-    func add_file(self: &Source, file: str, contents: str, imports: &Vec<str>) {
+    func add_file(file: str, contents: str, imports: &Vec<str>) {
         var start = 0;
         var number = 1;
         var i = 0;
@@ -177,7 +166,7 @@ impl Source {
     }
 
     // Index of the line containing byte offset `pos`
-    func line_index(self: &Source, pos: int): int {
+    func line_index(pos: int): int {
         var lo = 0;
         var hi = self.line_starts.len - 1;
         while lo < hi {
@@ -192,7 +181,7 @@ impl Source {
     }
 
     // Print an error at `pos` and stop.
-    func fail(self: &Source, pos: int, message: str) {
+    func fail(pos: int, message: str) {
         var text = self.text.to_str();
         if self.line_starts.len == 0 {
             printf("error: %s\n", message);
@@ -219,6 +208,15 @@ impl Source {
         printf("^\n");
         exit(1);
     }
+}
+
+func new_source(): &Source {
+    return new Source {
+        text: StringBuilder::new(),
+        line_starts: Vec::new(),
+        line_files: Vec::new(),
+        line_numbers: Vec::new(),
+    };
 }
 
 // If `line` is `import "path"` (ignoring surrounding spaces), return the path.

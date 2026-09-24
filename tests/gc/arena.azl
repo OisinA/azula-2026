@@ -2,21 +2,19 @@
 // collected objects they point to alive.
 
 struct Node {
-    value: int,
-    label: str,
-    next: &Node,
+    value: int;
+    label: str;
+    next: &Node;
 }
 
 struct Parser {
-    arena: Arena,
-    count: int,
-}
+    arena: Arena;
+    count: int;
 
-impl Parser {
     // Allocating through a field of a struct passed by pointer
-    func make(self: &Parser, value: int): &Node {
+    func make(value: int): &Node {
         self.count = self.count + 1;
-        return alloc(Node { value: value, label: null, next: null }) in self.arena;
+        return new Node { value: value, label: null, next: null } in self.arena;
     }
 }
 
@@ -43,7 +41,7 @@ func main {
     var i = 0;
     while i < 10000 {
         // The labels live on the collected heap, referenced only from arena memory
-        head = alloc(Node { value: i, label: label(i), next: head }) in arena;
+        head = new Node { value: i, label: label(i), next: head } in arena;
         i = i + 1;
     }
     churn();
@@ -68,7 +66,7 @@ func main {
     printf("after free_all: %ld bytes\n", arena.allocated());
 
     // Reuse after free_all
-    var again = alloc(Node { value: 42, label: "again", next: null }) in arena;
+    var again = new Node { value: 42, label: "again", next: null } in arena;
     printf("%s %ld\n", again.label, again.value);
     churn();
     if gc_collections() == 0 {

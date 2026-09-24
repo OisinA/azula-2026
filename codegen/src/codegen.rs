@@ -851,7 +851,8 @@ impl<'a> Codegen<'a> {
     fn as_boxed_variant(&self, function: &ExpressionNode<'a>) -> Option<(String, String)> {
         if let Expression::NamespaceAccess(ns, variant) = &function.expression {
             if let (Expression::Identifier(ns), Expression::Identifier(variant)) = (&ns.expression, &variant.expression) {
-                if self.module.boxed_enums.contains(ns) {
+                let is_variant = self.module.enums.get(ns).map(|v| v.contains(variant)).unwrap_or(false);
+                if self.module.boxed_enums.contains(ns) && is_variant {
                     return Some((ns.clone(), variant.clone()));
                 }
             }

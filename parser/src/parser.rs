@@ -37,6 +37,10 @@ pub struct Parser<'a> {
     /// Set when a `>>` token closed two levels of generic arguments at once;
     /// the outer level's `>` has then already been consumed.
     pending_greater: bool,
+
+    /// Declarations produced alongside the one just parsed (the methods of a
+    /// struct or enum become an impl block)
+    extra_items: Vec<Statement<'a>>,
 }
 
 impl<'a> Parser<'a> {
@@ -46,6 +50,7 @@ impl<'a> Parser<'a> {
             lexer: lexer.peekable(),
             errors: vec![],
             pending_greater: false,
+            extra_items: vec![],
         }
     }
 
@@ -80,7 +85,16 @@ impl<'a> Parser<'a> {
                 let tok = self.lexer.next().unwrap();
                 Some(Statement::Continue(Span { start: tok.span.start, end: tok.span.end }))
             }
-            TokenKind::Impl => self.parse_impl(),
+            TokenKind::Impl => {
+                let tok = self.lexer.next().unwrap();
+                self.errors.push(AzulaError::new(
+                    ErrorType::Custom("`impl` blocks are gone: put methods in the type's body, or use `extend`".to_string()),
+                    tok.span.start,
+                    tok.span.end,
+                ));
+                None
+            }
+            TokenKind::Extend => self.parse_extend(),
             TokenKind::SemiColon => {
                 self.lexer.next();
                 None
@@ -130,6 +144,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
             statements.push(stmt.unwrap());
+            statements.append(&mut self.extra_items);
         }
         statements
     }
@@ -284,26 +299,133 @@ impl<'a> Parser<'a> {
 
         let type_params = self.parse_type_params();
 
-        // Parse struct arguments
-        let mut args = vec![];
-        if let Some(tok) = self.lexer.peek() {
-            if tok.kind == TokenKind::BraceOpen {
-                args = self.parse_typed_identifier_list(TokenKind::BraceOpen);
+        // Body: `name: Type;` fields and methods
+        if !self.expect_peek(TokenKind::BraceOpen) {
+            return None;
+        }
+        self.lexer.next();
+        let mut fields = vec![];
+        let mut methods = vec![];
+        loop {
+            match self.lexer.peek().map(|t| t.kind.clone()) {
+                Some(TokenKind::BraceClose) => break,
+                Some(TokenKind::Function) => methods.push(self.parse_method()?),
+                Some(TokenKind::Identifier(_)) => {
+                    let field = self.parse_typed_identifier()?;
+                    if !self.expect_peek(TokenKind::SemiColon) {
+                        return None;
+                    }
+                    self.lexer.next();
+                    fields.push(field);
+                }
+                _ => {
+                    let tok = self.lexer.next();
+                    let (start, end) = tok.map(|t| (t.span.start, t.span.end)).unwrap_or((0, 0));
+                    self.errors.push(AzulaError::new(
+                        ErrorType::ExpectedToken("a field or method".to_string(), None),
+                        start,
+                        end,
+                    ));
+                    return None;
+                }
             }
         }
+        let end_token = self.lexer.next().unwrap();
+        let span = Span {
+            start: start_token.span.start,
+            end: end_token.span.end,
+        };
+        self.add_methods(ident, &type_params, methods, span.clone());
 
         let struc = Statement::Struct {
             name: ident,
-            attributes: args,
-            span: Span {
-                start: start_token.span.start,
-                end: start_token.span.end,
-            },
+            attributes: fields,
+            span,
         };
         if type_params.is_empty() {
             Some(struc)
         } else {
             Some(Statement::Generic(type_params, Rc::new(struc)))
+        }
+    }
+
+    /// A function in a type's body. It's a method, receiving `self`, if its body uses `self`.
+    fn parse_method(&mut self) -> Option<Statement<'a>> {
+        match self.parse_function()? {
+            Statement::Function { name, mut args, returns, body, span } => {
+                if statement_mentions_self(&body) {
+                    args.insert(0, (AzulaType::Named("__self".to_string()), "self"));
+                }
+                Some(Statement::Function { name, args, returns, body, span })
+            }
+            other => Some(other),
+        }
+    }
+
+    /// Record the methods declared in the body of type `name` as an impl block.
+    fn add_methods(&mut self, name: &'a str, type_params: &[&'a str], methods: Vec<Statement<'a>>, span: Span) {
+        if methods.is_empty() {
+            return;
+        }
+        let target = if type_params.is_empty() {
+            AzulaType::Named(name.to_string())
+        } else {
+            AzulaType::Generic(
+                name.to_string(),
+                type_params.iter().map(|p| AzulaType::Named(p.to_string())).collect(),
+            )
+        };
+        let imp = Statement::Impl {
+            struct_impl: target,
+            trait_impl: None,
+            funcs: methods,
+            span,
+        };
+        self.extra_items.push(if type_params.is_empty() {
+            imp
+        } else {
+            Statement::Generic(type_params.to_vec(), Rc::new(imp))
+        });
+    }
+
+    /// `extend Type { methods }`
+    fn parse_extend(&mut self) -> Option<Statement<'a>> {
+        let start_token = self.lexer.next().unwrap();
+        let target = self.parse_type();
+        let mut type_params = vec![];
+        if let AzulaType::Generic(_, args) = &target {
+            for arg in args {
+                if let AzulaType::Named(name) = arg {
+                    let name: &'a str = Box::leak(name.clone().into_boxed_str());
+                    type_params.push(name);
+                }
+            }
+        }
+        if !self.expect_peek(TokenKind::BraceOpen) {
+            return None;
+        }
+        self.lexer.next();
+        let mut methods = vec![];
+        while self.lexer.peek().map(|t| t.kind != TokenKind::BraceClose).unwrap_or(false) {
+            if !self.expect_peek(TokenKind::Function) {
+                return None;
+            }
+            methods.push(self.parse_method()?);
+        }
+        let end_token = self.lexer.next().unwrap();
+        let imp = Statement::Impl {
+            struct_impl: target,
+            trait_impl: None,
+            funcs: methods,
+            span: Span {
+                start: start_token.span.start,
+                end: end_token.span.end,
+            },
+        };
+        if type_params.is_empty() {
+            Some(imp)
+        } else {
+            Some(Statement::Generic(type_params, Rc::new(imp)))
         }
     }
 
@@ -360,12 +482,17 @@ impl<'a> Parser<'a> {
         }
         self.lexer.next();
 
-        // Parse comma-separated variants (optionally carrying payload types) until the closing brace
+        // Parse `;`-terminated variants (optionally carrying payload types) and methods
         let mut variants = vec![];
         let mut payloads = vec![];
+        let mut methods = vec![];
         while let Some(tok) = self.lexer.peek() {
             if tok.kind == TokenKind::BraceClose {
                 break;
+            }
+            if tok.kind == TokenKind::Function {
+                methods.push(self.parse_method()?);
+                continue;
             }
 
             let tok = self.lexer.next().unwrap();
@@ -377,8 +504,11 @@ impl<'a> Parser<'a> {
                     } else {
                         payloads.push(vec![]);
                     }
+                    if !self.expect_peek(TokenKind::SemiColon) {
+                        return None;
+                    }
+                    self.lexer.next();
                 }
-                TokenKind::Comma | TokenKind::Comment => continue,
                 _ => {
                     self.errors.push(AzulaError::new(
                         ErrorType::ExpectedToken(
@@ -394,7 +524,16 @@ impl<'a> Parser<'a> {
         }
 
         // Consume the closing brace
-        self.lexer.next();
+        let end_token = self.lexer.next().unwrap();
+        self.add_methods(
+            ident,
+            &type_params,
+            methods,
+            Span {
+                start: start_token.span.start,
+                end: end_token.span.end,
+            },
+        );
 
         let enm = Statement::Enum {
             name: ident,
@@ -654,57 +793,6 @@ impl<'a> Parser<'a> {
                 end: end_token.span.end,
             },
         ))
-    }
-
-    fn parse_impl(&mut self) -> Option<Statement<'a>> {
-        // impl
-        let start_token = self.lexer.next().unwrap();
-
-        // `impl<T> Vec<T>` — the parameters are also implied by `impl Vec<T>`
-        let mut type_params = self.parse_type_params();
-
-        let first_ident = self.parse_type();
-        if let AzulaType::Generic(_, args) = &first_ident {
-            for arg in args {
-                if let AzulaType::Named(name) = arg {
-                    let name: &'a str = Box::leak(name.clone().into_boxed_str());
-                    if !type_params.contains(&name) {
-                        type_params.push(name);
-                    }
-                }
-            }
-        }
-        let mut impl_stmt = (first_ident.clone(), None);
-
-        if self.lexer.peek().unwrap().kind == TokenKind::For {
-            self.lexer.next();
-            impl_stmt = (self.parse_type(), Some(first_ident));
-        }
-
-        if !self.expect_peek(TokenKind::BraceOpen) {
-            return None;
-        }
-
-        self.lexer.next();
-
-        let body = self.parse_block(TokenKind::BraceClose);
-
-        let end_token = self.lexer.next().unwrap();
-
-        let imp = Statement::Impl {
-            struct_impl: impl_stmt.0,
-            trait_impl: impl_stmt.1,
-            funcs: body,
-            span: Span {
-                start: start_token.span.start,
-                end: end_token.span.end,
-            },
-        };
-        if type_params.is_empty() {
-            Some(imp)
-        } else {
-            Some(Statement::Generic(type_params, Rc::new(imp)))
-        }
     }
 
     fn parse_type(&mut self) -> AzulaType<'a> {
@@ -1070,6 +1158,25 @@ impl<'a> Parser<'a> {
                     },
                 })
             }
+            // `new Type { ... }` allocates a struct on the heap
+            TokenKind::Identifier("new")
+                if matches!(self.lexer.peek().map(|t| &t.kind), Some(TokenKind::Identifier(_))) =>
+            {
+                let inner = self.parse_expression(PREFIX, true)?;
+                if !matches!(inner.expression, Expression::StructInitialisation(..)) {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::Custom("`new` needs a struct literal".to_string()),
+                        tok.span.start,
+                        inner.span.end,
+                    ));
+                    return None;
+                }
+                Some(ExpressionNode {
+                    span: Span { start: tok.span.start, end: inner.span.end },
+                    typed: AzulaType::Pointer(Rc::new(inner.typed.clone())),
+                    expression: Expression::Alloc(Rc::new(inner)),
+                })
+            }
             TokenKind::Identifier(x) => Some(ExpressionNode {
                 expression: Expression::Identifier(x.to_string()),
                 typed: AzulaType::Infer,
@@ -1161,18 +1268,6 @@ impl<'a> Parser<'a> {
                 typed: AzulaType::Str,
                 span: Span { start: tok.span.start, end: tok.span.end },
             }),
-            TokenKind::Alloc => {
-                self.expect_peek(TokenKind::BracketOpen);
-                self.lexer.next(); // consume (
-                let inner = self.parse_expression(LOWEST, true)?;
-                self.expect_peek(TokenKind::BracketClose);
-                self.lexer.next(); // consume )
-                Some(ExpressionNode {
-                    span: Span { start: tok.span.start, end: inner.span.end },
-                    typed: AzulaType::Pointer(Rc::new(inner.typed.clone())),
-                    expression: Expression::Alloc(Rc::new(inner)),
-                })
-            }
             _ => {
                 self.errors.push(AzulaError::new(
                     ErrorType::ExpectedExpression(format!("{:?}", tok.kind)),
@@ -1887,6 +1982,50 @@ impl<'a> Parser<'a> {
                 end: end_token.span.end,
             },
         })
+    }
+}
+
+/// Whether `self` is used anywhere in a statement (to tell methods from static functions)
+fn statement_mentions_self(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::Root(body) | Statement::Block(body) => body.iter().any(statement_mentions_self),
+        Statement::Function { body, .. } => statement_mentions_self(body),
+        Statement::Return(value, _) => value.as_ref().map(expression_mentions_self).unwrap_or(false),
+        Statement::Assign(_, _, _, value, _) => expression_mentions_self(value),
+        Statement::ExpressionStatement(e, _) => expression_mentions_self(e),
+        Statement::If(cond, body, else_branch, _) => {
+            expression_mentions_self(cond)
+                || body.iter().any(statement_mentions_self)
+                || else_branch.as_ref().map(|e| statement_mentions_self(e)).unwrap_or(false)
+        }
+        Statement::Reassign(target, value, _) => expression_mentions_self(target) || expression_mentions_self(value),
+        Statement::While(cond, body, _) => expression_mentions_self(cond) || body.iter().any(statement_mentions_self),
+        Statement::For(cond, body, _) => {
+            cond.as_ref().map(expression_mentions_self).unwrap_or(false) || body.iter().any(statement_mentions_self)
+        }
+        _ => false,
+    }
+}
+
+fn expression_mentions_self(expr: &ExpressionNode) -> bool {
+    let e = |x: &Rc<ExpressionNode>| expression_mentions_self(x);
+    match &expr.expression {
+        Expression::Identifier(name) => name == "self",
+        Expression::Infix(l, _, r) => e(l) || e(r),
+        Expression::FunctionCall { function, args } => e(function) || args.iter().any(expression_mentions_self),
+        Expression::Not(x) | Expression::BitNot(x) | Expression::Negate(x) | Expression::Pointer(x) | Expression::Alloc(x) => e(x),
+        Expression::Cast(x, _) => e(x),
+        Expression::Array(items) => items.iter().any(expression_mentions_self),
+        Expression::ArrayAccess(a, i) => e(a) || e(i),
+        Expression::StructInitialisation(_, fields) => fields.iter().any(|(_, v)| expression_mentions_self(v)),
+        // Only the object of a field access or path can be `self`
+        Expression::StructAccess(obj, _) => e(obj),
+        Expression::NamespaceAccess(ns, _) => e(ns),
+        Expression::Match(scrutinee, arms) => e(scrutinee) || arms.iter().any(|(_, body)| expression_mentions_self(body)),
+        Expression::Block(stmts, value) => {
+            stmts.iter().any(statement_mentions_self) || value.as_ref().map(|v| e(v)).unwrap_or(false)
+        }
+        _ => false,
     }
 }
 

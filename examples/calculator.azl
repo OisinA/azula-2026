@@ -2,22 +2,93 @@
 // then evaluates it. Try: azula build calculator.azl && ./calculator "2 * (3 + 4) - 10 / 5"
 
 enum Token {
-    Number(int),
-    Op(int),
-    LParen,
-    RParen,
-    End,
+    Number(int);
+    Op(int);
+    LParen;
+    RParen;
+    End;
 }
 
 enum Expr {
-    Num(int),
-    Neg(Expr),
-    Binary(int, Expr, Expr),
+    Num(int);
+    Neg(Expr);
+    Binary(int, Expr, Expr);
 }
 
 struct Parser {
-    tokens: Vec<Token>,
-    index: int,
+    tokens: Vec<Token>;
+    index: int;
+
+    func peek(): Token {
+        return self.tokens.get(self.index);
+    }
+
+    func next(): Token {
+        var tok = self.peek();
+        self.index = self.index + 1;
+        return tok;
+    }
+
+    // The operator at the current position, if it's one of `a` or `b`
+    func operator(a: int, b: int): int {
+        return match self.peek() {
+            Token::Op(op) => {
+                if op == a || op == b {
+                    return op;
+                }
+                0
+            },
+            _ => 0,
+        };
+    }
+
+    // expr := term (('+' | '-') term)*
+    func expr(): Expr {
+        var left = self.term();
+        var op = self.operator('+', '-');
+        while op != 0 {
+            self.next();
+            left = Expr::Binary(op, left, self.term());
+            op = self.operator('+', '-');
+        }
+        return left;
+    }
+
+    // term := factor (('*' | '/') factor)*
+    func term(): Expr {
+        var left = self.factor();
+        var op = self.operator('*', '/');
+        while op != 0 {
+            self.next();
+            left = Expr::Binary(op, left, self.factor());
+            op = self.operator('*', '/');
+        }
+        return left;
+    }
+
+    // factor := number | '-' factor | '(' expr ')'
+    func factor(): Expr {
+        match self.next() {
+            Token::Number(n) => { return Expr::Num(n); },
+            Token::Op(op) => {
+                if op == '-' {
+                    return Expr::Neg(self.factor());
+                }
+            },
+            Token::LParen => {
+                var inner = self.expr();
+                match self.next() {
+                    Token::RParen => { return inner; },
+                    _ => {},
+                }
+                printf("expected ')'\n");
+                exit(1);
+            },
+            _ => {},
+        }
+        printf("expected a number\n");
+        exit(1);
+    }
 }
 
 func tokenize(text: str): Vec<Token> {
@@ -48,79 +119,6 @@ func tokenize(text: str): Vec<Token> {
     }
     tokens.push(Token::End);
     return tokens;
-}
-
-impl Parser {
-    func peek(self: &Parser): Token {
-        return self.tokens.get(self.index);
-    }
-
-    func next(self: &Parser): Token {
-        var tok = self.peek();
-        self.index = self.index + 1;
-        return tok;
-    }
-
-    // The operator at the current position, if it's one of `a` or `b`
-    func operator(self: &Parser, a: int, b: int): int {
-        return match self.peek() {
-            Token::Op(op) => {
-                if op == a || op == b {
-                    return op;
-                }
-                0
-            },
-            _ => 0,
-        };
-    }
-
-    // expr := term (('+' | '-') term)*
-    func expr(self: &Parser): Expr {
-        var left = self.term();
-        var op = self.operator('+', '-');
-        while op != 0 {
-            self.next();
-            left = Expr::Binary(op, left, self.term());
-            op = self.operator('+', '-');
-        }
-        return left;
-    }
-
-    // term := factor (('*' | '/') factor)*
-    func term(self: &Parser): Expr {
-        var left = self.factor();
-        var op = self.operator('*', '/');
-        while op != 0 {
-            self.next();
-            left = Expr::Binary(op, left, self.factor());
-            op = self.operator('*', '/');
-        }
-        return left;
-    }
-
-    // factor := number | '-' factor | '(' expr ')'
-    func factor(self: &Parser): Expr {
-        match self.next() {
-            Token::Number(n) => { return Expr::Num(n); },
-            Token::Op(op) => {
-                if op == '-' {
-                    return Expr::Neg(self.factor());
-                }
-            },
-            Token::LParen => {
-                var inner = self.expr();
-                match self.next() {
-                    Token::RParen => { return inner; },
-                    _ => {},
-                }
-                printf("expected ')'\n");
-                exit(1);
-            },
-            _ => {},
-        }
-        printf("expected a number\n");
-        exit(1);
-    }
 }
 
 func eval(e: Expr): int {

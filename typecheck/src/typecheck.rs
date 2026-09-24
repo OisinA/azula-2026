@@ -122,7 +122,7 @@ impl<'a> Typechecker<'a> {
 
     pub fn typecheck(&mut self) -> Result<Statement<'a>, String> {
         let stmts = match self.ast.clone() {
-            Statement::Root(stmts) => stmts,
+            Statement::Root(stmts) => resolve_receivers(stmts),
             _ => return Err("Not a root node".to_string()),
         };
 
@@ -1640,6 +1640,13 @@ impl<'a> Typechecker<'a> {
 
         // Methods called as `value.method(...)` receive `value` as their first argument
         let is_method = matches!(function.expression, Expression::StructAccess(..));
+        if is_method && func.args.first().map(|(_, name)| name != "self").unwrap_or(true) {
+            self.error(
+                format!("`{}` doesn't use `self`, so it's a static function: call it as Type::{}()", func.name, func.name),
+                &span,
+            );
+            return Err("static function called as a method".to_string());
+        }
         let function = self.typecheck_function_def(function, env);
         let params: Vec<AzulaType<'a>> = func
             .args
@@ -1898,7 +1905,7 @@ impl<'a> Typechecker<'a> {
     fn as_variant(&self, function: &ExpressionNode<'a>) -> Option<(String, String)> {
         if let Expression::NamespaceAccess(ns, variant) = &function.expression {
             if let (Expression::Identifier(ns), Expression::Identifier(variant)) = (&ns.expression, &variant.expression) {
-                if self.enums.contains_key(ns) {
+                if self.enums.get(ns).map(|variants| variants.contains(variant)).unwrap_or(false) {
                     return Some((ns.clone(), variant.clone()));
                 }
             }
@@ -2286,6 +2293,60 @@ impl<'a> Typechecker<'a> {
 
         Err("none".to_string())
     }
+}
+
+/// Give methods their receiver type and resolve `Self`. In a type's methods,
+/// `self` is a reference (`&T`) for structs and a value for other types, and
+/// `Self` means the type itself.
+fn resolve_receivers<'a>(stmts: Vec<Statement<'a>>) -> Vec<Statement<'a>> {
+    let mut structs = HashSet::new();
+    for stmt in &stmts {
+        match stmt {
+            Statement::Struct { name, .. } => {
+                structs.insert(name.to_string());
+            }
+            Statement::Generic(_, inner) => {
+                if let Statement::Struct { name, .. } = inner.as_ref() {
+                    structs.insert(name.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    let resolve_impl = |imp: &Statement<'a>| -> Statement<'a> {
+        if let Statement::Impl { struct_impl, trait_impl, funcs, span } = imp {
+            let base = match struct_impl {
+                AzulaType::Named(n) | AzulaType::Generic(n, _) => n.clone(),
+                _ => String::new(),
+            };
+            let receiver = if structs.contains(&base) {
+                AzulaType::Pointer(Rc::new(struct_impl.clone()))
+            } else {
+                struct_impl.clone()
+            };
+            let mut map = Substitution::new();
+            map.insert("Self".to_string(), struct_impl.clone());
+            map.insert("__self".to_string(), receiver);
+            Statement::Impl {
+                struct_impl: struct_impl.clone(),
+                trait_impl: trait_impl.clone(),
+                funcs: funcs.iter().map(|f| subst_stmt(f, &map)).collect(),
+                span: span.clone(),
+            }
+        } else {
+            imp.clone()
+        }
+    };
+    stmts
+        .into_iter()
+        .map(|stmt| match &stmt {
+            Statement::Impl { .. } => resolve_impl(&stmt),
+            Statement::Generic(params, inner) if matches!(inner.as_ref(), Statement::Impl { .. }) => {
+                Statement::Generic(params.clone(), Rc::new(resolve_impl(inner)))
+            }
+            _ => stmt,
+        })
+        .collect()
 }
 
 /// Whether executing `body` always ends in a `return` (or never finishes).

@@ -1,0 +1,12 @@
+// error: doesn't use `self`, so it's a static function
+struct Point {
+    x: int;
+
+    func origin(): Point {
+        return Point { x: 0 };
+    }
+}
+func main {
+    var p = Point::origin();
+    var q = p.origin();
+}

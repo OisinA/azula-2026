@@ -1,0 +1,110 @@
+// Methods live in a type's body; `self` is implicit. A function that doesn't
+// use `self` is static and called through the type.
+
+struct Counter {
+    count: int;
+    step: int;
+
+    func new(step: int): Counter {
+        return Counter { count: 0, step: step };
+    }
+
+    // `self` is a reference, so methods can change the value they're called on
+    func tick() {
+        self.count = self.count + self.step;
+    }
+
+    func ticked(times: int): Counter {
+        var i = 0;
+        while i < times {
+            self.tick();
+            i = i + 1;
+        }
+        return self[0];
+    }
+
+    func describe(): str {
+        return "counter";
+    }
+}
+
+enum Shape {
+    Circle(int);
+    Square(int);
+    Dot;
+
+    // In an enum's methods `self` is the value
+    func area(): int {
+        return match self {
+            Shape::Circle(r) => 3 * r * r,
+            Shape::Square(s) => s * s,
+            Shape::Dot => 0,
+        };
+    }
+
+    func bigger(other: Self): bool {
+        return self.area() > other.area();
+    }
+
+    func unit(): Self {
+        return Shape::Square(1);
+    }
+}
+
+struct Stack<T> {
+    items: Vec<T>;
+
+    func new(): Stack<T> {
+        return Stack { items: Vec::new() };
+    }
+
+    func push(item: T) {
+        self.items.push(item);
+    }
+
+    func size(): int {
+        return self.items.length();
+    }
+}
+
+// Methods can be added to a type elsewhere
+extend Stack<T> {
+    func top(): T {
+        return self.items.peek();
+    }
+}
+
+extend Counter {
+    func reset() {
+        self.count = 0;
+    }
+}
+
+func main {
+    var c = Counter::new(5);
+    c.tick();
+    c.tick();
+    printf("%d %s\n", c.count, Counter::describe());
+    var p: &Counter = &c;
+    p.tick();
+    printf("%d\n", c.count);
+    c.reset();
+    printf("%d\n", c.ticked(3).count);
+
+    var shapes = [Shape::Circle(2), Shape::Square(3), Shape::Dot, Shape::unit()];
+    var i = 0;
+    while i < 4 {
+        printf("%d ", shapes[i].area());
+        i = i + 1;
+    }
+    printf("%d\n", shapes[0].bigger(shapes[1]));
+
+    var s = Stack::<str>::new();
+    s.push("a");
+    s.push("b");
+    printf("%d %s\n", s.size(), s.top());
+
+    var boxed = new Counter { count: 7, step: 1 };
+    boxed.tick();
+    printf("%d\n", boxed.count);
+}

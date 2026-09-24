@@ -1,5 +1,5 @@
 // error: match doesn't cover variant `B`
-enum E { A, B }
+enum E { A; B; }
 func main {
     var n = match E::A {
         E::A => 1,

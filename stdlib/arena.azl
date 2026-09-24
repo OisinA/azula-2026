@@ -12,25 +12,23 @@
 const ARENA_CHUNK_SIZE: int = 65536;
 
 struct ArenaChunk {
-    start: str,
-    size: int,
-    used: int,
-    next: &ArenaChunk,
+    start: str;
+    size: int;
+    used: int;
+    next: &ArenaChunk;
 }
 
 struct Arena {
     // The chunk being allocated from first; others follow
-    chunks: &ArenaChunk,
-    bytes: int,
-}
+    chunks: &ArenaChunk;
+    bytes: int;
 
-impl Arena {
     func new(): Arena {
         return Arena { chunks: null, bytes: 0 };
     }
 
     // `size` bytes of zeroed memory, 16-byte aligned
-    func allocate(self: &Arena, size: int): str {
+    func allocate(size: int): str {
         var n = (size + 15) / 16 * 16;
         var chunk = self.chunks;
         if chunk == null || chunk.used + n > chunk.size {
@@ -53,7 +51,7 @@ impl Arena {
     }
 
     // Free everything allocated in the arena
-    func free_all(self: &Arena) {
+    func free_all() {
         var chunk = self.chunks;
         while chunk != null {
             var next = chunk.next;
@@ -67,7 +65,8 @@ impl Arena {
     }
 
     // Bytes allocated in the arena so far
-    func allocated(self: Arena): int {
+    func allocated(): int {
         return self.bytes;
     }
 }
+

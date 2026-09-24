@@ -4,19 +4,18 @@ const NEGATIVE: int = -7;
 const ENABLED: bool = true;
 const RATIO: float = 2.5;
 
-struct Counter { count: int, label: str, }
+struct Counter { count: int; label: str;
 
-impl Counter {
     func new(label: str): Counter {
         return Counter { count: 0, label: label };
     }
 
-    func bump(self: &Counter): int {
+    func bump(): int {
         self.count = self.count + 1;
         return self.count;
     }
 
-    func describe(self: Counter): str {
+    func describe(): str {
         var sb = StringBuilder::new();
         sb.append(self.label);
         sb.append("=");

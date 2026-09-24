@@ -1,25 +1,25 @@
 // Objects reachable only in unusual ways must survive collections.
 
 struct Node {
-    value: int,
-    next: &Node,
+    value: int;
+    next: &Node;
 }
 
 struct Holder {
     // Only a pointer into the middle of an object
-    middle: &int,
+    middle: &int;
 }
 
 enum Wrapped {
-    Boxed(&Node),
-    Nothing,
+    Boxed(&Node);
+    Nothing;
 }
 
 func make_list(n: int): &Node {
     var head: &Node = null;
     var i = 0;
     while i < n {
-        head = alloc(Node { value: i, next: head });
+        head = new Node { value: i, next: head };
         i = i + 1;
     }
     return head;
@@ -81,7 +81,7 @@ func main {
     // Memory freed explicitly can be reused safely
     i = 0;
     while i < 1000 {
-        var scratch: &Node = alloc(Node { value: i, next: null });
+        var scratch: &Node = new Node { value: i, next: null };
         free(scratch);
         i = i + 1;
     }

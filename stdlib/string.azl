@@ -1,30 +1,28 @@
 struct String {
-    data: str,
-    len: int,
-}
+    data: str;
+    len: int;
 
-impl String {
     func new(s: str): String {
         return String { data: s, len: strlen(s) };
     }
 
-    func length(self: String): int {
+    func length(): int {
         return self.len;
     }
 
-    func equals(self: String, other: String): bool {
+    func equals(other: String): bool {
         return strcmp(self.data, other.data) == 0;
     }
 
-    func charAt(self: String, index: int): int {
+    func charAt(index: int): int {
         return self.data[index];
     }
 
-    func print(self: String) {
+    func print() {
         printf("%s\n", self.data);
     }
 
-    func substr(self: String, start: int, len: int): String {
+    func substr(start: int, len: int): String {
         var buf = malloc((len + 1) * sizeof(u8));
         memcpy(buf, ptr_add(self.data, start), len);
         buf[len] = 0;
@@ -46,19 +44,17 @@ func read_file(path: str): String {
 
 // Builds up a string piece by piece.
 struct StringBuilder {
-    data: str,
-    len: int,
-    cap: int,
-}
+    data: str;
+    len: int;
+    cap: int;
 
-impl StringBuilder {
     func new(): StringBuilder {
         var data: str = malloc(64 * sizeof(u8));
         data[0] = 0;
         return StringBuilder { data: data, len: 0, cap: 64 };
     }
 
-    func reserve(self: &StringBuilder, extra: int) {
+    func reserve(extra: int) {
         if self.len + extra + 1 > self.cap {
             while self.len + extra + 1 > self.cap {
                 self.cap = self.cap * 2;
@@ -67,35 +63,36 @@ impl StringBuilder {
         }
     }
 
-    func append(self: &StringBuilder, s: str) {
+    func append(s: str) {
         var n = strlen(s);
         self.reserve(n);
         memcpy(ptr_add(self.data, self.len), s, n + 1);
         self.len = self.len + n;
     }
 
-    func append_char(self: &StringBuilder, c: int) {
+    func append_char(c: int) {
         self.reserve(1);
         self.data[self.len] = c as i8;
         self.len = self.len + 1;
         self.data[self.len] = 0;
     }
 
-    func append_int(self: &StringBuilder, n: int) {
+    func append_int(n: int) {
         self.reserve(24);
         var written = snprintf(ptr_add(self.data, self.len), 24, "%ld", n);
         self.len = self.len + written;
     }
 
     // The contents so far (shares the builder's buffer)
-    func to_str(self: StringBuilder): str {
+    func to_str(): str {
         return self.data;
     }
 
     // A copy of the contents that later appends won't change
-    func build(self: StringBuilder): str {
+    func build(): str {
         var copy: str = malloc((self.len + 1) * sizeof(u8));
         memcpy(copy, self.data, self.len + 1);
         return copy;
     }
 }
+

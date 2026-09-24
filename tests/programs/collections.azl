@@ -1,6 +1,6 @@
-struct Holder { items: Vec<str>, nums: Vec<int>, }
+struct Holder { items: Vec<str>; nums: Vec<int>; }
 
-struct Symbol { name: str, depth: int, }
+struct Symbol { name: str; depth: int; }
 
 func main {
     var v: Vec<int> = Vec::new();

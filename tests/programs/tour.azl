@@ -1,16 +1,14 @@
-// Structs, with methods in impl blocks
+// Structs, with methods in their body (`self` is implicit)
 struct Point {
-    x: int,
-    y: int,
-}
+    x: int;
+    y: int;
 
-impl Point {
-    func length_squared(self: Point): int {
+    func length_squared(): int {
         return self.x * self.x + self.y * self.y;
     }
 
-    // Methods taking &Self can modify the value they're called on
-    func shift(self: &Point, dx: int) {
+    // `self` is a reference, so methods can modify the value they're called on
+    func shift(dx: int) {
         self.x = self.x + dx;
     }
 }
@@ -18,9 +16,9 @@ impl Point {
 // Enums can carry payloads; values of these enums are immutable and
 // heap-allocated, so they can be recursive
 enum Expr {
-    Num(int),
-    Add(Expr, Expr),
-    Neg(Expr),
+    Num(int);
+    Add(Expr, Expr);
+    Neg(Expr);
 }
 
 func eval(e: Expr): int {
@@ -42,8 +40,8 @@ func max<T>(a: T, b: T): T {
 }
 
 struct Pair<A, B> {
-    first: A,
-    second: B,
+    first: A;
+    second: B;
 }
 
 func main {

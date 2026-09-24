@@ -1,6 +1,6 @@
 // Enums, with and without payloads, and pattern matching.
 
-enum Direction { North, East, South, West }
+enum Direction { North; East; South; West; }
 
 func turn_right(d: Direction): Direction {
     return match d {
@@ -22,10 +22,10 @@ func direction_name(d: Direction): str {
 
 // Variants can carry values
 enum Shape {
-    Circle(int),
-    Rectangle(int, int),
-    Triangle(int, int, int),
-    Point,
+    Circle(int);
+    Rectangle(int, int);
+    Triangle(int, int, int);
+    Point;
 }
 
 func area(s: Shape): int {
