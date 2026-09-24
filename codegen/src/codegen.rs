@@ -53,7 +53,10 @@ fn current_block_terminated(func: &Function<'_>) -> bool {
 fn is_terminator(instr: Option<&Instruction<'_>>) -> bool {
     matches!(
         instr,
-        Some(Instruction::Return(_)) | Some(Instruction::Jump(_)) | Some(Instruction::Jcond(..))
+        Some(Instruction::Return(_))
+            | Some(Instruction::Jump(_))
+            | Some(Instruction::Jcond(..))
+            | Some(Instruction::Unreachable)
     )
 }
 
@@ -67,6 +70,8 @@ pub struct Codegen<'a> {
     /// Lexical scopes mapping source variable names to their unique IR names
     scopes: Vec<HashMap<String, String>>,
     var_counter: usize,
+    /// Argument types of every function and method, by (mangled) name
+    signatures: HashMap<String, Vec<AzulaType<'a>>>,
 }
 
 impl<'a> Codegen<'a> {
@@ -79,6 +84,7 @@ impl<'a> Codegen<'a> {
             loop_continue_stack: vec![],
             scopes: vec![HashMap::new()],
             var_counter: 0,
+            signatures: HashMap::new(),
         }
     }
 
@@ -88,8 +94,8 @@ impl<'a> Codegen<'a> {
         } else {
             return;
         };
-        // Pass 1: register types, externs, impl blocks (so method signatures are
-        // known before any function body is processed)
+        // Pass 1: register types, externs, globals and function signatures (so
+        // everything is known before any function body is processed)
         for stmt in stmts.clone() {
             match stmt {
                 Statement::ExternFunction {
@@ -106,7 +112,20 @@ impl<'a> Codegen<'a> {
                         returns: returns,
                     },
                 ),
-                Statement::Impl { .. } => self.codegen_impl(stmt.clone()),
+                Statement::Impl { struct_impl, funcs, .. } => {
+                    for func in funcs {
+                        if let Statement::Function { name, args, .. } = func {
+                            self.signatures.insert(
+                                format!("{}_{}", struct_impl.to_string(), name),
+                                args.into_iter().map(|(t, _)| t).collect(),
+                            );
+                        }
+                    }
+                }
+                Statement::Function { name, args, .. } => {
+                    self.signatures
+                        .insert(name.to_string(), args.into_iter().map(|(t, _)| t).collect());
+                }
                 Statement::Assign(_, name, _, val, ..) => {
                     let value = match val.expression {
                         Expression::Integer(i) => GlobalValue::Int(i),
@@ -140,34 +159,28 @@ impl<'a> Codegen<'a> {
                 _ => {}
             }
         }
-        // Pass 2: codegen function bodies only
+        // Pass 2: codegen function bodies
         for stmt in stmts {
-            if let Statement::Function { .. } = stmt {
-                self.codegen_function(stmt.clone());
+            match stmt {
+                Statement::Function { .. } => self.codegen_function(stmt.clone()),
+                Statement::Impl { .. } => self.codegen_impl(stmt.clone()),
+                _ => {}
             }
         }
     }
 
     pub fn insert_implicit_return(&mut self) {
         for (_, func) in self.module.functions.iter_mut() {
-            let cloned = func.blocks.clone();
-            for (index, (block_name, ref block)) in cloned.iter().enumerate() {
-                let mut block = block.clone();
-                if block.instructions.is_empty() {
-                    block.instructions.push(Instruction::Return(None));
-                    *func.blocks.get_mut(index).unwrap() = (block_name.to_string(), block.clone());
-                    continue;
-                }
-
-                match block.instructions.last().unwrap() {
-                    Instruction::Jcond(..) => continue,
-                    Instruction::Jump(..) => continue,
-                    Instruction::Return(..) => continue,
-                    _ => {
-                        block.instructions.push(Instruction::Return(None));
-                        *func.blocks.get_mut(index).unwrap() = (block_name.clone(), block.clone());
-                        continue;
-                    }
+            // Falling off the end of a function that returns a value can't happen
+            // in a well-formed program (every path returns), so mark it unreachable.
+            let terminator = if func.returns == AzulaType::Void {
+                Instruction::Return(None)
+            } else {
+                Instruction::Unreachable
+            };
+            for (_, block) in func.blocks.iter_mut() {
+                if !is_terminator(block.instructions.last()) {
+                    block.instructions.push(terminator.clone());
                 }
             }
         }
@@ -571,20 +584,35 @@ impl<'a> Codegen<'a> {
                     let receiver_type = left.typed.to_string();
                     let method_name = if let Expression::Identifier(m) = &right.expression { m.clone() } else { String::new() };
                     let mangled = format!("{}_{}", receiver_type, method_name);
-                    let self_is_ptr = self.module.functions.get(&mangled)
-                        .and_then(|f| f.arguments.first())
-                        .map(|(_, t)| matches!(t, AzulaType::Pointer(_)))
+                    let self_is_ptr = self.signatures.get(&mangled)
+                        .and_then(|args| args.first())
+                        .map(|t| matches!(t, AzulaType::Pointer(_)))
                         .unwrap_or(false);
+                    let receiver_is_ptr = matches!(left.typed, AzulaType::Pointer(_));
 
-                    if self_is_ptr && !matches!(left.typed, AzulaType::Pointer(_)) {
+                    if self_is_ptr && !receiver_is_ptr {
                         // Receiver is a value type — take its address
                         args.insert(0, ExpressionNode {
                             expression: Expression::Pointer(left.clone()),
                             typed: AzulaType::Pointer(Rc::new(left.typed.clone())),
                             span: left.span.clone(),
                         });
+                    } else if !self_is_ptr && receiver_is_ptr {
+                        // Method takes the value but we have a pointer — dereference it
+                        let pointee = match &left.typed {
+                            AzulaType::Pointer(inner) => inner.as_ref().clone(),
+                            _ => unreachable!(),
+                        };
+                        args.insert(0, ExpressionNode {
+                            expression: Expression::ArrayAccess(left.clone(), Rc::new(ExpressionNode {
+                                expression: Expression::Integer(0),
+                                typed: AzulaType::Int,
+                                span: left.span.clone(),
+                            })),
+                            typed: pointee,
+                            span: left.span.clone(),
+                        });
                     } else {
-                        // Either pass-by-value or already a pointer — pass directly
                         args.insert(0, left.as_ref().clone());
                     }
                 }
@@ -698,6 +726,7 @@ impl<'a> Codegen<'a> {
                 func.cast(val, target_type)
             }
             Expression::Null => func.const_null(),
+            Expression::Turbofish(..) => unreachable!("turbofish should be resolved by the typechecker"),
             Expression::Block(stmts, final_expr) => {
                 self.scopes.push(HashMap::new());
                 for stmt in stmts {

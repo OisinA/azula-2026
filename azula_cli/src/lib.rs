@@ -85,9 +85,10 @@ pub fn run() {
 
 const STDLIB: &[(&str, &str)] = &[
     ("stdlib/libc.azl", include_str!("../../stdlib/libc.azl")),
+    ("stdlib/option.azl", include_str!("../../stdlib/option.azl")),
     ("stdlib/string.azl", include_str!("../../stdlib/string.azl")),
     ("stdlib/vec.azl", include_str!("../../stdlib/vec.azl")),
-    ("stdlib/strmap.azl", include_str!("../../stdlib/strmap.azl")),
+    ("stdlib/map.azl", include_str!("../../stdlib/map.azl")),
 ];
 
 /// The combined program source, plus a record of which file and line every

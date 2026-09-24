@@ -1,5 +1,10 @@
 100 100 9801
 pop 9801 len 99
+set -1 empty 0
 2 beta 7
 11 2 -1 2
+1002 1500 1 0
+symbol x at depth 2
+keys 1
+110 x 0
 9 1

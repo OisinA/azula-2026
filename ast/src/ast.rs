@@ -59,6 +59,9 @@ pub enum Statement<'a> {
         span: Span,
     },
     Import(String, Span),
+    /// A generic definition: a Function, Struct, Enum or Impl parameterised
+    /// over the listed type parameters.
+    Generic(Vec<&'a str>, Rc<Statement<'a>>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -90,6 +93,8 @@ pub enum Expression<'a> {
     Cast(Rc<ExpressionNode<'a>>, AzulaType<'a>),
     Alloc(Rc<ExpressionNode<'a>>),
     Null,
+    /// `Name::<Types>` — explicit type arguments for a generic function or type
+    Turbofish(String, Vec<AzulaType<'a>>),
     Block(Vec<Statement<'a>>, Option<Rc<ExpressionNode<'a>>>),
 }
 

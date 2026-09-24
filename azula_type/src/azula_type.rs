@@ -1,4 +1,4 @@
-use std::{ops::Deref, rc::Rc};
+use std::rc::Rc;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum AzulaType<'a> {
@@ -15,6 +15,9 @@ pub enum AzulaType<'a> {
     Named(String),
     UnknownType(&'a str),
     Array(Rc<AzulaType<'a>>, Option<usize>),
+    /// A generic type applied to arguments, e.g. `Vec<int>`. The typechecker
+    /// replaces these with `Named` instances (see `mangle`).
+    Generic(String, Vec<AzulaType<'a>>),
 }
 
 impl<'a> From<&'a str> for AzulaType<'a> {
@@ -80,11 +83,28 @@ impl<'a> ToString for AzulaType<'a> {
                 Some(s) => format!("[{:?}; {:?}]", typ.to_string(), s),
                 None => format!("[{:?}]", typ.to_string()),
             },
+            AzulaType::Generic(..) => self.mangle(),
         }
     }
 }
 
 impl<'a> AzulaType<'a> {
+    /// A unique, human readable name for a type, used to name generic instances
+    /// (`Vec<int>`, `Map<str,&Node>`).
+    pub fn mangle(&self) -> String {
+        match self {
+            AzulaType::Pointer(inner) => format!("&{}", inner.mangle()),
+            AzulaType::Array(inner, Some(size)) => format!("[{};{}]", inner.mangle(), size),
+            AzulaType::Array(inner, None) => format!("[{}]", inner.mangle()),
+            AzulaType::Generic(name, args) => format!(
+                "{}<{}>",
+                name,
+                args.iter().map(|a| a.mangle()).collect::<Vec<_>>().join(",")
+            ),
+            _ => self.to_string(),
+        }
+    }
+
     pub fn is_indexable(&self) -> bool {
         match self {
             AzulaType::Array(..) => true,

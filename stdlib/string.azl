@@ -41,3 +41,57 @@ func read_file(path: str): String {
     fclose(f);
     return String { data: buf, len: size };
 }
+
+// Builds up a string piece by piece.
+struct StringBuilder {
+    data: str,
+    len: int,
+    cap: int,
+}
+
+impl StringBuilder {
+    func new(): StringBuilder {
+        var data: str = malloc(64);
+        data[0] = 0;
+        return StringBuilder { data: data, len: 0, cap: 64 };
+    }
+
+    func reserve(self: &StringBuilder, extra: int) {
+        if self.len + extra + 1 > self.cap {
+            while self.len + extra + 1 > self.cap {
+                self.cap = self.cap * 2;
+            }
+            self.data = realloc(self.data, self.cap);
+        }
+    }
+
+    func append(self: &StringBuilder, s: str) {
+        var n = strlen(s);
+        self.reserve(n);
+        memcpy(ptr_add(self.data, self.len), s, n + 1);
+        self.len = self.len + n;
+    }
+
+    func append_char(self: &StringBuilder, c: int) {
+        self.reserve(1);
+        self.data[self.len] = c as i8;
+        self.len = self.len + 1;
+        self.data[self.len] = 0;
+    }
+
+    func append_int(self: &StringBuilder, n: int) {
+        self.reserve(24);
+        var written = snprintf(ptr_add(self.data, self.len), 24, "%ld", n);
+        self.len = self.len + written;
+    }
+
+    // The contents so far (shares the builder's buffer)
+    func to_str(self: StringBuilder): str {
+        return self.data;
+    }
+
+    // A copy of the contents that later appends won't change
+    func build(self: StringBuilder): str {
+        return strdup(self.data);
+    }
+}

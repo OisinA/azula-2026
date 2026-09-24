@@ -1,7 +1,9 @@
-struct Holder { items: StrVec, nums: IntVec, }
+struct Holder { items: Vec<str>, nums: Vec<int>, }
+
+struct Symbol { name: str, depth: int, }
 
 func main {
-    var v = IntVec::new();
+    var v: Vec<int> = Vec::new();
     var i = 0;
     while i < 100 {
         v.push(i * i);
@@ -9,18 +11,52 @@ func main {
     }
     printf("%d %d %d\n", v.length(), v.get(10), v.peek());
     printf("pop %d len %d\n", v.pop(), v.length());
+    v.set(0, -1);
+    printf("set %d empty %d\n", v.get(0), v.is_empty());
 
-    var h = Holder { items: StrVec::new(), nums: IntVec::new() };
+    var h = Holder { items: Vec::new(), nums: Vec::new() };
     h.items.push("alpha");
     h.items.push("beta");
     h.nums.push(7);
     printf("%d %s %d\n", h.items.length(), h.items.get(1), h.nums.get(0));
 
-    var m = StrMap::new();
+    var m: Map<int> = Map::new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("one", 11);
-    printf("%d %d %d %d\n", m.get("one"), m.get("two"), m.get("three"), m.length());
+    printf("%d %d %d %d\n", m.get("one").unwrap(), m.get("two").unwrap(), m.get("three").unwrap_or(-1), m.length());
+
+    // Force the map to grow several times
+    var keys: Vec<str> = Vec::new();
+    var k = 0;
+    while k < 1000 {
+        var key: str = malloc(16);
+        sprintf(key, "key%d", k);
+        keys.push(key);
+        m.insert(key, k * 3);
+        k = k + 1;
+    }
+    printf("%d %d %d %d\n", m.length(), m.get("key500").unwrap(), m.contains("key999"), m.contains("nope"));
+
+    var symbols: Map<Symbol> = Map::new();
+    symbols.insert("x", Symbol { name: "x", depth: 2 });
+    match symbols.get("x") {
+        Option::Some(sym) => { printf("symbol %s at depth %d\n", sym.name, sym.depth); },
+        Option::None => { printf("no symbol\n"); },
+    }
+    printf("keys %d\n", symbols.key_list().length());
+
+    var sb = StringBuilder::new();
+    sb.append("define ");
+    sb.append_int(42);
+    sb.append_char(':');
+    var j = 0;
+    while j < 100 {
+        sb.append("x");
+        j = j + 1;
+    }
+    var built = sb.build();
+    printf("%d %c %d\n", strlen(built), built[10], strcmp(sb.to_str(), built));
 
     var arr: [int; 4] = [3, 1, 4, 1];
     arr[2] = 9;

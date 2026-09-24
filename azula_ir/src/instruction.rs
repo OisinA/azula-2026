@@ -36,6 +36,7 @@ pub enum Instruction<'a> {
     SizeOf(AzulaType<'a>, usize),
     ElementPtr(Value, Value, usize, AzulaType<'a>),
     Return(Option<Value>),
+    Unreachable,
     FunctionCall(String, Vec<Value>, usize),
     Jcond(Value, String, String),
     Jump(String),
@@ -99,6 +100,7 @@ impl<'a> Display for Instruction<'a> {
                     None => "".to_string(),
                 }
             ),
+            Instruction::Unreachable => write!(f, "unreachable"),
             Instruction::FunctionCall(name, args, dest) => {
                 write!(f, "%{}: function_call @{} {:?}", dest, name, args)
             }

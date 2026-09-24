@@ -1,0 +1,124 @@
+struct Vec<T> {
+    data: &T,
+    len: int,
+    cap: int,
+}
+
+impl Vec<T> {
+    func new(): Vec<T> {
+        return Vec { data: malloc(4 * sizeof(T)), len: 0, cap: 4 };
+    }
+
+    func push(self: &Vec<T>, value: T) {
+        if self.len == self.cap {
+            self.cap = self.cap * 2;
+            self.data = realloc(self.data, self.cap * sizeof(T));
+        }
+        self.data[self.len] = value;
+        self.len = self.len + 1;
+    }
+
+    func get(self: &Vec<T>, index: int): T {
+        return self.data[index];
+    }
+
+    func length(self: Vec<T>): int {
+        return self.len;
+    }
+}
+
+struct Pair<A, B> {
+    first: A,
+    second: B,
+}
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+enum List<T> {
+    Cons(T, List<T>),
+    Nil,
+}
+
+func max<T>(a: T, b: T): T {
+    if a > b { return a; }
+    return b;
+}
+
+func swap<A, B>(p: Pair<A, B>): Pair<B, A> {
+    return Pair { first: p.second, second: p.first };
+}
+
+func find(v: &Vec<str>, needle: str): Option<int> {
+    var i = 0;
+    while i < v.len {
+        if strcmp(v.get(i), needle) == 0 {
+            return Option::Some(i);
+        }
+        i = i + 1;
+    }
+    return Option::None;
+}
+
+func sum(l: List<int>): int {
+    return match l {
+        List::Cons(head, tail) => head + sum(tail),
+        List::Nil => 0,
+    };
+}
+
+struct Point { x: int, y: int, }
+
+func main {
+    var ints: Vec<int> = Vec::new();
+    var i = 0;
+    while i < 10 {
+        ints.push(i * i);
+        i = i + 1;
+    }
+    printf("ints %d %d %d\n", ints.length(), ints.get(3), ints.get(9));
+
+    var words = Vec::<str>::new();
+    words.push("alpha");
+    words.push("beta");
+    words.push("gamma");
+    var found = find(&words, "gamma");
+    match found {
+        Option::Some(index) => { printf("found at %d\n", index); },
+        Option::None => { printf("missing\n"); },
+    }
+    var missing: Option<int> = find(&words, "delta");
+    match missing {
+        Option::Some(_) => { printf("?\n"); },
+        Option::None => { printf("delta missing\n"); },
+    }
+
+    var points: Vec<Point> = Vec::new();
+    points.push(Point { x: 1, y: 2 });
+    points.push(Point { y: 20, x: 10 });
+    printf("points %d %d\n", points.get(1).x, points.get(1).y);
+
+    var nested: Vec<Vec<int>> = Vec::new();
+    nested.push(Vec::new());
+    var inner: &Vec<int> = &nested.data[0];
+    inner.push(42);
+    printf("nested %d %d\n", nested.length(), nested.get(0).get(0));
+
+    var p = Pair { first: 1, second: "one" };
+    var q = swap(p);
+    printf("pair %s %d\n", q.first, q.second);
+    var explicit = Pair::<i8, bool> { first: 3, second: true };
+    printf("explicit %d %d\n", explicit.first, explicit.second);
+
+    printf("max %d %d\n", max(3, 7), max::<int>(-2, -5));
+
+    var list = List::Cons(1, List::Cons(2, List::Cons(3, List::Nil)));
+    printf("sum %d\n", sum(list));
+    var opt = Option::<str>::Some("text");
+    match opt {
+        Option::Some(s) => { printf("%s\n", s); },
+        _ => {},
+    }
+}

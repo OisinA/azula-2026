@@ -1,96 +1,72 @@
-struct IntVec { data: str, len: int, cap: int, }
-struct StrVec { data: str, len: int, cap: int, }
-
-impl IntVec {
-    func new(): IntVec {
-        var cap: int = 8;
-        var data: str = malloc(cap * 8);
-        return IntVec { data: data, len: 0, cap: cap };
-    }
-
-    func push(self: &IntVec, val: int) {
-        if self.len == self.cap {
-            self.cap = self.cap * 2;
-            self.data = realloc(self.data, self.cap * 8);
-        }
-        var slot: str = ptr_add(self.data, self.len * 8);
-        ptr_write_int(slot, val);
-        self.len = self.len + 1;
-    }
-
-    func get(self: IntVec, index: int): int {
-        var slot: str = ptr_add(self.data, index * 8);
-        return ptr_read_int(slot);
-    }
-
-    func set(self: &IntVec, index: int, val: int) {
-        var slot: str = ptr_add(self.data, index * 8);
-        ptr_write_int(slot, val);
-    }
-
-    func length(self: IntVec): int {
-        return self.len;
-    }
-
-    func pop(self: &IntVec): int {
-        self.len = self.len - 1;
-        var slot: str = ptr_add(self.data, self.len * 8);
-        return ptr_read_int(slot);
-    }
-
-    func peek(self: IntVec): int {
-        var slot: str = ptr_add(self.data, (self.len - 1) * 8);
-        return ptr_read_int(slot);
-    }
-
-    func free_data(self: IntVec) {
-        free(self.data);
-    }
+// A growable array.
+struct Vec<T> {
+    data: &T,
+    len: int,
+    cap: int,
 }
 
-impl StrVec {
-    func new(): StrVec {
-        var cap: int = 8;
-        var data: str = malloc(cap * 8);
-        return StrVec { data: data, len: 0, cap: cap };
+impl Vec<T> {
+    func new(): Vec<T> {
+        return Vec::<T>::with_capacity(8);
     }
 
-    func push(self: &StrVec, val: str) {
+    func with_capacity(capacity: int): Vec<T> {
+        var cap = capacity;
+        if cap < 1 {
+            cap = 1;
+        }
+        return Vec { data: malloc(cap * sizeof(T)), len: 0, cap: cap };
+    }
+
+    func push(self: &Vec<T>, value: T) {
         if self.len == self.cap {
             self.cap = self.cap * 2;
-            self.data = realloc(self.data, self.cap * 8);
+            self.data = realloc(self.data, self.cap * sizeof(T));
         }
-        var slot: str = ptr_add(self.data, self.len * 8);
-        ptr_write_str(slot, val);
+        self.data[self.len] = value;
         self.len = self.len + 1;
     }
 
-    func get(self: StrVec, index: int): str {
-        var slot: str = ptr_add(self.data, index * 8);
-        return ptr_read_str(slot);
+    func check_index(self: Vec<T>, index: int) {
+        if index < 0 || index >= self.len {
+            printf("Vec index %ld out of bounds (length %ld)\n", index, self.len);
+            exit(1);
+        }
     }
 
-    func set(self: &StrVec, index: int, val: str) {
-        var slot: str = ptr_add(self.data, index * 8);
-        ptr_write_str(slot, val);
+    func get(self: Vec<T>, index: int): T {
+        self.check_index(index);
+        return self.data[index];
     }
 
-    func length(self: StrVec): int {
+    func set(self: &Vec<T>, index: int, value: T) {
+        self.check_index(index);
+        self.data[index] = value;
+    }
+
+    func length(self: Vec<T>): int {
         return self.len;
     }
 
-    func pop(self: &StrVec): str {
+    func is_empty(self: Vec<T>): bool {
+        return self.len == 0;
+    }
+
+    func pop(self: &Vec<T>): T {
+        self.check_index(self.len - 1);
         self.len = self.len - 1;
-        var slot: str = ptr_add(self.data, self.len * 8);
-        return ptr_read_str(slot);
+        return self.data[self.len];
     }
 
-    func peek(self: StrVec): str {
-        var slot: str = ptr_add(self.data, (self.len - 1) * 8);
-        return ptr_read_str(slot);
+    func peek(self: Vec<T>): T {
+        return self.get(self.len - 1);
     }
 
-    func free_data(self: StrVec) {
+    func clear(self: &Vec<T>) {
+        self.len = 0;
+    }
+
+    func free_data(self: Vec<T>) {
         free(self.data);
     }
 }

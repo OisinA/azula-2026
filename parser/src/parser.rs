@@ -33,6 +33,10 @@ pub struct Parser<'a> {
     lexer: Peekable<Lexer<'a>>,
 
     pub errors: Vec<AzulaError>,
+
+    /// Set when a `>>` token closed two levels of generic arguments at once;
+    /// the outer level's `>` has then already been consumed.
+    pending_greater: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -41,6 +45,7 @@ impl<'a> Parser<'a> {
             source,
             lexer: lexer.peekable(),
             errors: vec![],
+            pending_greater: false,
         }
     }
 
@@ -146,6 +151,8 @@ impl<'a> Parser<'a> {
             _ => return None,
         };
 
+        let type_params = self.parse_type_params();
+
         // Parse function arguments
         let mut args = vec![];
         if let Some(tok) = self.lexer.peek() {
@@ -178,7 +185,7 @@ impl<'a> Parser<'a> {
 
         let end_token = self.lexer.next().unwrap();
 
-        Some(Statement::Function {
+        let function = Statement::Function {
             name: ident,
             args,
             returns,
@@ -187,7 +194,12 @@ impl<'a> Parser<'a> {
                 start: start_token.span.start,
                 end: end_token.span.end,
             },
-        })
+        };
+        if type_params.is_empty() {
+            Some(function)
+        } else {
+            Some(Statement::Generic(type_params, Rc::new(function)))
+        }
     }
 
     fn parse_extern_function(&mut self) -> Option<Statement<'a>> {
@@ -270,6 +282,8 @@ impl<'a> Parser<'a> {
             _ => return None,
         };
 
+        let type_params = self.parse_type_params();
+
         // Parse struct arguments
         let mut args = vec![];
         if let Some(tok) = self.lexer.peek() {
@@ -278,14 +292,19 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Some(Statement::Struct {
+        let struc = Statement::Struct {
             name: ident,
             attributes: args,
             span: Span {
                 start: start_token.span.start,
                 end: start_token.span.end,
             },
-        })
+        };
+        if type_params.is_empty() {
+            Some(struc)
+        } else {
+            Some(Statement::Generic(type_params, Rc::new(struc)))
+        }
     }
 
     fn parse_import(&mut self) -> Option<Statement<'a>> {
@@ -334,6 +353,8 @@ impl<'a> Parser<'a> {
             _ => return None,
         };
 
+        let type_params = self.parse_type_params();
+
         if !self.expect_peek(TokenKind::BraceOpen) {
             return None;
         }
@@ -375,7 +396,7 @@ impl<'a> Parser<'a> {
         // Consume the closing brace
         self.lexer.next();
 
-        Some(Statement::Enum {
+        let enm = Statement::Enum {
             name: ident,
             variants,
             payloads,
@@ -383,7 +404,12 @@ impl<'a> Parser<'a> {
                 start: start_token.span.start,
                 end: start_token.span.end,
             },
-        })
+        };
+        if type_params.is_empty() {
+            Some(enm)
+        } else {
+            Some(Statement::Generic(type_params, Rc::new(enm)))
+        }
     }
 
     fn parse_return(&mut self) -> Option<Statement<'a>> {
@@ -634,7 +660,20 @@ impl<'a> Parser<'a> {
         // impl
         let start_token = self.lexer.next().unwrap();
 
+        // `impl<T> Vec<T>` — the parameters are also implied by `impl Vec<T>`
+        let mut type_params = self.parse_type_params();
+
         let first_ident = self.parse_type();
+        if let AzulaType::Generic(_, args) = &first_ident {
+            for arg in args {
+                if let AzulaType::Named(name) = arg {
+                    let name: &'a str = Box::leak(name.clone().into_boxed_str());
+                    if !type_params.contains(&name) {
+                        type_params.push(name);
+                    }
+                }
+            }
+        }
         let mut impl_stmt = (first_ident.clone(), None);
 
         if self.lexer.peek().unwrap().kind == TokenKind::For {
@@ -652,7 +691,7 @@ impl<'a> Parser<'a> {
 
         let end_token = self.lexer.next().unwrap();
 
-        Some(Statement::Impl {
+        let imp = Statement::Impl {
             struct_impl: impl_stmt.0,
             trait_impl: impl_stmt.1,
             funcs: body,
@@ -660,13 +699,25 @@ impl<'a> Parser<'a> {
                 start: start_token.span.start,
                 end: end_token.span.end,
             },
-        })
+        };
+        if type_params.is_empty() {
+            Some(imp)
+        } else {
+            Some(Statement::Generic(type_params, Rc::new(imp)))
+        }
     }
 
     fn parse_type(&mut self) -> AzulaType<'a> {
         if let Some(tok) = self.lexer.next() {
             if let TokenKind::Identifier(ident) = tok.kind {
-                return ident.into();
+                let base: AzulaType<'a> = ident.into();
+                if matches!(base, AzulaType::Named(_))
+                    && self.lexer.peek().map(|t| t.kind == TokenKind::Less).unwrap_or(false)
+                {
+                    let args = self.parse_type_args();
+                    return AzulaType::Generic(ident.to_string(), args);
+                }
+                return base;
             }
 
             if let TokenKind::Ampersand = tok.kind {
@@ -699,6 +750,64 @@ impl<'a> Parser<'a> {
         }
 
         AzulaType::Void
+    }
+
+    /// Parse `<T1, T2, ...>` type arguments (the `<` is the next token).
+    fn parse_type_args(&mut self) -> Vec<AzulaType<'a>> {
+        self.lexer.next(); // consume <
+        let mut args = vec![];
+        loop {
+            args.push(self.parse_type());
+            if self.pending_greater {
+                self.pending_greater = false;
+                break;
+            }
+            match self.lexer.peek().map(|t| t.kind.clone()) {
+                Some(TokenKind::Comma) => {
+                    self.lexer.next();
+                }
+                Some(TokenKind::Greater) => {
+                    self.lexer.next();
+                    break;
+                }
+                Some(TokenKind::ShiftRight) => {
+                    // `>>` closes this list and the enclosing one
+                    self.lexer.next();
+                    self.pending_greater = true;
+                    break;
+                }
+                _ => {
+                    self.expect_peek(TokenKind::Greater);
+                    break;
+                }
+            }
+        }
+        args
+    }
+
+    /// Parse `<T, U>` type parameter names if present.
+    fn parse_type_params(&mut self) -> Vec<&'a str> {
+        let mut params = vec![];
+        if self.lexer.peek().map(|t| t.kind != TokenKind::Less).unwrap_or(true) {
+            return params;
+        }
+        self.lexer.next(); // consume <
+        while let Some(tok) = self.lexer.next() {
+            match tok.kind {
+                TokenKind::Identifier(name) => params.push(name),
+                TokenKind::Comma => continue,
+                TokenKind::Greater => break,
+                _ => {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::ExpectedToken("type parameter".to_string(), Some(format!("{:?}", tok.kind))),
+                        tok.span.start,
+                        tok.span.end,
+                    ));
+                    break;
+                }
+            }
+        }
+        params
     }
 
     fn parse_typed_identifier(&mut self) -> Option<TypedIdentifier<'a>> {
@@ -1637,6 +1746,28 @@ impl<'a> Parser<'a> {
 
     fn parse_namespace_access(&mut self, left: ExpressionNode<'a>) -> Option<ExpressionNode<'a>> {
         self.lexer.next();
+
+        // Turbofish: `Name::<Types>`
+        if self.lexer.peek().map(|t| t.kind == TokenKind::Less).unwrap_or(false) {
+            let name = match &left.expression {
+                Expression::Identifier(name) => name.clone(),
+                _ => {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::Custom("type arguments can only follow a name".to_string()),
+                        left.span.start,
+                        left.span.end,
+                    ));
+                    return None;
+                }
+            };
+            let args = self.parse_type_args();
+            return Some(ExpressionNode {
+                expression: Expression::Turbofish(name, args),
+                typed: AzulaType::Infer,
+                span: left.span.clone(),
+            });
+        }
+
         let index = match self.parse_expression(ACCESS, false) {
             Some(expr) => expr,
             None => return None,

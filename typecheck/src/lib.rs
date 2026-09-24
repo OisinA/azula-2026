@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate maplit;
 
+mod generics;
 mod typecheck;
 
 pub mod prelude {

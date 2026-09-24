@@ -1,0 +1,34 @@
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+impl Option<T> {
+    func is_some(self: Option<T>): bool {
+        return match self {
+            Option::Some(_) => true,
+            Option::None => false,
+        };
+    }
+
+    func is_none(self: Option<T>): bool {
+        return !self.is_some();
+    }
+
+    func unwrap(self: Option<T>): T {
+        match self {
+            Option::Some(value) => { return value; },
+            Option::None => {
+                printf("called unwrap on None\n");
+                exit(1);
+            },
+        }
+    }
+
+    func unwrap_or(self: Option<T>, default: T): T {
+        match self {
+            Option::Some(value) => { return value; },
+            Option::None => { return default; },
+        }
+    }
+}

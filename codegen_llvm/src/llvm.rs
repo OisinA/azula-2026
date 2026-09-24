@@ -173,6 +173,10 @@ impl<'ctx> Backend<'ctx> for LLVMCodegen<'ctx> {
                 .unwrap();
         }
 
+        if let Err(e) = codegen.module.verify() {
+            return Err(format!("internal compiler error: invalid LLVM IR generated:\n{}", e.to_string()).into());
+        }
+
         std::fs::create_dir_all(".build")?;
         let base_name = Path::new(name).file_name().unwrap().to_string_lossy();
         let object_file = format!(".build/{}.o", base_name);
@@ -450,6 +454,9 @@ impl<'a> LLVMCodegen<'a> {
                     _ => unreachable!(),
                 }
             },
+            Instruction::Unreachable => {
+                self.builder.build_unreachable().unwrap();
+            }
             Instruction::FunctionCall(name, args, dest) => {
                 // compiler intrinsics lowered to LLVM directly
                 if name == "ptr_add" {
@@ -524,6 +531,23 @@ impl<'a> LLVMCodegen<'a> {
                             Ok(param) => self.coerce_int_width(value, param).into(),
                             Err(_) => arg,
                         },
+                        // C default argument promotions for variadic arguments
+                        (Ok(BasicValueEnum::IntValue(iv)), None) if iv.get_type().get_bit_width() < 32 => {
+                            let i32t = self.context.i32_type();
+                            if iv.get_type().get_bit_width() == 1 {
+                                self.builder.build_int_z_extend(iv, i32t, "promote").unwrap().into()
+                            } else {
+                                self.builder.build_int_s_extend(iv, i32t, "promote").unwrap().into()
+                            }
+                        }
+                        (Ok(BasicValueEnum::FloatValue(fv)), None)
+                            if fv.get_type() != self.context.f64_type() =>
+                        {
+                            self.builder
+                                .build_float_ext(fv, self.context.f64_type(), "promote")
+                                .unwrap()
+                                .into()
+                        }
                         _ => arg,
                     })
                     .collect();
@@ -956,6 +980,8 @@ impl<'a> LLVMCodegen<'a> {
 
                 let mut agg = val.as_basic_value_enum().into_struct_value();
                 for (index, arg) in vals.iter().enumerate() {
+                    let field_type = struc_type.get_field_type_at_index(index as u32).unwrap();
+                    let arg = &self.coerce_int_width(*arg, field_type);
                     agg = self
                         .builder
                         .build_insert_value(agg, *arg, index as u32, "insert")
@@ -1296,6 +1322,7 @@ impl<'a> LLVMCodegen<'a> {
                 }
             }
             AzulaType::UnknownType(_) => todo!(),
+            AzulaType::Generic(..) => unreachable!("generic types are instantiated by the typechecker"),
             AzulaType::Array(_, _) => {
                 // Arrays are heap-allocated; represented as opaque pointers in LLVM 18
                 self.context

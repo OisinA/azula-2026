@@ -1,0 +1,102 @@
+// A hash map from strings to values, using open addressing. Keys are not
+// copied, so they must stay alive as long as the map does.
+struct Map<V> {
+    keys: &str,
+    values: &V,
+    cap: int,
+    count: int,
+}
+
+func map_hash(key: str): int {
+    var h = 5381;
+    var i = 0;
+    while key[i] != 0 {
+        h = ((h << 5) + h) ^ (key[i] as int);
+        i = i + 1;
+    }
+    return h & 0x7fffffffffffffff;
+}
+
+impl Map<V> {
+    func new(): Map<V> {
+        return Map::<V>::with_capacity(16);
+    }
+
+    func with_capacity(cap: int): Map<V> {
+        return Map {
+            keys: calloc(cap, sizeof(str)),
+            values: malloc(cap * sizeof(V)),
+            cap: cap,
+            count: 0,
+        };
+    }
+
+    // The slot holding `key`, or the empty slot where it would go
+    func slot(self: Map<V>, key: str): int {
+        var index = map_hash(key) % self.cap;
+        while self.keys[index] != null {
+            if strcmp(self.keys[index], key) == 0 {
+                return index;
+            }
+            index = (index + 1) % self.cap;
+        }
+        return index;
+    }
+
+    func insert(self: &Map<V>, key: str, value: V) {
+        if (self.count + 1) * 2 > self.cap {
+            self.grow();
+        }
+        var index = self.slot(key);
+        if self.keys[index] == null {
+            self.keys[index] = key;
+            self.count = self.count + 1;
+        }
+        self.values[index] = value;
+    }
+
+    func grow(self: &Map<V>) {
+        var bigger = Map::<V>::with_capacity(self.cap * 2);
+        var i = 0;
+        while i < self.cap {
+            if self.keys[i] != null {
+                bigger.insert(self.keys[i], self.values[i]);
+            }
+            i = i + 1;
+        }
+        free(self.keys);
+        free(self.values);
+        self.keys = bigger.keys;
+        self.values = bigger.values;
+        self.cap = bigger.cap;
+    }
+
+    func get(self: Map<V>, key: str): Option<V> {
+        var index = self.slot(key);
+        if self.keys[index] == null {
+            return Option::None;
+        }
+        return Option::Some(self.values[index]);
+    }
+
+    func contains(self: Map<V>, key: str): bool {
+        return self.keys[self.slot(key)] != null;
+    }
+
+    func length(self: Map<V>): int {
+        return self.count;
+    }
+
+    // All keys, in no particular order
+    func key_list(self: Map<V>): Vec<str> {
+        var keys: Vec<str> = Vec::new();
+        var i = 0;
+        while i < self.cap {
+            if self.keys[i] != null {
+                keys.push(self.keys[i]);
+            }
+            i = i + 1;
+        }
+        return keys;
+    }
+}
