@@ -123,6 +123,7 @@ impl<'a> VM {
                 Instruction::StoreStructMember(_, _, _, _) => todo!(),
                 Instruction::AccessStructMember(_, _, _, _, _) => todo!(),
                 Instruction::Cast(_, _, _) => todo!(),
+                _ => todo!(),
             }
         }
 

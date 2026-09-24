@@ -109,6 +109,10 @@ impl<'a> Lexer<'a> {
                         self.next();
                         Token::new(TokenKind::LessEqual, start, self.index)
                     }
+                    Some('<') => {
+                        self.next();
+                        Token::new(TokenKind::ShiftLeft, start, self.index)
+                    }
                     _ => Token::new(TokenKind::Less, start, self.index),
                 },
                 '>' => match self.peekable.peek() {
@@ -116,9 +120,15 @@ impl<'a> Lexer<'a> {
                         self.next();
                         Token::new(TokenKind::GreaterEqual, start, self.index)
                     }
+                    Some('>') => {
+                        self.next();
+                        Token::new(TokenKind::ShiftRight, start, self.index)
+                    }
                     _ => Token::new(TokenKind::Greater, start, self.index),
                 },
                 '%' => Token::new(TokenKind::Modulo, start, self.index),
+                '^' => Token::new(TokenKind::Caret, start, self.index),
+                '~' => Token::new(TokenKind::Tilde, start, self.index),
                 '"' => {
                     while let Some(val) = self.peekable.peek() {
                         match val {
@@ -154,6 +164,22 @@ impl<'a> Lexer<'a> {
 
                     let str = &self.input[start + 1..self.index - 1];
                     Token::new(TokenKind::Char(str), start, self.index)
+                }
+                '0' if self.peekable.peek() == Some(&'x') => {
+                    self.next();
+                    while let Some(val) = self.peekable.peek() {
+                        match val {
+                            '0'..='9' | 'a'..='f' | 'A'..='F' | '_' => self.next(),
+                            _ => break,
+                        };
+                    }
+
+                    let digits = self.input[start + 2..self.index].replace('_', "");
+                    Token::new(
+                        TokenKind::Integer(u64::from_str_radix(&digits, 16).unwrap_or(0) as i64),
+                        start,
+                        self.index,
+                    )
                 }
                 '0'..='9' => {
                     while let Some(val) = self.peekable.peek() {
@@ -221,6 +247,7 @@ impl<'a> Lexer<'a> {
             "alloc" => Token::new(TokenKind::Alloc, start, self.index),
             "null" => Token::new(TokenKind::Null, start, self.index),
             "type" => Token::new(TokenKind::Type, start, self.index),
+            "sizeof" => Token::new(TokenKind::SizeOf, start, self.index),
             "import" => Token::new(TokenKind::Import, start, self.index),
             _ => Token::new(TokenKind::Identifier(value), start, self.index),
         }

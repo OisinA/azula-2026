@@ -12,16 +12,21 @@ use crate::{
 type OperatorPrecedence = u8;
 
 const LOWEST: OperatorPrecedence = 0;
-const COMPARISON: OperatorPrecedence = 1;
-const EQUALS: OperatorPrecedence = 2;
-const LESS_GREATER: OperatorPrecedence = 3;
-const SUM: OperatorPrecedence = 4;
-const PRODUCT: OperatorPrecedence = 5;
-const PREFIX: OperatorPrecedence = 6;
-const CAST: OperatorPrecedence = 7;
-const STRUCT_INIT: OperatorPrecedence = 8;
-const CALL: OperatorPrecedence = 9;
-const ACCESS: OperatorPrecedence = 10;
+const OR: OperatorPrecedence = 1;
+const AND: OperatorPrecedence = 2;
+const EQUALS: OperatorPrecedence = 3;
+const LESS_GREATER: OperatorPrecedence = 4;
+const BIT_OR: OperatorPrecedence = 5;
+const BIT_XOR: OperatorPrecedence = 6;
+const BIT_AND: OperatorPrecedence = 7;
+const SHIFT: OperatorPrecedence = 8;
+const SUM: OperatorPrecedence = 9;
+const PRODUCT: OperatorPrecedence = 10;
+const PREFIX: OperatorPrecedence = 11;
+const CAST: OperatorPrecedence = 12;
+const STRUCT_INIT: OperatorPrecedence = 13;
+const CALL: OperatorPrecedence = 14;
+const ACCESS: OperatorPrecedence = 15;
 
 pub struct Parser<'a> {
     source: &'a str,
@@ -933,7 +938,7 @@ impl<'a> Parser<'a> {
                 };
                 Some(ExpressionNode {
                     expression: Expression::String(transformed),
-                    typed: AzulaType::Pointer(Rc::new(AzulaType::Str)),
+                    typed: AzulaType::Str,
                     span: Span {
                         start: tok.span.start,
                         end: tok.span.end,
@@ -966,6 +971,37 @@ impl<'a> Parser<'a> {
                     span: Span {
                         start: tok.span.start,
                         end: expr.span.end,
+                    },
+                })
+            }
+            TokenKind::Tilde => {
+                let expr = self.parse_expression(PREFIX, allow_struct_init)?;
+
+                Some(ExpressionNode {
+                    span: Span {
+                        start: tok.span.start,
+                        end: expr.span.end,
+                    },
+                    expression: Expression::BitNot(Rc::new(expr)),
+                    typed: AzulaType::Infer,
+                })
+            }
+            TokenKind::SizeOf => {
+                if !self.expect_peek(TokenKind::BracketOpen) {
+                    return None;
+                }
+                self.lexer.next(); // consume (
+                let typ = self.parse_type();
+                if !self.expect_peek(TokenKind::BracketClose) {
+                    return None;
+                }
+                let close = self.lexer.next().unwrap();
+                Some(ExpressionNode {
+                    expression: Expression::SizeOf(typ),
+                    typed: AzulaType::Int,
+                    span: Span {
+                        start: tok.span.start,
+                        end: close.span.end,
                     },
                 })
             }
@@ -1122,7 +1158,12 @@ impl<'a> Parser<'a> {
             | TokenKind::Less
             | TokenKind::LessEqual
             | TokenKind::Greater
-            | TokenKind::GreaterEqual => {
+            | TokenKind::GreaterEqual
+            | TokenKind::Ampersand
+            | TokenKind::Bar
+            | TokenKind::Caret
+            | TokenKind::ShiftLeft
+            | TokenKind::ShiftRight => {
                 let precedence = operator_precedence(operator.kind.clone(), allow_struct_init);
 
                 self.lexer.next();
@@ -1731,17 +1772,27 @@ fn operator_from_token(tok: TokenKind) -> Option<Operator> {
         TokenKind::LessEqual => Some(Operator::Lte),
         TokenKind::Greater => Some(Operator::Gt),
         TokenKind::GreaterEqual => Some(Operator::Gte),
+        TokenKind::Ampersand => Some(Operator::BitAnd),
+        TokenKind::Bar => Some(Operator::BitOr),
+        TokenKind::Caret => Some(Operator::BitXor),
+        TokenKind::ShiftLeft => Some(Operator::Shl),
+        TokenKind::ShiftRight => Some(Operator::Shr),
         _ => None,
     }
 }
 
 fn operator_precedence(tok: TokenKind, allow_struct_init: bool) -> OperatorPrecedence {
     match tok {
-        TokenKind::Or | TokenKind::And => COMPARISON,
+        TokenKind::Or => OR,
+        TokenKind::And => AND,
         TokenKind::Equal | TokenKind::NotEqual => EQUALS,
         TokenKind::Less | TokenKind::LessEqual | TokenKind::Greater | TokenKind::GreaterEqual => {
             LESS_GREATER
         }
+        TokenKind::Bar => BIT_OR,
+        TokenKind::Caret => BIT_XOR,
+        TokenKind::Ampersand => BIT_AND,
+        TokenKind::ShiftLeft | TokenKind::ShiftRight => SHIFT,
         TokenKind::Plus | TokenKind::Minus => SUM,
         TokenKind::Slash | TokenKind::Asterisk | TokenKind::Power | TokenKind::Modulo => PRODUCT,
         TokenKind::As => CAST,
@@ -2508,10 +2559,7 @@ mod tests {
         matches!(num.expression, Expression::Integer(5));
 
         let num = &identifiers[1];
-        assert_eq!(
-            num.typed.clone(),
-            AzulaType::Pointer(Rc::new(AzulaType::Str))
-        );
+        assert_eq!(num.typed.clone(), AzulaType::Str);
         assert_eq!(num.expression, Expression::String("test".to_string()));
 
         let num = &identifiers[2];
@@ -2797,7 +2845,7 @@ mod tests {
                     },
                     ExpressionNode {
                         expression: Expression::String("test".to_string()),
-                        typed: AzulaType::Pointer(Rc::new(AzulaType::Str)),
+                        typed: AzulaType::Str,
                         span: Span { start: 8, end: 14 }
                     }
                 ],

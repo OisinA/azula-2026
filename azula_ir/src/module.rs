@@ -455,6 +455,14 @@ impl<'a> Function<'a> {
         Value::Local(self.tmp_var_index - 1)
     }
 
+    /// Emit an instruction that produces a value in a fresh temporary.
+    pub fn emit(&mut self, make: impl FnOnce(usize) -> Instruction<'a>) -> Value {
+        let dest = self.tmp_var_index;
+        self.add_instruction(make(dest));
+        self.tmp_var_index += 1;
+        Value::Local(dest)
+    }
+
     pub fn cast(&mut self, val: Value, typ: AzulaType<'a>) -> Value {
         self.add_instruction(Instruction::Cast(val, typ, self.tmp_var_index));
         self.tmp_var_index += 1;

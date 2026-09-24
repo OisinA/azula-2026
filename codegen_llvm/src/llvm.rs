@@ -509,13 +509,26 @@ impl<'a> LLVMCodegen<'a> {
                     })
                     .collect();
 
+                let callee = self
+                    .module
+                    .get_function(&name)
+                    .unwrap_or_else(|| panic!("Unknown function {}", name));
+                let param_types = callee.get_type().get_param_types();
+                let converted_args: Vec<BasicMetadataValueEnum> = converted_args
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, arg)| match (BasicValueEnum::try_from(arg), param_types.get(i)) {
+                        (Ok(value), Some(param)) => match BasicTypeEnum::try_from(*param) {
+                            Ok(param) => self.coerce_int_width(value, param).into(),
+                            Err(_) => arg,
+                        },
+                        _ => arg,
+                    })
+                    .collect();
+
                 let result = self
                     .builder
-                    .build_call(
-                        self.module.get_function(&name).unwrap(),
-                        &converted_args,
-                        "call",
-                    )
+                    .build_call(callee, &converted_args, "call")
                     .unwrap();
 
                 let result = result.try_as_basic_value();
@@ -563,6 +576,7 @@ impl<'a> LLVMCodegen<'a> {
             Instruction::Eq(val1, val2, dest) => {
                 let local1 = locals.load(value_to_local(val1));
                 let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
                 let value = match local1.get_type() {
                     BasicTypeEnum::FloatType(_) => self
@@ -599,6 +613,7 @@ impl<'a> LLVMCodegen<'a> {
             Instruction::Neq(val1, val2, dest) => {
                 let local1 = locals.load(value_to_local(val1));
                 let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
                 let value = match local1.get_type() {
                     BasicTypeEnum::FloatType(_) => self
@@ -649,6 +664,7 @@ impl<'a> LLVMCodegen<'a> {
             Instruction::Gt(val1, val2, dest) => {
                 let local1 = locals.load(value_to_local(val1));
                 let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
                 let value = match local1.get_type() {
                     BasicTypeEnum::FloatType(_) => self
@@ -679,6 +695,7 @@ impl<'a> LLVMCodegen<'a> {
             Instruction::Gte(val1, val2, dest) => {
                 let local1 = locals.load(value_to_local(val1));
                 let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
                 let value = match local1.get_type() {
                     BasicTypeEnum::FloatType(_) => self
@@ -709,6 +726,7 @@ impl<'a> LLVMCodegen<'a> {
             Instruction::Lt(val1, val2, dest) => {
                 let local1 = locals.load(value_to_local(val1));
                 let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
                 let value = match local1.get_type() {
                     BasicTypeEnum::FloatType(_) => self
@@ -739,6 +757,7 @@ impl<'a> LLVMCodegen<'a> {
             Instruction::Lte(val1, val2, dest) => {
                 let local1 = locals.load(value_to_local(val1));
                 let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
                 let value = match local1.get_type() {
                     BasicTypeEnum::FloatType(_) => self
@@ -765,6 +784,40 @@ impl<'a> LLVMCodegen<'a> {
                 };
 
                 locals.store(dest, value.as_basic_value_enum());
+            }
+            Instruction::BitAnd(ref val1, ref val2, dest)
+            | Instruction::BitOr(ref val1, ref val2, dest)
+            | Instruction::BitXor(ref val1, ref val2, dest)
+            | Instruction::Shl(ref val1, ref val2, dest)
+            | Instruction::Shr(ref val1, ref val2, dest) => {
+                let local1 = locals.load(value_to_local(val1.clone()));
+                let local2 = locals.load(value_to_local(val2.clone()));
+                let (local1, local2) = self.harmonize(local1, local2);
+                let (l, r) = (local1.into_int_value(), local2.into_int_value());
+                let value = match instruction {
+                    Instruction::BitAnd(..) => self.builder.build_and(l, r, "and"),
+                    Instruction::BitOr(..) => self.builder.build_or(l, r, "or"),
+                    Instruction::BitXor(..) => self.builder.build_xor(l, r, "xor"),
+                    Instruction::Shl(..) => self.builder.build_left_shift(l, r, "shl"),
+                    _ => self.builder.build_right_shift(l, r, true, "shr"),
+                }
+                .unwrap();
+                locals.store(dest, value.as_basic_value_enum());
+            }
+            Instruction::SizeOf(typ, dest) => {
+                let size = self.azula_type_to_llvm_basic_type(typ).size_of().unwrap();
+                locals.store(dest, size.as_basic_value_enum());
+            }
+            Instruction::ElementPtr(array, index, dest, elem_type) => {
+                let array_ptr = locals.load(value_to_local(array)).into_pointer_value();
+                let index_val = locals.load(value_to_local(index)).into_int_value();
+                let elem_llvm_type = self.azula_type_to_llvm_basic_type(elem_type);
+                let gep = unsafe {
+                    self.builder
+                        .build_gep(elem_llvm_type, array_ptr, &[index_val], "element_ptr")
+                        .unwrap()
+                };
+                locals.store(dest, gep.as_basic_value_enum());
             }
             Instruction::Not(val, dest) => {
                 let local = locals.load(value_to_local(val)).into_int_value();
@@ -861,6 +914,8 @@ impl<'a> LLVMCodegen<'a> {
                     locals.store(value_to_local(struc), updated.as_basic_value_enum());
                 } else if struc_val.is_pointer_value() {
                     let llvm_struct_type = *self.structs.get(&struct_name).unwrap();
+                    let field_type = llvm_struct_type.get_field_type_at_index(index as u32).unwrap();
+                    let val = self.coerce_int_width(val, field_type);
                     let gep = unsafe {
                         self.builder
                             .build_struct_gep(
@@ -979,6 +1034,7 @@ impl<'a> LLVMCodegen<'a> {
         if let Instruction::Add(val1, val2, dest) = instruction {
             let local1 = locals.load(value_to_local(val1));
             let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
             let value = match local1.get_type() {
                 BasicTypeEnum::FloatType(_) => self
@@ -1006,6 +1062,7 @@ impl<'a> LLVMCodegen<'a> {
         if let Instruction::Sub(val1, val2, dest) = instruction {
             let local1 = locals.load(value_to_local(val1));
             let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
             let value = match local1.get_type() {
                 BasicTypeEnum::FloatType(_) => self
@@ -1033,6 +1090,7 @@ impl<'a> LLVMCodegen<'a> {
         if let Instruction::Mul(val1, val2, dest) = instruction {
             let local1 = locals.load(value_to_local(val1));
             let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
             let value = match local1.get_type() {
                 BasicTypeEnum::FloatType(_) => self
@@ -1060,6 +1118,7 @@ impl<'a> LLVMCodegen<'a> {
         if let Instruction::Div(val1, val2, dest) = instruction {
             let local1 = locals.load(value_to_local(val1));
             let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
             let value = match local1.get_type() {
                 BasicTypeEnum::FloatType(_) => self
@@ -1091,6 +1150,7 @@ impl<'a> LLVMCodegen<'a> {
         if let Instruction::Mod(val1, val2, dest) = instruction {
             let local1 = locals.load(value_to_local(val1));
             let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
             let value = match local1.get_type() {
                 BasicTypeEnum::FloatType(_) => self
@@ -1122,6 +1182,7 @@ impl<'a> LLVMCodegen<'a> {
         if let Instruction::Pow(val1, val2, dest) = instruction {
             let local1 = locals.load(value_to_local(val1));
             let local2 = locals.load(value_to_local(val2));
+            let (local1, local2) = self.harmonize(local1, local2);
 
             let result = self
                 .builder
@@ -1238,6 +1299,26 @@ impl<'a> LLVMCodegen<'a> {
                     .as_basic_type_enum()
             }
         }
+    }
+
+    /// Sign-extend the narrower of two integer operands so both have the same width.
+    fn harmonize<'v>(
+        &self,
+        a: BasicValueEnum<'v>,
+        b: BasicValueEnum<'v>,
+    ) -> (BasicValueEnum<'v>, BasicValueEnum<'v>)
+    where
+        'a: 'v,
+    {
+        if let (BasicValueEnum::IntValue(x), BasicValueEnum::IntValue(y)) = (a, b) {
+            let (xw, yw) = (x.get_type().get_bit_width(), y.get_type().get_bit_width());
+            if xw < yw {
+                return (self.coerce_int_width(a, y.get_type().as_basic_type_enum()), b);
+            } else if yw < xw {
+                return (a, self.coerce_int_width(b, x.get_type().as_basic_type_enum()));
+            }
+        }
+        (a, b)
     }
 
     fn coerce_int_width<'v>(&self, val: BasicValueEnum<'v>, target: BasicTypeEnum<'v>) -> BasicValueEnum<'v>

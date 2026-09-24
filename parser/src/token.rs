@@ -43,6 +43,10 @@ pub enum TokenKind<'a> {
     Modulo,          // %
     NamespaceAccess, // ::
     FatArrow,        // =>
+    Caret,           // ^
+    Tilde,           // ~
+    ShiftLeft,       // <<
+    ShiftRight,      // >>
 
     Function, // func
     Return,   // return
@@ -66,6 +70,7 @@ pub enum TokenKind<'a> {
     Alloc,    // alloc
     Null,     // null
     Type,     // type
+    SizeOf,   // sizeof
 
     Import, // import
 

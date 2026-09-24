@@ -359,7 +359,7 @@ impl<'a> Typechecker<'a> {
                 Expression::Integer(_) => AzulaType::Int,
                 Expression::Float(_) => AzulaType::Float,
                 Expression::Boolean(_) => AzulaType::Bool,
-                Expression::String(_) => AzulaType::Pointer(Rc::new(AzulaType::Str)),
+                Expression::String(_) => AzulaType::Str,
                 Expression::Array(val) => {
                     AzulaType::Array(Rc::new(val[0].typed.clone()), Some(val.len()))
                 }
@@ -457,11 +457,7 @@ impl<'a> Typechecker<'a> {
                     }
                 }
 
-                let types_compatible = type_annotation == typ
-                    || (matches!(typ, AzulaType::Int) && matches!(type_annotation, AzulaType::SizedSignedInt(_)))
-                    || (matches!(typ, AzulaType::SizedSignedInt(_)) && matches!(type_annotation, AzulaType::Int))
-                    || (matches!(typ, AzulaType::Str) && matches!(type_annotation, AzulaType::Pointer(_)))
-                    || (matches!(typ, AzulaType::Pointer(_)) && matches!(type_annotation, AzulaType::Str));
+                let types_compatible = assignable(&type_annotation, &typ, &expr);
 
                 if !types_compatible {
                     self.errors.push(AzulaError::new(
@@ -543,7 +539,7 @@ impl<'a> Typechecker<'a> {
                 Err(e) => return Err(e),
             };
 
-            if var_type != typ {
+            if !assignable(&var_type, &typ, &val) {
                 self.errors.push(AzulaError::new(
                     ErrorType::MismatchedAssignTypes(
                         format!("{:?}", var_type),
@@ -719,8 +715,8 @@ impl<'a> Typechecker<'a> {
                 Ok((expr.clone(), AzulaType::Bool))
             }
             Expression::String(_) => {
-                expr.typed = AzulaType::Pointer(Rc::new(AzulaType::Str));
-                Ok((expr.clone(), AzulaType::Pointer(Rc::new(AzulaType::Str))))
+                expr.typed = AzulaType::Str;
+                Ok((expr.clone(), AzulaType::Str))
             }
             Expression::Identifier(ref name) => {
                 if name == "nil" {
@@ -810,13 +806,43 @@ impl<'a> Typechecker<'a> {
                     AzulaType::Bool,
                 ));
             }
+            Expression::BitNot(exp) => {
+                let (node, typ) = self.typecheck_expression(exp.deref().clone(), env)?;
+                if !is_integer_type(&typ) {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::NonOperatorType(format!("{:?}", typ), "~".to_string()),
+                        expr.span.start,
+                        expr.span.end,
+                    ));
+                    return Err("~ requires an integer".to_string());
+                }
+                Ok((
+                    ExpressionNode {
+                        expression: Expression::BitNot(Rc::new(node)),
+                        typed: typ.clone(),
+                        span: expr.span,
+                    },
+                    typ,
+                ))
+            }
+            Expression::SizeOf(typ) => {
+                let typ = self.resolve_type(typ);
+                Ok((
+                    ExpressionNode {
+                        expression: Expression::SizeOf(typ),
+                        typed: AzulaType::Int,
+                        span: expr.span,
+                    },
+                    AzulaType::Int,
+                ))
+            }
             Expression::Negate(exp) => {
                 let (node, typ) = match self.typecheck_expression(exp.deref().clone(), env) {
                     Ok((node, typ)) => (node, typ),
                     Err(e) => return Err(e),
                 };
 
-                if typ != AzulaType::Int && typ != AzulaType::Float {
+                if !is_integer_type(&typ) && !is_float_type(&typ) {
                     self.errors.push(AzulaError::new(
                         ErrorType::MismatchedTypes(format!("{:?}", typ), "Int or Float".to_string()),
                         expr.span.start,
@@ -923,10 +949,7 @@ impl<'a> Typechecker<'a> {
                     match array_typ {
                         AzulaType::Array(nested, _) => nested.deref().clone(),
                         AzulaType::Str => AzulaType::SizedSignedInt(8),
-                        AzulaType::Pointer(nested) => match nested.deref().clone() {
-                            AzulaType::Str => AzulaType::SizedSignedInt(8),
-                            _ => nested.deref().clone(),
-                        },
+                        AzulaType::Pointer(nested) => nested.deref().clone(),
                         _ => unreachable!(),
                     }
                 } else {
@@ -1328,239 +1351,55 @@ impl<'a> Typechecker<'a> {
 
     fn typecheck_infix_expression(
         &mut self,
-        mut expr: ExpressionNode<'a>,
+        expr: ExpressionNode<'a>,
         env: &Environment<'a>,
     ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
         if let Expression::Infix(ref left, ref operator, ref right) = expr.expression {
-            let (left, left_typ) = match self.typecheck_expression(left.deref().clone(), env) {
-                Ok((left, typ)) => (left, typ),
-                Err(e) => return Err(e),
-            };
+            let (mut left, mut left_typ) = self.typecheck_expression(left.deref().clone(), env)?;
+            let (mut right, mut right_typ) = self.typecheck_expression(right.deref().clone(), env)?;
 
-            let (right, right_typ) = match self.typecheck_expression(right.deref().clone(), env) {
-                Ok((right, typ)) => (right, typ),
-                Err(e) => return Err(e),
-            };
-
-            let allowed = hashmap! {
-                Operator::Add => vec![AzulaType::Int, AzulaType::Float],
-                Operator::Sub => vec![AzulaType::Int, AzulaType::Float],
-                Operator::Mul => vec![AzulaType::Int, AzulaType::Float],
-                Operator::Div => vec![AzulaType::Int, AzulaType::Float],
-                Operator::Mod => vec![AzulaType::Int, AzulaType::Float],
-                Operator::Power => vec![AzulaType::Int, AzulaType::Float],
-                Operator::Or => vec![AzulaType::Bool],
-                Operator::And => vec![AzulaType::Bool],
-                Operator::Eq => vec![AzulaType::Int, AzulaType::Float, AzulaType::Bool],
-                Operator::Neq => vec![AzulaType::Int, AzulaType::Float, AzulaType::Bool],
-                Operator::Lt => vec![AzulaType::Int, AzulaType::Float],
-                Operator::Lte => vec![AzulaType::Int, AzulaType::Float],
-                Operator::Gt => vec![AzulaType::Int, AzulaType::Float],
-                Operator::Gte => vec![AzulaType::Int, AzulaType::Float],
-            };
-
-            // Enum types lower to i64 and pointer types lower to ptr — both compare as Int
-            let effective_left = match &left_typ {
-                AzulaType::Named(n) if self.enums.contains_key(n.as_str()) => AzulaType::Int,
-                AzulaType::Pointer(_) | AzulaType::Str => AzulaType::Int,
-                AzulaType::SizedSignedInt(_) => AzulaType::Int,
-                _ => left_typ.clone(),
-            };
-            let effective_right = match &right_typ {
-                AzulaType::Named(n) if self.enums.contains_key(n.as_str()) => AzulaType::Int,
-                AzulaType::Pointer(_) | AzulaType::Str => AzulaType::Int,
-                AzulaType::SizedSignedInt(_) => AzulaType::Int,
-                _ => right_typ.clone(),
-            };
-
-            let allowed = allowed.get(operator).unwrap();
-            if !allowed.contains(&effective_left) {
-                self.errors.push(AzulaError::new(
-                    ErrorType::NonOperatorType(
-                        format!("{:?}", left_typ),
-                        format!("{:?}", operator),
-                    ),
-                    left.span.start,
-                    left.span.end,
-                ));
-                return Err("cannot use operator with type".to_string());
+            // Integer literals take on the integer type of the other operand.
+            if is_integer_type(&left_typ) && is_integer_literal(&right) {
+                right.typed = left_typ.clone();
+                right_typ = left_typ.clone();
+            } else if is_integer_type(&right_typ) && is_integer_literal(&left) {
+                left.typed = right_typ.clone();
+                left_typ = right_typ.clone();
             }
 
-            if !allowed.contains(&effective_right) {
-                self.errors.push(AzulaError::new(
-                    ErrorType::NonOperatorType(
-                        format!("{:?}", right_typ),
-                        format!("{:?}", operator),
-                    ),
-                    right.span.start,
-                    right.span.end,
-                ));
-                return Err("cannot use operator with type".to_string());
+            let is_enum = |t: &AzulaType<'a>| matches!(t, AzulaType::Named(n) if self.enums.contains_key(n.as_str()));
+            let is_pointer_like = |t: &AzulaType<'a>| matches!(t, AzulaType::Pointer(_) | AzulaType::Str);
+
+            let operand_ok = |t: &AzulaType<'a>| -> bool {
+                match operator {
+                    Operator::Add | Operator::Sub | Operator::Mul | Operator::Div | Operator::Mod | Operator::Power => {
+                        is_integer_type(t) || is_float_type(t)
+                    }
+                    Operator::BitAnd | Operator::BitOr | Operator::BitXor | Operator::Shl | Operator::Shr => {
+                        is_integer_type(t)
+                    }
+                    Operator::Or | Operator::And => *t == AzulaType::Bool,
+                    Operator::Eq | Operator::Neq => {
+                        is_integer_type(t) || is_float_type(t) || *t == AzulaType::Bool || is_enum(t) || is_pointer_like(t)
+                    }
+                    Operator::Lt | Operator::Lte | Operator::Gt | Operator::Gte => {
+                        is_integer_type(t) || is_float_type(t) || is_pointer_like(t)
+                    }
+                }
+            };
+
+            for (node, typ) in [(&left, &left_typ), (&right, &right_typ)] {
+                if !operand_ok(typ) {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::NonOperatorType(format!("{:?}", typ), format!("{:?}", operator)),
+                        node.span.start,
+                        node.span.end,
+                    ));
+                    return Err("cannot use operator with type".to_string());
+                }
             }
 
-            match operator {
-                Operator::Add => {
-                    if left_typ != right_typ {
-                        self.errors.push(AzulaError::new(
-                            ErrorType::MismatchedTypes(
-                                format!("{:?}", left_typ),
-                                format!("{:?}", right_typ),
-                            ),
-                            left.span.start,
-                            right.span.end,
-                        ));
-                        return Err("mismatched types in infix".to_string());
-                    }
-
-                    expr.typed = left.clone().typed;
-                    Ok((
-                        ExpressionNode {
-                            expression: Expression::Infix(
-                                Rc::new(left),
-                                operator.clone(),
-                                Rc::new(right),
-                            ),
-                            typed: left_typ.clone().into(),
-                            span: expr.span,
-                        },
-                        left_typ,
-                    ))
-                }
-                Operator::Sub => {
-                    if left_typ != right_typ {
-                        self.errors.push(AzulaError::new(
-                            ErrorType::MismatchedTypes(
-                                format!("{:?}", left_typ),
-                                format!("{:?}", right_typ),
-                            ),
-                            left.span.start,
-                            right.span.end,
-                        ));
-                        return Err("mismatched types in infix".to_string());
-                    }
-
-                    expr.typed = left.clone().typed;
-                    Ok((
-                        ExpressionNode {
-                            expression: Expression::Infix(
-                                Rc::new(left),
-                                operator.clone(),
-                                Rc::new(right),
-                            ),
-                            typed: left_typ.clone().into(),
-                            span: expr.span,
-                        },
-                        left_typ,
-                    ))
-                }
-                Operator::Mul => {
-                    if left_typ != right_typ {
-                        self.errors.push(AzulaError::new(
-                            ErrorType::MismatchedTypes(
-                                format!("{:?}", left_typ),
-                                format!("{:?}", right_typ),
-                            ),
-                            left.span.start,
-                            right.span.end,
-                        ));
-                        return Err("mismatched types in infix".to_string());
-                    }
-
-                    expr.typed = left.clone().typed;
-                    Ok((
-                        ExpressionNode {
-                            expression: Expression::Infix(
-                                Rc::new(left),
-                                operator.clone(),
-                                Rc::new(right),
-                            ),
-                            typed: left_typ.clone().into(),
-                            span: expr.span,
-                        },
-                        left_typ,
-                    ))
-                }
-                Operator::Div => {
-                    if left_typ != right_typ {
-                        self.errors.push(AzulaError::new(
-                            ErrorType::MismatchedTypes(
-                                format!("{:?}", left_typ),
-                                format!("{:?}", right_typ),
-                            ),
-                            left.span.start,
-                            right.span.end,
-                        ));
-                        return Err("mismatched types in infix".to_string());
-                    }
-
-                    expr.typed = left.clone().typed;
-                    Ok((
-                        ExpressionNode {
-                            expression: Expression::Infix(
-                                Rc::new(left),
-                                operator.clone(),
-                                Rc::new(right),
-                            ),
-                            typed: left_typ.clone().into(),
-                            span: expr.span,
-                        },
-                        left_typ,
-                    ))
-                }
-                Operator::Mod => {
-                    if left_typ != right_typ {
-                        self.errors.push(AzulaError::new(
-                            ErrorType::MismatchedTypes(
-                                format!("{:?}", left_typ),
-                                format!("{:?}", right_typ),
-                            ),
-                            left.span.start,
-                            right.span.end,
-                        ));
-                        return Err("mismatched types in infix".to_string());
-                    }
-
-                    expr.typed = left.clone().typed;
-                    Ok((
-                        ExpressionNode {
-                            expression: Expression::Infix(
-                                Rc::new(left),
-                                operator.clone(),
-                                Rc::new(right),
-                            ),
-                            typed: left_typ.clone().into(),
-                            span: expr.span,
-                        },
-                        left_typ,
-                    ))
-                }
-                Operator::Power => {
-                    if left_typ != right_typ {
-                        self.errors.push(AzulaError::new(
-                            ErrorType::MismatchedTypes(
-                                format!("{:?}", left_typ),
-                                format!("{:?}", right_typ),
-                            ),
-                            left.span.start,
-                            right.span.end,
-                        ));
-                        return Err("mismatched types in infix".to_string());
-                    }
-
-                    expr.typed = left.clone().typed;
-                    Ok((
-                        ExpressionNode {
-                            expression: Expression::Infix(
-                                Rc::new(left),
-                                operator.clone(),
-                                Rc::new(right),
-                            ),
-                            typed: left_typ.clone().into(),
-                            span: expr.span,
-                        },
-                        left_typ,
-                    ))
-                }
+            let result_typ = match operator {
                 Operator::Or
                 | Operator::And
                 | Operator::Eq
@@ -1569,21 +1408,38 @@ impl<'a> Typechecker<'a> {
                 | Operator::Lte
                 | Operator::Gt
                 | Operator::Gte => {
-                    expr.typed = AzulaType::Bool;
-                    Ok((
-                        ExpressionNode {
-                            expression: Expression::Infix(
-                                Rc::new(left),
-                                operator.clone(),
-                                Rc::new(right),
-                            ),
-                            typed: AzulaType::Bool,
-                            span: expr.span,
-                        },
-                        AzulaType::Bool,
-                    ))
+                    let both_pointers = is_pointer_like(&left_typ) && is_pointer_like(&right_typ);
+                    if left_typ != right_typ && !both_pointers {
+                        self.errors.push(AzulaError::new(
+                            ErrorType::MismatchedTypes(format!("{:?}", left_typ), format!("{:?}", right_typ)),
+                            left.span.start,
+                            right.span.end,
+                        ));
+                        return Err("mismatched types in infix".to_string());
+                    }
+                    AzulaType::Bool
                 }
-            }
+                _ => {
+                    if left_typ != right_typ {
+                        self.errors.push(AzulaError::new(
+                            ErrorType::MismatchedTypes(format!("{:?}", left_typ), format!("{:?}", right_typ)),
+                            left.span.start,
+                            right.span.end,
+                        ));
+                        return Err("mismatched types in infix".to_string());
+                    }
+                    left_typ.clone()
+                }
+            };
+
+            Ok((
+                ExpressionNode {
+                    expression: Expression::Infix(Rc::new(left), operator.clone(), Rc::new(right)),
+                    typed: result_typ.clone(),
+                    span: expr.span,
+                },
+                result_typ,
+            ))
         } else {
             unreachable!()
         }
@@ -1814,6 +1670,38 @@ impl<'a> Typechecker<'a> {
 
         Err("none".to_string())
     }
+}
+
+fn is_integer_type(t: &AzulaType) -> bool {
+    matches!(t, AzulaType::Int | AzulaType::SizedSignedInt(_) | AzulaType::SizedUnsignedInt(_))
+}
+
+fn is_float_type(t: &AzulaType) -> bool {
+    matches!(t, AzulaType::Float | AzulaType::SizedFloat(_))
+}
+
+fn is_integer_literal(expr: &ExpressionNode) -> bool {
+    match &expr.expression {
+        Expression::Integer(_) => true,
+        Expression::Negate(inner) => is_integer_literal(inner),
+        _ => false,
+    }
+}
+
+/// Whether a value of type `got` (produced by `expr`) can be stored in a slot of type `expected`.
+fn assignable(expected: &AzulaType, got: &AzulaType, expr: &ExpressionNode) -> bool {
+    if expected == got {
+        return true;
+    }
+    if is_integer_type(expected) && is_integer_type(got) {
+        // Literals fit any integer type; otherwise only int <-> sized conversions
+        // that the old compiler allowed.
+        return is_integer_literal(expr)
+            || matches!(got, AzulaType::Int)
+            || matches!(expected, AzulaType::Int);
+    }
+    let pointer_like = |t: &AzulaType| matches!(t, AzulaType::Pointer(_) | AzulaType::Str);
+    pointer_like(expected) && pointer_like(got) && (matches!(got, AzulaType::Str) || matches!(expected, AzulaType::Str))
 }
 
 #[cfg(test)]

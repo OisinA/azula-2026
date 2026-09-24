@@ -72,6 +72,8 @@ pub enum Expression<'a> {
         args: Vec<ExpressionNode<'a>>,
     },
     Not(Rc<ExpressionNode<'a>>),
+    BitNot(Rc<ExpressionNode<'a>>),
+    SizeOf(AzulaType<'a>),
     Negate(Rc<ExpressionNode<'a>>),
     Pointer(Rc<ExpressionNode<'a>>),
     Array(Vec<ExpressionNode<'a>>),
@@ -122,6 +124,11 @@ pub enum Operator {
     Lte,
     Gt,
     Gte,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 pub type Body<'a> = Vec<Statement<'a>>;

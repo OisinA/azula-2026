@@ -28,6 +28,13 @@ pub enum Instruction<'a> {
     Lt(Value, Value, usize),
     Lte(Value, Value, usize),
     Not(Value, usize),
+    BitAnd(Value, Value, usize),
+    BitOr(Value, Value, usize),
+    BitXor(Value, Value, usize),
+    Shl(Value, Value, usize),
+    Shr(Value, Value, usize),
+    SizeOf(AzulaType<'a>, usize),
+    ElementPtr(Value, Value, usize, AzulaType<'a>),
     Return(Option<Value>),
     FunctionCall(String, Vec<Value>, usize),
     Jcond(Value, String, String),
@@ -75,6 +82,15 @@ impl<'a> Display for Instruction<'a> {
             Instruction::Lt(val1, val2, dest) => write!(f, "%{}: lt {} {}", dest, val1, val2),
             Instruction::Lte(val1, val2, dest) => write!(f, "%{}: lte {} {}", dest, val1, val2),
             Instruction::Not(val, dest) => write!(f, "%{}: not {}", dest, val),
+            Instruction::BitAnd(val1, val2, dest) => write!(f, "%{}: bitand {} {}", dest, val1, val2),
+            Instruction::BitOr(val1, val2, dest) => write!(f, "%{}: bitor {} {}", dest, val1, val2),
+            Instruction::BitXor(val1, val2, dest) => write!(f, "%{}: bitxor {} {}", dest, val1, val2),
+            Instruction::Shl(val1, val2, dest) => write!(f, "%{}: shl {} {}", dest, val1, val2),
+            Instruction::Shr(val1, val2, dest) => write!(f, "%{}: shr {} {}", dest, val1, val2),
+            Instruction::SizeOf(typ, dest) => write!(f, "%{}: sizeof {:?}", dest, typ),
+            Instruction::ElementPtr(array, index, dest, _) => {
+                write!(f, "%{}: element_ptr {} {}", dest, array, index)
+            }
             Instruction::Return(val) => write!(
                 f,
                 "ret {}",

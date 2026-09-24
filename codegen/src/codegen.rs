@@ -31,6 +31,16 @@ fn spill_arguments<'a>(function: &mut Function<'a>) {
     }
 }
 
+/// The type of the elements produced by indexing a value of type `typ`.
+fn element_type<'a>(typ: &AzulaType<'a>) -> AzulaType<'a> {
+    match typ {
+        AzulaType::Array(inner, _) => inner.as_ref().clone(),
+        AzulaType::Str => AzulaType::SizedSignedInt(8),
+        AzulaType::Pointer(inner) => inner.as_ref().clone(),
+        _ => unreachable!("array access on non-array type {:?}", typ),
+    }
+}
+
 fn is_terminator(instr: Option<&Instruction<'_>>) -> bool {
     matches!(
         instr,
@@ -267,7 +277,7 @@ impl<'a> Codegen<'a> {
             match var.expression {
                 Expression::Identifier(v) => func.store(v.clone(), value, val.typed.clone()),
                 Expression::ArrayAccess(array, index) => {
-                    let elem_type = val.typed.clone();
+                    let elem_type = element_type(&array.typed);
                     let array = self.codegen_expr(array.deref().clone(), func, true);
                     let index = self.codegen_expr(index.deref().clone(), func, true);
                     func.store_element(array.clone(), index, value, elem_type);
@@ -550,6 +560,11 @@ impl<'a> Codegen<'a> {
 
                 func.not(val)
             }
+            Expression::BitNot(expr) => {
+                let val = self.codegen_expr(expr.as_ref().clone(), func, true);
+                func.not(val)
+            }
+            Expression::SizeOf(typ) => func.emit(|dest| Instruction::SizeOf(typ, dest)),
             Expression::Negate(expr) => {
                 let inner = expr.as_ref().clone();
                 let zero = match inner.typed {
@@ -573,12 +588,7 @@ impl<'a> Codegen<'a> {
                 return array;
             }
             Expression::ArrayAccess(array, index) => {
-                let elem_type = match &array.typed {
-                    AzulaType::Array(inner, _) => inner.as_ref().clone(),
-                    AzulaType::Str => AzulaType::SizedSignedInt(8),
-                    AzulaType::Pointer(inner) => inner.as_ref().clone(),
-                    _ => unreachable!("array access on non-array type"),
-                };
+                let elem_type = element_type(&array.typed);
                 let array = self.codegen_expr(array.deref().clone(), func, true);
                 let index = self.codegen_expr(index.deref().clone(), func, true);
 
@@ -713,6 +723,12 @@ impl<'a> Codegen<'a> {
                 };
                 let index = self.struct_member_index(&struct_name, &member_name);
                 func.access_struct_member(base, index, false, struct_name)
+            }
+            Expression::ArrayAccess(array, index) => {
+                let elem_type = element_type(&array.typed);
+                let array = self.codegen_expr(array.deref().clone(), func, true);
+                let index = self.codegen_expr(index.deref().clone(), func, true);
+                func.emit(|dest| Instruction::ElementPtr(array, index, dest, elem_type))
             }
             _ => {
                 let temp = format!("__tmp_{}", func.if_block_index);
@@ -922,6 +938,17 @@ impl<'a> Codegen<'a> {
                     func.blocks.push((end_block.clone(), Block::new()));
                     func.current_block = end_block.clone();
                     func.load(result_name, AzulaType::Bool)
+                }
+                Operator::BitAnd | Operator::BitOr | Operator::BitXor | Operator::Shl | Operator::Shr => {
+                    let val1 = self.codegen_expr(val1.as_ref().clone(), func, true);
+                    let val2 = self.codegen_expr(val2.as_ref().clone(), func, true);
+                    func.emit(|dest| match op {
+                        Operator::BitAnd => Instruction::BitAnd(val1, val2, dest),
+                        Operator::BitOr => Instruction::BitOr(val1, val2, dest),
+                        Operator::BitXor => Instruction::BitXor(val1, val2, dest),
+                        Operator::Shl => Instruction::Shl(val1, val2, dest),
+                        _ => Instruction::Shr(val1, val2, dest),
+                    })
                 }
                 Operator::Eq => {
                     let val1 = self.codegen_expr(val1.as_ref().clone(), func, true);

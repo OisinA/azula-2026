@@ -1,0 +1,55 @@
+struct Point { x: int, y: int, }
+
+func hash(s: str): int {
+    var h = 5381;
+    var i = 0;
+    while s[i] != 0 {
+        h = ((h << 5) + h) ^ (s[i] as int);
+        i = i + 1;
+    }
+    return h & 0xffff;
+}
+
+func main {
+    printf("%d %d %d\n", 12 & 10, 12 | 3, 12 ^ 10);
+    printf("%d %d %d\n", 1 << 10, 1024 >> 3, -16 >> 2);
+    printf("%d %d\n", ~0, ~5);
+    printf("prec %d %d\n", 1 + 2 << 1, 6 & 3 == 2);
+    printf("%d %d %d %d\n", sizeof(int), sizeof(i8), sizeof(Point), sizeof(&Point));
+
+    // Growable array of structs through a raw pointer
+    var cap = 4;
+    var points: &Point = malloc(cap * sizeof(Point));
+    var i = 0;
+    while i < 10 {
+        if i == cap {
+            cap = cap * 2;
+            points = realloc(points, cap * sizeof(Point));
+        }
+        points[i] = Point { x: i, y: i * i };
+        i = i + 1;
+    }
+    points[3].y = 1000;
+    var p: &Point = &points[4];
+    p.x = 44;
+    printf("%d %d %d %d\n", points[3].y, points[4].x, points[9].y, cap);
+
+    // Arrays of strings
+    var names: &str = malloc(3 * sizeof(str));
+    names[0] = "zero";
+    names[1] = "one";
+    names[2] = "two";
+    printf("%s %s %c\n", names[2], names[0], names[1][1]);
+
+    // Bytes
+    var buf: str = malloc(8);
+    buf[0] = 'o';
+    buf[1] = 'k';
+    buf[2] = 0;
+    var c: i8 = buf[1];
+    if c == 'k' && c >= 'a' && c <= 'z' {
+        printf("%s %d\n", buf, c - 'a');
+    }
+    var u: u8 = 200;
+    printf("hash %d\n", hash("hello"));
+}
