@@ -119,6 +119,7 @@ pub fn subst_expr<'a>(expr: &ExpressionNode<'a>, map: &Substitution<'a>) -> Expr
         Expression::Negate(e) => Expression::Negate(sub(e)),
         Expression::Pointer(e) => Expression::Pointer(sub(e)),
         Expression::Deref(e) => Expression::Deref(sub(e)),
+        Expression::Try(e) => Expression::Try(sub(e)),
         Expression::Array(items) => Expression::Array(items.iter().map(|a| subst_expr(a, map)).collect()),
         Expression::Tuple(items) => Expression::Tuple(items.iter().map(|a| subst_expr(a, map)).collect()),
         Expression::Closure(params, returns, body) => Expression::Closure(

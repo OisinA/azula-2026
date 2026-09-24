@@ -1,0 +1,12 @@
+// error: `?` would return an error of type int, but this function's errors are str
+func parse(s: str): Result<int, int> {
+    return Result::Err(1);
+}
+
+func run(): Result<int, str> {
+    return Result::Ok(parse("1")?);
+}
+
+func main() {
+    run();
+}

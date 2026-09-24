@@ -138,7 +138,8 @@ fn walk_expr(expr: &ExpressionNode, names: &mut Names) {
         | Expression::Pointer(e)
         | Expression::Deref(e)
         | Expression::Cast(e, _)
-        | Expression::Alloc(e) => walk_expr(e, names),
+        | Expression::Alloc(e)
+        | Expression::Try(e) => walk_expr(e, names),
         Expression::Array(items) | Expression::Tuple(items) | Expression::Interpolation(items) => {
             for i in items {
                 walk_expr(i, names);

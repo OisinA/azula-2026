@@ -62,7 +62,7 @@ directory holding the compiler.
 - [x] Multi-file projects (`import "file.azl"`)
 - [x] Enums with payloads and pattern matching
 - [x] Generics
-- [x] Beginnings of a standard library (`Option<T>`, `Vec<T>`, `Map<K, V>`, `StringBuilder`, and the `Eq`, `Ord`, `Hash` and `Show` interfaces)
+- [x] Beginnings of a standard library (`Option<T>`, `Result<T, E>`, `Vec<T>`, `Map<K, V>`, `StringBuilder`, and the `Eq`, `Ord`, `Hash` and `Show` interfaces)
 - [x] Self-hosting compiler
 
 ## A tour of the language
@@ -181,6 +181,10 @@ Other things to know:
   `equals`, and `<` and friends on types that are `Ord` call `compare`. The standard
   interfaces `Eq`, `Ord`, `Hash` and `Show` are implemented for `int`, `str`, `bool` and
   `float`, and `Map<K, V>` takes any `K` that is `Hash + Eq`.
+- Errors: `Result<T, E>` holds `Result::Ok(value)` or `Result::Err(error)`. Inside a
+  function returning a Result, `value?` gives the value of an Ok or returns the Err
+  (the error types must match); inside a function returning an Option, `option?` gives
+  the value of a Some or returns None.
 - `match` works on enums and integers (including character literals); arms can be
   blocks, and a `match` can be used as a statement or an expression.
 - Methods are declared in a type's body and receive `self` implicitly (a reference for

@@ -1727,6 +1727,7 @@ struct Checker {
             ExprKind::StrLit(_) => { return Type::Str; },
             ExprKind::Interpolate(parts) => { return self.check_interpolation(e, parts); },
             ExprKind::Tuple(items) => { return self.check_tuple(e, items, expected); },
+            ExprKind::Try(inner) => { return self.check_try(e, inner); },
             ExprKind::MethodTurbofish(_, _, _) => {
                 self.fail(e.pos, "type arguments on a method must be followed by a call");
                 return Type::Infer;
@@ -1954,6 +1955,72 @@ struct Checker {
                 return e.typ;
             },
         }
+    }
+
+    // `value?` on an Option or Result becomes
+    //
+    //   match value { Option::Some(v) => v, Option::None => { return Option::None; } }
+    //   match value { Result::Ok(v) => v, Result::Err(e) => { return Result::Err(e); } }
+    //
+    // which needs the function to return an Option, or a Result with the same error type
+    func check_try(e: &Expr, inner: &Expr): Type {
+        var copier = Copier { params: Vec::new(), args: Vec::new() };
+        var t = self.check_expr(copier.expr(inner), Type::Infer);
+        var kind = "";
+        var args: Vec<Type> = Vec::new();
+        match self.instances.get(named_of(t)) {
+            Option::Some(inst) => {
+                if inst.generic == "Option" || inst.generic == "Result" {
+                    kind = inst.generic;
+                    args = inst.args;
+                }
+            },
+            Option::None => {},
+        }
+        if kind == "" {
+            self.fail(inner.pos, concat("`?` needs an Option or a Result, not ", mangle(t)));
+        }
+        var returns_kind = "";
+        var return_args: Vec<Type> = Vec::new();
+        match self.instances.get(named_of(self.current_return)) {
+            Option::Some(inst) => {
+                returns_kind = inst.generic;
+                return_args = inst.args;
+            },
+            Option::None => {},
+        }
+        if returns_kind != kind {
+            var wanted = "an Option";
+            if kind == "Result" {
+                wanted = "a Result";
+            }
+            self.fail(e.pos, concat3("`?` on ", mangle(t), concat(" can only be used in a function returning ", wanted)));
+        }
+        if kind == "Result" && !type_eq(args.get(1), return_args.get(1)) {
+            self.fail(e.pos, concat3("`?` would return an error of type ", mangle(args.get(1)), concat(", but this function's errors are ", mangle(return_args.get(1)))));
+        }
+
+        var value_bindings: Vec<str> = Vec::new();
+        value_bindings.push("$try");
+        var arms: Vec<&MatchArm> = Vec::new();
+        var failure: &Expr = null;
+        if kind == "Option" {
+            arms.push(new_arm(Pattern::Variant("Option", "Some", value_bindings), new_expr(ExprKind::Ident("$try"), e.pos), e.pos));
+            failure = new_expr(ExprKind::Path(new_expr(ExprKind::Ident("Option"), e.pos), "None"), e.pos);
+            arms.push(new_arm(Pattern::Variant("Option", "None", Vec::new()), early_return(failure, e.pos), e.pos));
+        } else {
+            arms.push(new_arm(Pattern::Variant("Result", "Ok", value_bindings), new_expr(ExprKind::Ident("$try"), e.pos), e.pos));
+            var error_bindings: Vec<str> = Vec::new();
+            error_bindings.push("$error");
+            var call_args: Vec<&Expr> = Vec::new();
+            call_args.push(new_expr(ExprKind::Ident("$error"), e.pos));
+            failure = new_expr(ExprKind::Call(new_expr(ExprKind::Path(new_expr(ExprKind::Ident("Result"), e.pos), "Err"), e.pos), call_args), e.pos);
+            arms.push(new_arm(Pattern::Variant("Result", "Err", error_bindings), early_return(failure, e.pos), e.pos));
+        }
+        var m = new_expr(ExprKind::Match(inner, arms), e.pos);
+        var result = self.check_expr(m, Type::Infer);
+        e.kind = m.kind;
+        return result;
     }
 
     // `(a, b)` becomes a value of the tuple's struct
@@ -3250,6 +3317,7 @@ struct NameWalk {
             },
             ExprKind::ArrayLit(items) => { self.exprs(items); },
             ExprKind::Tuple(items) => { self.exprs(items); },
+            ExprKind::Try(x) => { self.expr(x); },
             ExprKind::Interpolate(parts) => { self.exprs(parts); },
             ExprKind::Cast(x, _) => { self.expr(x); },
             ExprKind::Alloc(x) => { self.expr(x); },
@@ -3322,6 +3390,27 @@ func captured_names(body: Vec<&Stmt>): Map<str, bool> {
     var walk = new_name_walk();
     walk.stmts(body);
     return walk.closure_free;
+}
+
+// An unchecked match arm
+func new_arm(pattern: Pattern, body: &Expr, pos: int): &MatchArm {
+    return new MatchArm {
+        pattern: pattern,
+        body: body,
+        pos: pos,
+        enum_name: "",
+        tag: 0,
+        bindings: Vec::new(),
+        tests: Vec::new(),
+        binds: Vec::new(),
+    };
+}
+
+// `{ return value; }`
+func early_return(value: &Expr, pos: int): &Expr {
+    var stmts: Vec<&Stmt> = Vec::new();
+    stmts.push(new_stmt(StmtKind::Return(Option::Some(value)), pos));
+    return new_expr(ExprKind::Block(stmts, Option::None), pos);
 }
 
 // The name a type's methods and interfaces are recorded under
@@ -3496,6 +3585,7 @@ struct Copier {
             ExprKind::Block(stmts, value) => ExprKind::Block(self.stmts(stmts), self.opt_expr(value)),
             ExprKind::Interpolate(parts) => ExprKind::Interpolate(self.exprs(parts)),
             ExprKind::Tuple(items) => ExprKind::Tuple(self.exprs(items)),
+            ExprKind::Try(x) => ExprKind::Try(self.expr(x)),
             ExprKind::Closure(params, ret, body) => {
                 var out: Vec<Param> = Vec::new();
                 var i = 0;

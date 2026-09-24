@@ -1,0 +1,63 @@
+// Result<T, E> and the `?` operator on Results and Options.
+
+enum ParseError {
+    Empty;
+    BadDigit(int);
+}
+
+func parse_digit(c: int): Result<int, ParseError> {
+    if c < '0' || c > '9' {
+        return Result::Err(ParseError::BadDigit(c));
+    }
+    return Result::Ok(c - '0');
+}
+
+func parse_number(s: str): Result<int, ParseError> {
+    if strlen(s) == 0 {
+        return Result::Err(ParseError::Empty);
+    }
+    var n = 0;
+    for c in s {
+        n = n * 10 + parse_digit(c as int)?;
+    }
+    return Result::Ok(n);
+}
+
+func add_strings(a: str, b: str): Result<int, ParseError> {
+    return Result::Ok(parse_number(a)? + parse_number(b)?);
+}
+
+func first_even(v: Vec<int>): Option<int> {
+    for x in v {
+        if x % 2 == 0 {
+            return Option::Some(x);
+        }
+    }
+    return Option::None;
+}
+
+func half_of_first_even(v: Vec<int>): Option<int> {
+    return Option::Some(first_even(v)? / 2);
+}
+
+func describe(r: Result<int, ParseError>): str {
+    return match r {
+        Result::Ok(n) => "ok ${n}",
+        Result::Err(e) => match e {
+            ParseError::Empty => "empty",
+            ParseError::BadDigit(c) => "bad digit ${c}",
+        },
+    };
+}
+
+func main() {
+    printf("%s\n", describe(add_strings("12", "30")));
+    printf("%s\n", describe(add_strings("12", "3x")));
+    printf("%s\n", describe(add_strings("", "1")));
+    var v: Vec<int> = Vec::new();
+    v.push(3);
+    printf("%d\n", half_of_first_even(v).unwrap_or(-1));
+    v.push(8);
+    printf("%d\n", half_of_first_even(v).unwrap_or(-1));
+    printf("%d %d\n", parse_number("77").map(func(n) => n + 1).unwrap_or(0), parse_number("z").is_err());
+}

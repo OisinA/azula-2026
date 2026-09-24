@@ -146,6 +146,7 @@ func main(argc: i32, argv: &str) {
     add_source_file(src, join_path(stdlib, "vec.azl"), &seen);
     add_source_file(src, join_path(stdlib, "map.azl"), &seen);
     add_source_file(src, join_path(stdlib, "interfaces.azl"), &seen);
+    add_source_file(src, join_path(stdlib, "result.azl"), &seen);
     add_source_file(src, join_path(stdlib, "gc.azl"), &seen);
     add_source_file(src, join_path(stdlib, "arena.azl"), &seen);
     add_source_file(src, options.file, &seen);

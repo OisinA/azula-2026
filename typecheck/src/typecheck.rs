@@ -629,6 +629,71 @@ impl<'a> Typechecker<'a> {
         ))
     }
 
+    /// `value?` on an Option or Result becomes
+    ///
+    ///   match value { Option::Some(v) => v, Option::None => { return Option::None; } }
+    ///   match value { Result::Ok(v) => v, Result::Err(e) => { return Result::Err(e); } }
+    ///
+    /// which needs the function to return an Option, or a Result with the same error type
+    fn typecheck_try(
+        &mut self,
+        inner: ExpressionNode<'a>,
+        span: Span,
+        env: &Environment<'a>,
+    ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
+        let (_, typ) = self.typecheck_expression(inner.clone(), env)?;
+        let generic_of = |t: &AzulaType<'a>| self.instances.get(&t.to_string()).cloned();
+        let (kind, args) = match generic_of(&typ) {
+            Some((g, args)) if g == "Option" || g == "Result" => (g, args),
+            _ => {
+                self.error(format!("`?` needs an Option or a Result, not {}", typ.mangle()), &inner.span);
+                return Err("bad ?".to_string());
+            }
+        };
+        let returns = self.current_return.clone();
+        match (kind.as_str(), generic_of(&returns)) {
+            ("Option", Some((g, _))) if g == "Option" => {}
+            ("Result", Some((g, ret_args))) if g == "Result" => {
+                if ret_args[1] != args[1] {
+                    self.error(
+                        format!(
+                            "`?` would return an error of type {}, but this function's errors are {}",
+                            args[1].mangle(),
+                            ret_args[1].mangle()
+                        ),
+                        &span,
+                    );
+                    return Err("mismatched error types".to_string());
+                }
+            }
+            _ => {
+                self.error(format!("`?` on {} can only be used in a function returning {}", typ.mangle(), if kind == "Option" { "an Option" } else { "a Result" }), &span);
+                return Err("bad ?".to_string());
+            }
+        }
+
+        let value = leak(format!("$try{}", self.temp_counter));
+        let error = leak(format!("$error{}", self.temp_counter));
+        self.temp_counter += 1;
+        let node = |e: Expression<'a>| ExpressionNode { expression: e, typed: AzulaType::Infer, span: span.clone() };
+        let ident = |n: &str| ExpressionNode { expression: Expression::Identifier(n.to_string()), typed: AzulaType::Infer, span: span.clone() };
+        let path = |ns: &str, member: &str| node(Expression::NamespaceAccess(Rc::new(ident(ns)), Rc::new(ident(member))));
+        let early_return = |value: ExpressionNode<'a>| node(Expression::Block(vec![Statement::Return(Some(value), span.clone())], None));
+        let arms = if kind == "Option" {
+            vec![
+                (MatchPattern::Destructure("Option", "Some", vec![Some(value)]), ident(value)),
+                (MatchPattern::Variant("Option", "None"), early_return(path("Option", "None"))),
+            ]
+        } else {
+            let rewrap = node(Expression::FunctionCall { function: Rc::new(path("Result", "Err")), args: vec![ident(error)] });
+            vec![
+                (MatchPattern::Destructure("Result", "Ok", vec![Some(value)]), ident(value)),
+                (MatchPattern::Destructure("Result", "Err", vec![Some(error)]), early_return(rewrap)),
+            ]
+        };
+        self.typecheck_expression(node(Expression::Match(Rc::new(inner), arms)), env)
+    }
+
     /// The struct standing for tuple type `(items)`, with fields named `0`, `1`, ...
     fn instantiate_tuple(&mut self, items: Vec<AzulaType<'a>>) -> AzulaType<'a> {
         let name = AzulaType::Tuple(items.clone()).mangle();
@@ -1835,6 +1900,7 @@ impl<'a> Typechecker<'a> {
             Expression::Infix(..) => self.typecheck_infix_expression(expr, env),
             Expression::Interpolation(parts) => self.typecheck_interpolation(parts, expr.span, env),
             Expression::Tuple(items) => self.typecheck_tuple(items, expr.span, env, expected),
+            Expression::Try(inner) => self.typecheck_try(inner.as_ref().clone(), expr.span, env),
             Expression::Integer(_) => {
                 expr.typed = AzulaType::Int;
                 Ok((expr.clone(), AzulaType::Int))

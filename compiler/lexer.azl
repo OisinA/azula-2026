@@ -38,6 +38,7 @@ enum Tok {
     PipePipe;
     Caret;
     Tilde;
+    Question;
     Bang;
     FatArrow;
     KwFunc;
@@ -338,6 +339,7 @@ func lex_range(src: &Source, start_at: int, stop: int): Vec<Token> {
                 '|' => Tok::Pipe,
                 '^' => Tok::Caret,
                 '~' => Tok::Tilde,
+                '?' => Tok::Question,
                 '!' => Tok::Bang,
                 _ => Tok::Eof,
             };

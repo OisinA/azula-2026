@@ -74,6 +74,8 @@ enum ExprKind {
     Interpolate(Vec<&Expr>);
     // `(a, b)`
     Tuple(Vec<&Expr>);
+    // `value?`: the value of an Option or Result, or return early with its None or Err
+    Try(&Expr);
     // `value.method::<Types>` (only as a callee)
     MethodTurbofish(&Expr, str, Vec<Type>);
     // `func(a: A, b): R { body }` or `func(a) => value`: parameters (typed

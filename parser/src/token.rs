@@ -47,6 +47,7 @@ pub enum TokenKind<'a> {
     FatArrow,        // =>
     Caret,           // ^
     Tilde,           // ~
+    Question,        // ?
     ShiftLeft,       // <<
     ShiftRight,      // >>
     DotDot,          // ..

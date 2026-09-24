@@ -105,6 +105,8 @@ pub enum Expression<'a> {
     Array(Vec<ExpressionNode<'a>>),
     /// `(a, b)`
     Tuple(Vec<ExpressionNode<'a>>),
+    /// `value?`: the value of an Option or Result, or return early with its None or Err
+    Try(Rc<ExpressionNode<'a>>),
     /// `func(a: A, b) : R { body }` or `func(a) => value`: parameters (whose
     /// types may be left to inference), return type if given, and body
     Closure(Vec<(Option<AzulaType<'a>>, String)>, Option<AzulaType<'a>>, Vec<Statement<'a>>),

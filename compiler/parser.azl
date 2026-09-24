@@ -894,6 +894,7 @@ struct Parser {
                 return new_expr(ExprKind::Index(left, index), left.pos);
             },
             Tok::LBrace => { return self.parse_struct_lit(left); },
+            Tok::Question => { return new_expr(ExprKind::Try(left), left.pos); },
             _ => {
                 var precedence = infix_precedence(tok.kind, allow_struct);
                 var right = self.parse_expr(precedence, allow_struct);
@@ -1130,6 +1131,7 @@ func infix_precedence(kind: Tok, allow_struct: bool): int {
         },
         Tok::LParen => PREC_CALL,
         Tok::LBracket => PREC_CALL,
+        Tok::Question => PREC_CALL,
         Tok::Dot => PREC_ACCESS,
         Tok::ColonColon => PREC_ACCESS,
         _ => PREC_LOWEST,
@@ -1279,6 +1281,7 @@ func expr_mentions_self(e: &Expr): bool {
         ExprKind::Block(stmts, value) => stmts_mention_self(stmts) || opt_mentions_self(value),
         ExprKind::Interpolate(parts) => exprs_mention_self(parts),
         ExprKind::Tuple(items) => exprs_mention_self(items),
+        ExprKind::Try(x) => expr_mentions_self(x),
         ExprKind::MethodTurbofish(x, _, _) => expr_mentions_self(x),
         ExprKind::Closure(_, _, body) => stmts_mention_self(body),
         _ => false,

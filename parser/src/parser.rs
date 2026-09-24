@@ -1828,6 +1828,12 @@ impl<'a> Parser<'a> {
                 });
             }
             TokenKind::Dot => self.parse_struct_access(left),
+            // `value?`
+            TokenKind::Question => {
+                let end = self.lexer.next()?.span.end;
+                let span = Span { start: left.span.start, end };
+                Some(ExpressionNode { expression: Expression::Try(Rc::new(left)), typed: AzulaType::Infer, span })
+            }
             TokenKind::NamespaceAccess => self.parse_namespace_access(left),
             TokenKind::BracketOpen => self.parse_function_call(left),
             TokenKind::SquareOpen => self.parse_array_access(left),
@@ -2543,6 +2549,7 @@ fn expression_mentions_self(expr: &ExpressionNode) -> bool {
         | Expression::Alloc(x) => e(x),
         Expression::Cast(x, _) => e(x),
         Expression::Array(items) | Expression::Interpolation(items) | Expression::Tuple(items) => items.iter().any(expression_mentions_self),
+        Expression::Try(inner) => expression_mentions_self(inner),
         Expression::ArrayAccess(a, i) => e(a) || e(i),
         Expression::StructInitialisation(_, fields) => fields.iter().any(|(_, v)| expression_mentions_self(v)),
         // Only the object of a field access or path can be `self`
@@ -2663,7 +2670,7 @@ fn operator_precedence(tok: TokenKind, allow_struct_init: bool) -> OperatorPrece
         TokenKind::Slash | TokenKind::Asterisk | TokenKind::Power | TokenKind::Modulo => PRODUCT,
         TokenKind::As => CAST,
         TokenKind::BraceOpen if allow_struct_init => STRUCT_INIT,
-        TokenKind::BracketOpen | TokenKind::SquareOpen => CALL,
+        TokenKind::BracketOpen | TokenKind::SquareOpen | TokenKind::Question => CALL,
         TokenKind::Dot | TokenKind::NamespaceAccess => ACCESS,
         _ => LOWEST,
     }

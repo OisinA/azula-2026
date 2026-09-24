@@ -1,0 +1,68 @@
+// The result of something that can fail: a value, or an error. `value?`
+// gives the value of an Ok, or returns the Err from the enclosing function.
+enum Result<T, E> {
+    Ok(T);
+    Err(E);
+
+    func is_ok(): bool {
+        return match self {
+            Result::Ok(_) => true,
+            Result::Err(_) => false,
+        };
+    }
+
+    func is_err(): bool {
+        return !self.is_ok();
+    }
+
+    func unwrap(): T {
+        match self {
+            Result::Ok(value) => { return value; },
+            Result::Err(_) => {
+                printf("called unwrap on an Err\n");
+                exit(1);
+            },
+        }
+    }
+
+    func unwrap_or(default: T): T {
+        return match self {
+            Result::Ok(value) => value,
+            Result::Err(_) => default,
+        };
+    }
+
+    func unwrap_err(): E {
+        match self {
+            Result::Err(error) => { return error; },
+            Result::Ok(_) => {
+                printf("called unwrap_err on an Ok\n");
+                exit(1);
+            },
+        }
+    }
+
+    // The value, if there is one
+    func ok(): Option<T> {
+        return match self {
+            Result::Ok(value) => Option::Some(value),
+            Result::Err(_) => Option::None,
+        };
+    }
+
+    // `f` applied to the value, if there is one
+    func map<U>(f: func(T): U): Result<U, E> {
+        return match self {
+            Result::Ok(value) => Result::Ok(f(value)),
+            Result::Err(error) => Result::Err(error),
+        };
+    }
+
+    // `f` applied to the error, if there is one
+    func map_err<F>(f: func(E): F): Result<T, F> {
+        return match self {
+            Result::Ok(value) => Result::Ok(value),
+            Result::Err(error) => Result::Err(f(error)),
+        };
+    }
+}

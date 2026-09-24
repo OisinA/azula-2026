@@ -177,6 +177,7 @@ impl<'a> Lexer<'a> {
                 '%' => Token::new(TokenKind::Modulo, start, self.index),
                 '^' => Token::new(TokenKind::Caret, start, self.index),
                 '~' => Token::new(TokenKind::Tilde, start, self.index),
+                '?' => Token::new(TokenKind::Question, start, self.index),
                 '"' => {
                     while let Some(val) = self.peekable.peek() {
                         match val {

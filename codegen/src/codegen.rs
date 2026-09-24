@@ -696,7 +696,7 @@ impl<'a> Codegen<'a> {
                 func.sub(zero, val)
             }
             Expression::Pointer(expr) => self.codegen_address(expr.deref().clone(), func),
-            Expression::Interpolation(_) | Expression::Tuple(_) | Expression::Closure(..) => {
+            Expression::Interpolation(_) | Expression::Tuple(_) | Expression::Closure(..) | Expression::Try(_) => {
                 unreachable!("interpolations, tuples and closures are rewritten by the typechecker")
             }
             // A closure object: { code, captured cell, ... }

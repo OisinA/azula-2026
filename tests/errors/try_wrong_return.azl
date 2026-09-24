@@ -1,0 +1,9 @@
+// error: can only be used in a function returning an Option
+func first(v: Vec<int>): Option<int> {
+    return Option::None;
+}
+
+func main() {
+    var v: Vec<int> = Vec::new();
+    var x = first(v)?;
+}
