@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate maplit;
 
+mod closures;
 mod generics;
 mod typecheck;
 

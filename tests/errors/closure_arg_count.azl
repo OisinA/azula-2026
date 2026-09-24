@@ -1,0 +1,5 @@
+// error: this function takes 1 arguments, got 2
+func main() {
+    var f = func(x: int): int => x * 2;
+    printf("%d\n", f(1, 2));
+}

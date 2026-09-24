@@ -63,10 +63,17 @@ impl<'a> Parser<'a> {
         if token.is_none() {
             return None;
         }
-        let token = token.unwrap();
+        let token = token.unwrap().clone();
+
+        // `func(` starts a closure expression rather than a declaration
+        let is_closure = token.kind == TokenKind::Function && {
+            let mut look = self.lexer.clone();
+            look.next();
+            look.peek().map(|t| t.kind == TokenKind::BracketOpen).unwrap_or(false)
+        };
 
         match token.kind {
-            TokenKind::Function => self.parse_function(),
+            TokenKind::Function if !is_closure => self.parse_function(),
             TokenKind::Extern => self.parse_extern_function(),
             TokenKind::Struct => self.parse_struct(),
             TokenKind::Enum => self.parse_enum(),
@@ -218,6 +225,60 @@ impl<'a> Parser<'a> {
         } else {
             Some(Statement::Generic(type_params, Rc::new(function)))
         }
+    }
+
+    /// A closure, after `func`: `(a: A, b)` parameters, an optional `: R`
+    /// return type, then `{ body }` or `=> value`
+    fn parse_closure(&mut self, start: usize) -> Option<ExpressionNode<'a>> {
+        self.expect_peek(TokenKind::BracketOpen);
+        self.lexer.next();
+        let mut params = vec![];
+        loop {
+            match self.lexer.next().map(|t| (t.kind, t.span)) {
+                Some((TokenKind::BracketClose, _)) => break,
+                Some((TokenKind::Comma, _)) => continue,
+                Some((TokenKind::Identifier(name), _)) => {
+                    let mut typ = None;
+                    if self.lexer.peek().map(|t| t.kind == TokenKind::Colon).unwrap_or(false) {
+                        self.lexer.next();
+                        typ = Some(self.parse_type());
+                    }
+                    params.push((typ, name.to_string()));
+                }
+                Some((kind, span)) => {
+                    self.errors.push(AzulaError::new(
+                        ErrorType::ExpectedToken("parameter name".to_string(), Some(format!("{:?}", kind))),
+                        span.start,
+                        span.end,
+                    ));
+                    return None;
+                }
+                None => return None,
+            }
+        }
+        let mut returns = None;
+        if self.lexer.peek().map(|t| t.kind == TokenKind::Colon).unwrap_or(false) {
+            self.lexer.next();
+            returns = Some(self.parse_type());
+        }
+        let (body, end) = if self.lexer.peek().map(|t| t.kind == TokenKind::FatArrow).unwrap_or(false) {
+            self.lexer.next();
+            let value = self.parse_expression(LOWEST, true)?;
+            let span = value.span.clone();
+            (vec![Statement::Return(Some(value), span.clone())], span.end)
+        } else {
+            self.expect_peek(TokenKind::BraceOpen);
+            self.lexer.next();
+            let body = self.parse_block(TokenKind::BraceClose);
+            self.expect_peek(TokenKind::BraceClose);
+            let end = self.lexer.next()?.span.end;
+            (body, end)
+        };
+        Some(ExpressionNode {
+            expression: Expression::Closure(params, returns, body),
+            typed: AzulaType::Infer,
+            span: Span { start, end },
+        })
     }
 
     fn parse_extern_function(&mut self) -> Option<Statement<'a>> {
@@ -1005,6 +1066,27 @@ impl<'a> Parser<'a> {
                 return AzulaType::Never;
             }
 
+            // `func(A, B): R`
+            if let TokenKind::Function = tok.kind {
+                self.expect_peek(TokenKind::BracketOpen);
+                self.lexer.next();
+                let mut params = vec![];
+                while self.lexer.peek().map(|t| t.kind != TokenKind::BracketClose).unwrap_or(false) {
+                    params.push(self.parse_type());
+                    if self.lexer.peek().map(|t| t.kind == TokenKind::Comma).unwrap_or(false) {
+                        self.lexer.next();
+                    }
+                }
+                self.expect_peek(TokenKind::BracketClose);
+                self.lexer.next();
+                let mut returns = AzulaType::Void;
+                if self.lexer.peek().map(|t| t.kind == TokenKind::Colon).unwrap_or(false) {
+                    self.lexer.next();
+                    returns = self.parse_type();
+                }
+                return AzulaType::Function(params, Rc::new(returns));
+            }
+
             // `(A, B)` is a tuple; `(A)` is just A
             if let TokenKind::BracketOpen = tok.kind {
                 let mut items = vec![self.parse_type()];
@@ -1419,6 +1501,7 @@ impl<'a> Parser<'a> {
                     Some(expr)
                 }
             }
+            TokenKind::Function => self.parse_closure(tok.span.start),
             TokenKind::Bang => {
                 let expr = self.parse_expression(PREFIX, allow_struct_init)?;
 
@@ -3561,6 +3644,36 @@ mod tests {
                 assert_eq!(returns, AzulaType::Never);
             }
             other => panic!("expected a function, got {:?}", other),
+        }
+        assert!(parser.errors.is_empty());
+    }
+
+    #[test]
+    fn test_closures() {
+        let input = "func(x, y: int): int => x + y";
+        let lexer: Lexer = input.into();
+        let mut parser = Parser::new(input, lexer);
+
+        let expression = parser.parse_expression(LOWEST, true).unwrap();
+        assert!(parser.errors.is_empty());
+        match expression.expression {
+            Expression::Closure(params, returns, body) => {
+                assert_eq!(params, vec![(None, "x".to_string()), (Some(AzulaType::Int), "y".to_string())]);
+                assert_eq!(returns, Some(AzulaType::Int));
+                assert!(matches!(body.as_slice(), [Statement::Return(Some(_), _)]));
+            }
+            other => panic!("expected a closure, got {:?}", other),
+        }
+
+        let input = "var f: func(int): bool = func(n) { return n > 0; };";
+        let lexer: Lexer = input.into();
+        let mut parser = Parser::new(input, lexer);
+        match parser.parse_statement() {
+            Some(Statement::Assign(_, _, Some(typ), value, _)) => {
+                assert_eq!(typ, AzulaType::Function(vec![AzulaType::Int], Rc::new(AzulaType::Bool)));
+                assert!(matches!(value.expression, Expression::Closure(..)));
+            }
+            other => panic!("expected a declaration, got {:?}", other),
         }
         assert!(parser.errors.is_empty());
     }

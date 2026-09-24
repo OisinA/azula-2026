@@ -328,6 +328,22 @@ struct Parser {
         match tok.kind {
             Tok::Amp => { return Type::Ptr(self.parse_type()); },
             Tok::Bang => { return Type::Never; },
+            // `func(A, B): R`
+            Tok::KwFunc => {
+                self.expect(Tok::LParen, "`(`");
+                var params: Vec<Type> = Vec::new();
+                while !self.accept(Tok::RParen) {
+                    params.push(self.parse_type());
+                    if !self.at(Tok::RParen) {
+                        self.expect(Tok::Comma, "`,` or `)`");
+                    }
+                }
+                var ret = Type::Void;
+                if self.accept(Tok::Colon) {
+                    ret = self.parse_type();
+                }
+                return Type::Func(params, ret);
+            },
             // `(A, B)` is a tuple; `(A)` is just A
             Tok::LParen => {
                 var items: Vec<Type> = Vec::new();
@@ -632,6 +648,7 @@ struct Parser {
             },
             Tok::LBracket => { return self.parse_array_lit(pos); },
             Tok::KwMatch => { return self.parse_match(pos); },
+            Tok::KwFunc => { return self.parse_closure(pos); },
             Tok::Ident => {
                 // `new Type { ... }` allocates a struct on the heap
                 if tok.text != "new" || !self.at(Tok::Ident) {
@@ -659,6 +676,38 @@ struct Parser {
                 return new_expr(ExprKind::Null, pos);
             },
         }
+    }
+
+    // A closure, after `func`: `(a: A, b)` parameters, an optional `: R`
+    // return type, then `{ body }` or `=> value`
+    func parse_closure(pos: int): &Expr {
+        self.expect(Tok::LParen, "`(`");
+        var params: Vec<Param> = Vec::new();
+        while !self.accept(Tok::RParen) {
+            var name = self.expect_ident("parameter name");
+            var typ = Type::Infer;
+            if self.accept(Tok::Colon) {
+                typ = self.parse_type();
+            }
+            params.push(Param { name: name, typ: typ });
+            if !self.at(Tok::RParen) {
+                self.expect(Tok::Comma, "`,` or `)`");
+            }
+        }
+        var ret = Type::Infer;
+        if self.accept(Tok::Colon) {
+            ret = self.parse_type();
+        }
+        var body: Vec<&Stmt> = Vec::new();
+        if self.accept(Tok::FatArrow) {
+            var value_pos = self.peek().pos;
+            var value = self.parse_expr(PREC_LOWEST, true);
+            body.push(new_stmt(StmtKind::Return(Option::Some(value)), value_pos));
+        } else {
+            self.expect(Tok::LBrace, "`{` or `=>`");
+            body = self.parse_block_body();
+        }
+        return new_expr(ExprKind::Closure(params, ret, body), pos);
     }
 
     func parse_array_lit(pos: int): &Expr {
@@ -1121,6 +1170,7 @@ func expr_mentions_self(e: &Expr): bool {
         ExprKind::Interpolate(parts) => exprs_mention_self(parts),
         ExprKind::Tuple(items) => exprs_mention_self(items),
         ExprKind::MethodTurbofish(x, _, _) => expr_mentions_self(x),
+        ExprKind::Closure(_, _, body) => stmts_mention_self(body),
         _ => false,
     };
 }

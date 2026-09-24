@@ -548,6 +548,18 @@ impl<'a> Function<'a> {
         self.add_instruction(Instruction::StoreStructMember(struc, index, value, struct_name));
     }
 
+    pub fn function_address(&mut self, name: String) -> Value {
+        self.add_instruction(Instruction::FunctionAddress(name, self.tmp_var_index));
+        self.tmp_var_index += 1;
+        Value::Local(self.tmp_var_index - 1)
+    }
+
+    pub fn indirect_call(&mut self, callee: Value, args: Vec<Value>, params: Vec<AzulaType<'a>>, returns: AzulaType<'a>) -> Value {
+        self.add_instruction(Instruction::IndirectCall(callee, args, self.tmp_var_index, params, returns));
+        self.tmp_var_index += 1;
+        Value::Local(self.tmp_var_index - 1)
+    }
+
     pub fn unreachable(&mut self) {
         self.add_instruction(Instruction::Unreachable);
     }

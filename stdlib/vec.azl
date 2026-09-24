@@ -67,5 +67,71 @@ struct Vec<T> {
     func free_data() {
         free(self.data);
     }
+
+    // Call `f` with each element in turn
+    func each(f: func(T)) {
+        var i = 0;
+        while i < self.len {
+            f(self.data[i]);
+            i += 1;
+        }
+    }
+
+    // A new Vec of `f` applied to each element
+    func map<U>(f: func(T): U): Vec<U> {
+        var out: Vec<U> = Vec::with_capacity(self.len);
+        var i = 0;
+        while i < self.len {
+            out.push(f(self.data[i]));
+            i += 1;
+        }
+        return out;
+    }
+
+    // A new Vec of the elements `keep` returns true for
+    func filter(keep: func(T): bool): Vec<T> {
+        var out: Vec<T> = Vec::new();
+        var i = 0;
+        while i < self.len {
+            if keep(self.data[i]) {
+                out.push(self.data[i]);
+            }
+            i += 1;
+        }
+        return out;
+    }
+
+    // Combine the elements into one value, starting from `initial`
+    func fold<A>(initial: A, f: func(A, T): A): A {
+        var result = initial;
+        var i = 0;
+        while i < self.len {
+            result = f(result, self.data[i]);
+            i += 1;
+        }
+        return result;
+    }
+
+    func any(test: func(T): bool): bool {
+        var i = 0;
+        while i < self.len {
+            if test(self.data[i]) {
+                return true;
+            }
+            i += 1;
+        }
+        return false;
+    }
+
+    func all(test: func(T): bool): bool {
+        var i = 0;
+        while i < self.len {
+            if !test(self.data[i]) {
+                return false;
+            }
+            i += 1;
+        }
+        return true;
+    }
 }
 

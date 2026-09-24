@@ -167,6 +167,12 @@ Other things to know:
   (for example in a `match` arm).
 - Methods can have their own type parameters (`func pair<U>(other: U): (T, U)`), inferred
   from the arguments or given as `value.pair::<str>(...)`.
+- Functions are values. `func(int, str): bool` is a function type, and closures are
+  written `func(x: int): int { return x * 2; }` or `func(x) => x * 2`. Parameter and
+  return types can be left out when the context says what they are. Closures capture
+  variables by reference, so the closure and the enclosing code see each other's
+  changes. Named functions can be used as values too (`numbers.map(double)`), and
+  `Vec` has `each`, `map`, `filter`, `fold`, `any` and `all` (`Option` has `map`).
 - `match` works on enums and integers (including character literals); arms can be
   blocks, and a `match` can be used as a statement or an expression.
 - Methods are declared in a type's body and receive `self` implicitly (a reference for

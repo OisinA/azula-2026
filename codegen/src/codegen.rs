@@ -696,8 +696,59 @@ impl<'a> Codegen<'a> {
                 func.sub(zero, val)
             }
             Expression::Pointer(expr) => self.codegen_address(expr.deref().clone(), func),
-            Expression::Interpolation(_) | Expression::Tuple(_) => {
-                unreachable!("interpolations and tuples are rewritten by the typechecker")
+            Expression::Interpolation(_) | Expression::Tuple(_) | Expression::Closure(..) => {
+                unreachable!("interpolations, tuples and closures are rewritten by the typechecker")
+            }
+            // A closure object: { code, captured cell, ... }
+            Expression::MakeClosure(name, captures) => {
+                let size = func.const_int(8 * (captures.len() as i64 + 1));
+                let object = func.function_call("malloc".to_string(), vec![size]);
+                let code = func.function_address(name);
+                func.function_call("ptr_write_str".to_string(), vec![object.clone(), code]);
+                for (i, capture) in captures.into_iter().enumerate() {
+                    let cell = self.codegen_expr(capture, func, true);
+                    let offset = func.const_int(8 * (i as i64 + 1));
+                    let slot = func.function_call("ptr_add".to_string(), vec![object.clone(), offset]);
+                    func.function_call("ptr_write_str".to_string(), vec![slot, cell]);
+                }
+                object
+            }
+            Expression::NewCell(value) => {
+                let typ = value.typed.clone();
+                let size = func.const_int(struct_byte_size(&self.module, &typ).max(8) as i64);
+                let v = self.codegen_expr(value.as_ref().clone(), func, true);
+                let cell = func.function_call("malloc".to_string(), vec![size]);
+                let zero = func.const_int(0);
+                func.store_element(cell.clone(), zero, v, typ);
+                cell
+            }
+            // Captured cell `n` of the closure being run
+            Expression::EnvCell(n) => {
+                let name = self.lookup_variable("$env", func).expect("closure environment");
+                let env = func.load(name, AzulaType::Str);
+                let offset = func.const_int(8 * (n as i64 + 1));
+                let slot = func.function_call("ptr_add".to_string(), vec![env, offset]);
+                func.function_call("ptr_read_str".to_string(), vec![slot])
+            }
+            // Call the object's code, passing the object as the environment
+            Expression::CallClosure(callee, args) => {
+                let (params, returns) = match &callee.typed {
+                    AzulaType::Function(params, returns) => (params.clone(), returns.as_ref().clone()),
+                    other => unreachable!("calling a {:?}", other),
+                };
+                let object = self.codegen_expr(callee.as_ref().clone(), func, true);
+                let code = func.function_call("ptr_read_str".to_string(), vec![object.clone()]);
+                let mut values = vec![object];
+                for arg in args {
+                    values.push(self.codegen_expr(arg, func, true));
+                }
+                let mut all_params = vec![AzulaType::Str];
+                all_params.extend(params);
+                let result = func.indirect_call(code, values, all_params, returns.clone());
+                if returns == AzulaType::Never {
+                    func.unreachable();
+                }
+                result
             }
             Expression::Deref(pointer) => {
                 let ptr = self.codegen_expr(pointer.deref().clone(), func, true);

@@ -1,0 +1,5 @@
+// error: a value of type int can't be called
+func main() {
+    var n = 5;
+    n(1);
+}

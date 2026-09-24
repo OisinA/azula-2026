@@ -8,6 +8,7 @@ use azula_ast::prelude::*;
 use azula_error::prelude::*;
 use azula_type::prelude::AzulaType;
 
+use crate::closures::{captured_names, closure_free_names};
 use crate::generics::{subst_stmt, subst_type, unify, Substitution, TUPLE};
 
 pub struct Typechecker<'a> {
@@ -45,6 +46,13 @@ pub struct Typechecker<'a> {
     current_return: AzulaType<'a>,
     /// For naming temporaries
     temp_counter: usize,
+    /// Names that closures in the function being checked may capture: mutable
+    /// variables with these names are kept in heap cells
+    captured: HashSet<String>,
+    /// For naming the functions closures are lifted into
+    closure_counter: usize,
+    /// Functions that have a wrapper for use as function values
+    function_values: HashSet<String>,
 
     pub errors: Vec<AzulaError>,
 }
@@ -78,16 +86,27 @@ pub struct Namespace<'a> {
 #[derive(Clone)]
 pub struct Environment<'a> {
     variable_definitions: HashMap<String, VariableDefinition<'a>>,
+    /// Variables kept in heap cells (because closures capture them): the
+    /// variable holds a pointer to the cell
+    boxed: HashSet<String>,
 }
 
 impl<'a> Environment<'a> {
     pub fn new() -> Self {
         Self {
             variable_definitions: HashMap::new(),
+            boxed: HashSet::new(),
         }
     }
 
     pub fn add_variable(&mut self, name: String, def: VariableDefinition<'a>) {
+        self.boxed.remove(&name);
+        self.variable_definitions.insert(name, def);
+    }
+
+    /// Add a variable living in a heap cell; `def.typ` is the type of its value
+    pub fn add_boxed(&mut self, name: String, def: VariableDefinition<'a>) {
+        self.boxed.insert(name.clone());
         self.variable_definitions.insert(name, def);
     }
 }
@@ -123,6 +142,9 @@ impl<'a> Typechecker<'a> {
             expected: None,
             current_return: AzulaType::Void,
             temp_counter: 0,
+            captured: HashSet::new(),
+            closure_counter: 0,
+            function_values: HashSet::new(),
             errors: vec![],
         }
     }
@@ -340,6 +362,225 @@ impl<'a> Typechecker<'a> {
 
     fn error(&mut self, message: String, span: &Span) {
         self.errors.push(AzulaError::new(ErrorType::Custom(message), span.start, span.end));
+    }
+
+    /// A closure: its body becomes a function taking the closure object
+    /// (`$env`) first, and the value is a closure object holding the cells of
+    /// the variables it captures
+    #[allow(clippy::too_many_arguments)]
+    fn typecheck_closure(
+        &mut self,
+        params: Vec<(Option<AzulaType<'a>>, String)>,
+        returns: Option<AzulaType<'a>>,
+        body: Vec<Statement<'a>>,
+        span: Span,
+        env: &Environment<'a>,
+        expected: Option<AzulaType<'a>>,
+    ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
+        // Types the context expects, if any
+        let (expected_params, expected_return) = match expected {
+            Some(AzulaType::Function(p, r)) if p.len() == params.len() => (Some(p), Some(r.as_ref().clone())),
+            _ => (None, None),
+        };
+        let mut param_types = vec![];
+        for (i, (typ, name)) in params.iter().enumerate() {
+            let typ = match (typ, &expected_params) {
+                (Some(t), _) => self.resolve_type(t.clone()),
+                (None, Some(p)) if p[i] != AzulaType::Infer => p[i].clone(),
+                _ => {
+                    self.error(
+                        format!("Can't infer the type of parameter `{}`; give it a type like `{}: int`", name, name),
+                        &span,
+                    );
+                    return Err("cannot infer closure parameter".to_string());
+                }
+            };
+            param_types.push(typ);
+        }
+        let declared_return = match (returns, expected_return) {
+            (Some(r), _) => self.resolve_type(r),
+            (None, Some(r)) => r,
+            (None, None) => AzulaType::Infer,
+        };
+
+        // The variables it captures, as cells
+        let names: Vec<String> = params.iter().map(|(_, n)| n.clone()).collect();
+        let mut captures = vec![];
+        let mut inner_env = Environment::new();
+        let mut prologue = vec![];
+        for name in closure_free_names(&names, &body) {
+            let def = match env.variable_definitions.get(&name) {
+                Some(def) => def.clone(),
+                None => continue,
+            };
+            let cell_type = AzulaType::Pointer(Rc::new(def.typ.clone()));
+            let variable = ExpressionNode { expression: Expression::Identifier(name.clone()), typed: def.typ.clone(), span: span.clone() };
+            let cell = if env.boxed.contains(&name) {
+                // Share the variable's cell
+                ExpressionNode { typed: cell_type.clone(), ..variable }
+            } else {
+                // Immutable variables can't change, so a copy is as good as the original
+                ExpressionNode { expression: Expression::NewCell(Rc::new(variable)), typed: cell_type.clone(), span: span.clone() }
+            };
+            let index = captures.len();
+            captures.push(cell);
+            prologue.push(Statement::Assign(
+                false,
+                name.clone(),
+                Some(cell_type.clone()),
+                ExpressionNode { expression: Expression::EnvCell(index), typed: cell_type, span: span.clone() },
+                span.clone(),
+            ));
+            inner_env.add_boxed(name.clone(), def);
+        }
+        for (typ, name) in param_types.iter().zip(&names) {
+            inner_env.add_variable(name.clone(), VariableDefinition { name: name.clone(), mutable: false, typ: typ.clone() });
+        }
+
+        // Check the body as a function of its own
+        let saved_return = std::mem::replace(&mut self.current_return, declared_return);
+        let saved_captured = std::mem::replace(&mut self.captured, captured_names(&body));
+        let mut statements = prologue;
+        let mut failed = false;
+        for stmt in body {
+            match self.typecheck_statement(stmt, &mut inner_env) {
+                Ok((stmt, _)) => statements.push(stmt),
+                Err(_) => failed = true,
+            }
+        }
+        let mut returns = std::mem::replace(&mut self.current_return, saved_return);
+        self.captured = saved_captured;
+        if failed {
+            return Err("errors in closure".to_string());
+        }
+        if returns == AzulaType::Infer {
+            returns = AzulaType::Void;
+        }
+        if returns != AzulaType::Void && !always_returns(&statements) {
+            self.error("This closure might not return a value".to_string(), &span);
+            return Err("missing return".to_string());
+        }
+
+        let name = leak(format!("closure.{}", self.closure_counter));
+        self.closure_counter += 1;
+        let mut args: Vec<(AzulaType<'a>, &'a str)> = vec![(AzulaType::Str, "$env")];
+        for (typ, n) in param_types.iter().zip(&names) {
+            args.push((typ.clone(), leak(n.clone())));
+        }
+        self.output.push(Statement::Function {
+            name,
+            args,
+            returns: returns.clone(),
+            body: Rc::new(Statement::Block(statements)),
+            span: span.clone(),
+        });
+        let typ = AzulaType::Function(param_types, Rc::new(returns));
+        Ok((ExpressionNode { expression: Expression::MakeClosure(name.to_string(), captures), typed: typ.clone(), span }, typ))
+    }
+
+    /// Function `name` as a value: a closure object for a wrapper that takes
+    /// the (unused) environment and calls it
+    fn function_value(&mut self, name: &str, span: Span) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
+        let def = self.functions[name].clone();
+        let wrapper = format!("fn.{}", name);
+        if self.function_values.insert(name.to_string()) {
+            let mut args: Vec<(AzulaType<'a>, &'a str)> = vec![(AzulaType::Str, "$env")];
+            let mut call_args = vec![];
+            for (i, (typ, _)) in def.args.iter().enumerate() {
+                let arg = leak(format!("a{}", i));
+                args.push((typ.clone(), arg));
+                call_args.push(ExpressionNode { expression: Expression::Identifier(arg.to_string()), typed: AzulaType::Infer, span: span.clone() });
+            }
+            let call = ExpressionNode {
+                expression: Expression::FunctionCall {
+                    function: Rc::new(ExpressionNode { expression: Expression::Identifier(name.to_string()), typed: AzulaType::Infer, span: span.clone() }),
+                    args: call_args,
+                },
+                typed: AzulaType::Infer,
+                span: span.clone(),
+            };
+            let body = if def.returns == AzulaType::Void || def.returns == AzulaType::Never {
+                Statement::ExpressionStatement(call, span.clone())
+            } else {
+                Statement::Return(Some(call), span.clone())
+            };
+            let function = Statement::Function {
+                name: leak(wrapper.clone()),
+                args,
+                returns: def.returns.clone(),
+                body: Rc::new(Statement::Block(vec![body])),
+                span: span.clone(),
+            };
+            let saved_return = self.current_return.clone();
+            let saved_captured = std::mem::take(&mut self.captured);
+            let checked = self.typecheck_function(function);
+            self.current_return = saved_return;
+            self.captured = saved_captured;
+            self.output.push(checked?);
+        }
+        let typ = AzulaType::Function(def.args.iter().map(|(t, _)| t.clone()).collect(), Rc::new(def.returns.clone()));
+        Ok((ExpressionNode { expression: Expression::MakeClosure(wrapper, vec![]), typed: typ.clone(), span }, typ))
+    }
+
+    /// Whether `obj.field` is a field holding a function (rather than a method)
+    fn is_function_field(&mut self, obj: &ExpressionNode<'a>, field: &str, env: &Environment<'a>) -> bool {
+        let error_count = self.errors.len();
+        let typ = match self.typecheck_expression(obj.clone(), env) {
+            Ok((_, t)) => t,
+            Err(_) => {
+                self.errors.truncate(error_count);
+                return false;
+            }
+        };
+        let type_name = match &typ {
+            AzulaType::Pointer(inner) => inner.to_string(),
+            t => t.to_string(),
+        };
+        if self.namespaces.get(&type_name).map(|n| n.funcs.contains_key(field)).unwrap_or(false) {
+            return false;
+        }
+        self.structs
+            .get(&type_name)
+            .map(|s| s.attrs.iter().any(|(t, n)| *n == field && matches!(t, AzulaType::Function(..))))
+            .unwrap_or(false)
+    }
+
+    /// Call a function value
+    fn typecheck_closure_call(
+        &mut self,
+        callee: ExpressionNode<'a>,
+        args: Vec<ExpressionNode<'a>>,
+        span: Span,
+        env: &Environment<'a>,
+    ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
+        let (params, returns) = match &callee.typed {
+            AzulaType::Function(p, r) => (p.clone(), r.as_ref().clone()),
+            other => {
+                self.error(format!("A value of type {} can't be called", other.mangle()), &callee.span);
+                return Err("not callable".to_string());
+            }
+        };
+        if params.len() != args.len() {
+            self.error(format!("This function takes {} arguments, got {}", params.len(), args.len()), &span);
+            return Err("wrong argument count".to_string());
+        }
+        let mut checked = vec![];
+        for (arg, param) in args.into_iter().zip(&params) {
+            let (arg, typ) = self.typecheck_expecting(arg, env, param)?;
+            if !assignable(param, &typ, &arg) {
+                self.errors.push(AzulaError::new(
+                    ErrorType::MismatchedTypes(param.mangle(), typ.mangle()),
+                    arg.span.start,
+                    arg.span.end,
+                ));
+                return Err("mismatched argument".to_string());
+            }
+            checked.push(arg);
+        }
+        Ok((
+            ExpressionNode { expression: Expression::CallClosure(Rc::new(callee), checked), typed: returns.clone(), span },
+            returns,
+        ))
     }
 
     /// The struct standing for tuple type `(items)`, with fields named `0`, `1`, ...
@@ -615,6 +856,46 @@ impl<'a> Typechecker<'a> {
         (known_patterns, concrete)
     }
 
+    /// Closures whose parameter types weren't given can't be typechecked on
+    /// their own. Once the type parameters their parameters use are known
+    /// (from `known` patterns and `concrete` types so far), check them to
+    /// learn their return types, adding what they tell us to the lists.
+    fn infer_from_closures(
+        &mut self,
+        params: &[String],
+        patterns: &[AzulaType<'a>],
+        args: &[ExpressionNode<'a>],
+        known: &mut Vec<AzulaType<'a>>,
+        concrete: &mut Vec<AzulaType<'a>>,
+        env: &Environment<'a>,
+    ) {
+        let mut bindings = Substitution::new();
+        for (p, c) in known.iter().zip(concrete.iter()) {
+            unify(p, c, params, &self.instances, &mut bindings);
+        }
+        for (pattern, arg) in patterns.iter().zip(args) {
+            let (closure_params, returns) = match (pattern, &arg.expression) {
+                (AzulaType::Function(p, r), Expression::Closure(cp, _, _)) if cp.iter().any(|(t, _)| t.is_none()) => (p, r),
+                _ => continue,
+            };
+            let closure_params: Vec<_> = closure_params.iter().map(|t| subst_type(t, &bindings)).collect();
+            if closure_params.iter().any(|t| mentions_params(t, params)) {
+                continue;
+            }
+            let expected = AzulaType::Function(closure_params, Rc::new(AzulaType::Infer));
+            let error_count = self.errors.len();
+            match self.typecheck_expecting(arg.clone(), env, &expected) {
+                Ok((_, typ)) => {
+                    let _ = returns;
+                    unify(pattern, &typ, params, &self.instances, &mut bindings);
+                    known.push(pattern.clone());
+                    concrete.push(typ);
+                }
+                Err(_) => self.errors.truncate(error_count),
+            }
+        }
+    }
+
     /// Typecheck `expr`, telling it the type it is expected to have.
     fn typecheck_expecting(
         &mut self,
@@ -682,6 +963,9 @@ impl<'a> Typechecker<'a> {
             let args: Vec<_> = args.into_iter().map(|(t, n)| (self.resolve_type(t), n)).collect();
             let returns = self.resolve_type(returns);
             self.current_return = returns.clone();
+            if let Statement::Block(stmts) = body.as_ref() {
+                self.captured = captured_names(stmts);
+            }
 
             let mut environment = Environment::new();
             for (typ, name) in &args {
@@ -866,14 +1150,22 @@ impl<'a> Typechecker<'a> {
 
             let resolved_typ = if let Some(ann) = type_annotation.clone() { ann } else { typ };
 
-            env.add_variable(
-                name.clone(),
-                VariableDefinition {
-                    name: name.clone(),
-                    mutable,
-                    typ: resolved_typ.clone(),
-                },
-            );
+            let def = VariableDefinition { name: name.clone(), mutable, typ: resolved_typ.clone() };
+            if mutable && self.captured.contains(&name) {
+                // A closure may capture this variable, so it lives in a heap cell
+                env.add_boxed(name.clone(), def);
+                let cell_type = AzulaType::Pointer(Rc::new(resolved_typ.clone()));
+                let mut value = expr;
+                value.typed = resolved_typ;
+                let span_of_value = value.span.clone();
+                let cell = ExpressionNode {
+                    expression: Expression::NewCell(Rc::new(value)),
+                    typed: cell_type.clone(),
+                    span: span_of_value,
+                };
+                return Ok((Statement::Assign(mutable, name, Some(cell_type), cell, span), AzulaType::Void));
+            }
+            env.add_variable(name.clone(), def);
 
             Ok((
                 Statement::Assign(mutable, name, type_annotation, expr, span),
@@ -955,6 +1247,24 @@ impl<'a> Typechecker<'a> {
     ) -> Result<(Statement<'a>, AzulaType<'a>), String> {
         if let Statement::Return(value, span) = stmt {
             let expected = self.current_return.clone();
+            if expected == AzulaType::Infer {
+                // A closure without a declared return type returns what its first `return` does
+                return match value {
+                    None => {
+                        self.current_return = AzulaType::Void;
+                        Ok((Statement::Return(None, span), AzulaType::Void))
+                    }
+                    Some(value) => {
+                        let (value, typ) = self.typecheck_expression(value, env)?;
+                        if typ == AzulaType::Void {
+                            self.error("This expression has no value to return".to_string(), &value.span);
+                            return Err("void return".to_string());
+                        }
+                        self.current_return = typ.clone();
+                        Ok((Statement::Return(Some(value), span), typ))
+                    }
+                };
+            }
             if expected == AzulaType::Never {
                 self.error("A function returning `!` can't return".to_string(), &span);
                 return Err("return from never function".to_string());
@@ -1278,9 +1588,26 @@ impl<'a> Typechecker<'a> {
                     return Ok((expr.clone(), AzulaType::Void));
                 }
                 if let Some(variable) = env.variable_definitions.get(name) {
+                    if env.boxed.contains(name) {
+                        // Read through the variable's cell
+                        let typ = variable.typ.clone();
+                        let cell = ExpressionNode {
+                            expression: expr.expression.clone(),
+                            typed: AzulaType::Pointer(Rc::new(typ.clone())),
+                            span: expr.span.clone(),
+                        };
+                        return Ok((
+                            ExpressionNode { expression: Expression::Deref(Rc::new(cell)), typed: typ.clone(), span: expr.span },
+                            typ,
+                        ));
+                    }
                     expr.typed = variable.typ.clone().into();
 
                     Ok((expr.clone(), variable.typ.clone()))
+                } else if self.functions.get(name.as_str()).map(|f| !f.varargs).unwrap_or(false) {
+                    // A named function used as a value
+                    let name = name.clone();
+                    self.function_value(&name, expr.span)
                 } else if let Some(variable) = self.globals.get(name) {
                     expr.typed = variable.typ.clone().into();
 
@@ -1297,9 +1624,23 @@ impl<'a> Typechecker<'a> {
             Expression::FunctionCall { function, args } => {
                 self.typecheck_call(function.deref().clone(), args, expr.span, env, expected)
             }
+            // A generic function instance used as a value: `max::<int>`
+            Expression::Turbofish(ref name, ref type_args) if self.generic_funcs.contains_key(name) => {
+                let type_args = type_args.iter().map(|t| self.resolve_type(t.clone())).collect();
+                let instance = self.instantiate_function(&name.clone(), type_args);
+                self.function_value(&instance, expr.span)
+            }
             Expression::Turbofish(..) => {
                 self.error("Type arguments must be followed by a call, `::` or `{`".to_string(), &expr.span);
                 Err("stray turbofish".to_string())
+            }
+            Expression::Closure(params, returns, body) => {
+                self.typecheck_closure(params, returns, body, expr.span, env, expected)
+            }
+            // Already checked (produced by the typechecker)
+            Expression::MakeClosure(..) | Expression::EnvCell(_) | Expression::NewCell(_) | Expression::CallClosure(..) => {
+                let typ = expr.typed.clone();
+                Ok((expr, typ))
             }
             Expression::Not(exp) => {
                 let (node, typ) = match self.typecheck_expression(exp.deref().clone(), env) {
@@ -2045,6 +2386,22 @@ impl<'a> Typechecker<'a> {
         env: &Environment<'a>,
         expected: Option<AzulaType<'a>>,
     ) -> Result<(ExpressionNode<'a>, AzulaType<'a>), String> {
+        // Calls of function values: variables, fields of function type, and
+        // other expressions
+        let calls_value = match &function.expression {
+            Expression::Identifier(name) => env.variable_definitions.contains_key(name),
+            Expression::StructAccess(obj, member) => match &member.expression {
+                Expression::Identifier(field) => self.is_function_field(obj, field, env),
+                _ => false,
+            },
+            Expression::NamespaceAccess(..) | Expression::Turbofish(..) => false,
+            _ => true,
+        };
+        if calls_value {
+            let (callee, _) = self.typecheck_expression(function, env)?;
+            return self.typecheck_closure_call(callee, args, span, env);
+        }
+
         let function = self.concretize_callee(function, &args, env, &expected)?;
 
         // Enum variant construction: `Enum::Variant(values...)`
@@ -2178,8 +2535,10 @@ impl<'a> Typechecker<'a> {
                     _ => unreachable!(),
                 };
                 let (patterns_known, concrete) = self.types_for_inference(&patterns, args, env);
-                let mut patterns = patterns_known;
+                let mut patterns_known = patterns_known;
                 let mut concrete = concrete;
+                self.infer_from_closures(&params, &patterns, args, &mut patterns_known, &mut concrete, env);
+                let mut patterns = patterns_known;
                 if let Some(expected) = expected {
                     patterns.push(returns);
                     concrete.push(expected.clone());
@@ -2303,7 +2662,9 @@ impl<'a> Typechecker<'a> {
                     .skip(if takes_self && is_call_on_value { 1 } else { 0 })
                     .map(|(t, _)| t.clone())
                     .collect();
-                let (mut patterns, mut concrete) = self.types_for_inference(&patterns, args, env);
+                let all_patterns = patterns;
+                let (mut patterns, mut concrete) = self.types_for_inference(&all_patterns, args, env);
+                self.infer_from_closures(&params, &all_patterns, args, &mut patterns, &mut concrete, env);
                 if let Some(expected) = expected {
                     patterns.push(returns);
                     concrete.push(expected.clone());
@@ -2533,6 +2894,10 @@ impl<'a> Typechecker<'a> {
                 let items = items.into_iter().map(|a| self.resolve_type(a)).collect();
                 self.instantiate_tuple(items)
             }
+            AzulaType::Function(params, returns) => AzulaType::Function(
+                params.into_iter().map(|a| self.resolve_type(a)).collect(),
+                Rc::new(self.resolve_type(returns.as_ref().clone())),
+            ),
             _ => typ,
         }
     }
@@ -3096,6 +3461,19 @@ fn resolve_receivers<'a>(stmts: Vec<Statement<'a>>) -> Vec<Statement<'a>> {
             _ => stmt,
         })
         .collect()
+}
+
+/// Whether `typ` refers to any of the type parameters `params`
+fn mentions_params(typ: &AzulaType, params: &[String]) -> bool {
+    match typ {
+        AzulaType::Named(n) => params.contains(n),
+        AzulaType::Pointer(inner) | AzulaType::Array(inner, _) => mentions_params(inner, params),
+        AzulaType::Generic(_, args) | AzulaType::Tuple(args) => args.iter().any(|a| mentions_params(a, params)),
+        AzulaType::Function(args, returns) => {
+            args.iter().any(|a| mentions_params(a, params)) || mentions_params(returns, params)
+        }
+        _ => false,
+    }
 }
 
 /// Whether executing `body` always ends in a `return` (or never finishes).

@@ -23,6 +23,8 @@ pub enum AzulaType<'a> {
     Never,
     /// `(A, B)`: the typechecker replaces these with `Named` tuple structs
     Tuple(Vec<AzulaType<'a>>),
+    /// `func(A, B): R`, a function value (a pointer to its closure object)
+    Function(Vec<AzulaType<'a>>, Rc<AzulaType<'a>>),
 }
 
 impl<'a> From<&'a str> for AzulaType<'a> {
@@ -88,7 +90,7 @@ impl<'a> ToString for AzulaType<'a> {
                 Some(s) => format!("[{:?}; {:?}]", typ.to_string(), s),
                 None => format!("[{:?}]", typ.to_string()),
             },
-            AzulaType::Generic(..) | AzulaType::Tuple(..) => self.mangle(),
+            AzulaType::Generic(..) | AzulaType::Tuple(..) | AzulaType::Function(..) => self.mangle(),
             AzulaType::Never => "!".to_string(),
         }
     }
@@ -110,6 +112,11 @@ impl<'a> AzulaType<'a> {
             AzulaType::Tuple(items) => format!(
                 "({})",
                 items.iter().map(|a| a.mangle()).collect::<Vec<_>>().join(",")
+            ),
+            AzulaType::Function(params, returns) => format!(
+                "func({}):{}",
+                params.iter().map(|a| a.mangle()).collect::<Vec<_>>().join(","),
+                returns.mangle()
             ),
             _ => self.to_string(),
         }

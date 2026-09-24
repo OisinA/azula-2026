@@ -1,0 +1,49 @@
+// Closure objects, and the cells of the variables they capture, live on the
+// collected heap: they must survive collections while reachable.
+
+func make_accumulator(start: int): func(int): int {
+    var total = start;
+    var history: Vec<int> = Vec::new();
+    return func(n: int): int {
+        total += n;
+        history.push(total);
+        return total + history.length();
+    };
+}
+
+func churn(n: int): int {
+    var garbage = 0;
+    var i = 0;
+    while i < n {
+        var v: Vec<int> = Vec::new();
+        v.push(i);
+        garbage += v.length();
+        i += 1;
+    }
+    return garbage;
+}
+
+func main() {
+    var accumulators: Vec<func(int): int> = Vec::new();
+    for i in 0..50 {
+        accumulators.push(make_accumulator(i * 100));
+    }
+    churn(20000);
+    var check = 0;
+    for round in 0..20 {
+        for f in accumulators {
+            check += f(round);
+        }
+        churn(1000);
+    }
+    printf("check %d\n", check);
+
+    // Closures capturing closures
+    var chain: func(int): int = func(x) => x;
+    for i in 1..=30 {
+        var previous = chain;
+        chain = func(x) => previous(x) + i;
+    }
+    churn(5000);
+    printf("chain %d\n", chain(0));
+}

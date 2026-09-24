@@ -38,6 +38,11 @@ pub enum Instruction<'a> {
     Return(Option<Value>),
     Unreachable,
     FunctionCall(String, Vec<Value>, usize),
+    /// The address of a function
+    FunctionAddress(String, usize),
+    /// Call through a function pointer: callee, arguments, destination, and
+    /// the function's parameter and return types
+    IndirectCall(Value, Vec<Value>, usize, Vec<AzulaType<'a>>, AzulaType<'a>),
     Jcond(Value, String, String),
     Jump(String),
     Pointer(String, usize),
@@ -103,6 +108,10 @@ impl<'a> Display for Instruction<'a> {
             Instruction::Unreachable => write!(f, "unreachable"),
             Instruction::FunctionCall(name, args, dest) => {
                 write!(f, "%{}: function_call @{} {:?}", dest, name, args)
+            }
+            Instruction::FunctionAddress(name, dest) => write!(f, "%{}: function_address @{}", dest, name),
+            Instruction::IndirectCall(callee, args, dest, _, _) => {
+                write!(f, "%{}: indirect_call {} {:?}", dest, callee, args)
             }
             Instruction::Jcond(cond, true_block, false_block) => {
                 write!(f, "jcond {} {} {}", cond, true_block, false_block)

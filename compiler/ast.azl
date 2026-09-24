@@ -24,6 +24,8 @@ enum Type {
     Tuple(Vec<Type>);
     // `!`, the type of calls to functions that never return
     Never;
+    // `func(A, B): R`, a function value (a pointer to its closure object)
+    Func(Vec<Type>, Type);
 }
 
 enum BinOp { Add; Sub; Mul; Div; Mod; Pow; And; Or; Eq; Ne; Lt; Le; Gt; Ge; BitAnd; BitOr; BitXor; Shl; Shr; }
@@ -74,6 +76,9 @@ enum ExprKind {
     Tuple(Vec<&Expr>);
     // `value.method::<Types>` (only as a callee)
     MethodTurbofish(&Expr, str, Vec<Type>);
+    // `func(a: A, b): R { body }` or `func(a) => value`: parameters (typed
+    // Infer when not given), return type (Infer when not given) and body
+    Closure(Vec<Param>, Type, Vec<&Stmt>);
 
     // Resolved forms produced by the checker
     Local(str);
@@ -88,6 +93,14 @@ enum ExprKind {
     StructValue(str, Vec<&Expr>);
     // Enum value: enum name, variant tag, payload
     EnumValue(str, int, Vec<&Expr>);
+    // A closure object for the function `symbol`, holding captured cells
+    MakeClosure(str, Vec<&Expr>);
+    // Cell `n` of the running closure's environment
+    EnvCell(int);
+    // A new heap cell holding a value (for variables closures capture)
+    NewCell(&Expr);
+    // Call of a function value
+    CallClosure(&Expr, Vec<&Expr>);
 }
 
 enum Pattern {
@@ -317,6 +330,19 @@ func mangle_into(t: Type, sb: &StringBuilder) {
             sb.append(")");
         },
         Type::Never => { sb.append("!"); },
+        Type::Func(params, ret) => {
+            sb.append("func(");
+            var i = 0;
+            while i < params.len {
+                if i > 0 {
+                    sb.append(",");
+                }
+                mangle_into(params.get(i), sb);
+                i += 1;
+            }
+            sb.append("):");
+            mangle_into(ret, sb);
+        },
     }
 }
 
@@ -343,6 +369,7 @@ func type_eq(a: Type, b: Type): bool {
         Type::Named(x) => match b { Type::Named(y) => x == y, _ => false, },
         Type::Generic(_, _) => mangle(a) == mangle(b),
         Type::Tuple(_) => mangle(a) == mangle(b),
+        Type::Func(_, _) => mangle(a) == mangle(b),
         Type::Never => match b { Type::Never => true, _ => false, },
     };
 }

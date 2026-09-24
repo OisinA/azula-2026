@@ -45,6 +45,8 @@ struct Gen {
             Type::Void => "void",
             Type::Never => "void",
             Type::Ptr(_) => "ptr",
+            // Function values point to closure objects
+            Type::Func(_, _) => "ptr",
             Type::Array(_, _) => "ptr",
             Type::Named(name) => {
                 var info = self.c.enum_named(name);
@@ -643,6 +645,32 @@ struct Gen {
                 return ptr;
             },
             ExprKind::Match(scrutinee, arms) => { return self.match_expr(e, scrutinee, arms); },
+            // A closure object: { code, captured cell, ... }
+            ExprKind::MakeClosure(symbol, captures) => {
+                var object = self.allocate(int_to_str(8 * (captures.len + 1)), Type::Str);
+                self.store(Type::Str, quote_global(symbol), object);
+                var i = 0;
+                while i < captures.len {
+                    var cell = self.expr(captures.get(i));
+                    var slot = self.value(concat3("getelementptr ptr, ptr ", object, concat(", i64 ", int_to_str(i + 1))));
+                    self.store(Type::Str, cell, slot);
+                    i += 1;
+                }
+                return object;
+            },
+            // Captured cell `n` of the closure being run
+            ExprKind::EnvCell(n) => {
+                var env = self.load(Type::Str, quote_local("p.$env"));
+                var slot = self.value(concat3("getelementptr ptr, ptr ", env, concat(", i64 ", int_to_str(n + 1))));
+                return self.load(Type::Str, slot);
+            },
+            ExprKind::NewCell(x) => {
+                var v = self.expr(x);
+                var cell = self.allocate(self.size_of(self.llvm_type(x.typ)), x.typ);
+                self.store(x.typ, v, cell);
+                return cell;
+            },
+            ExprKind::CallClosure(callee, args) => { return self.call_closure(callee, args); },
             ExprKind::Block(stmts, value) => {
                 self.block(stmts);
                 return match value {
@@ -876,6 +904,43 @@ struct Gen {
             // The function doesn't come back
             self.emit(text);
             self.terminate("unreachable");
+            return "";
+        }
+        return self.value(text);
+    }
+
+    // Call the closure object's code, passing the object as the environment
+    func call_closure(callee: &Expr, args: Vec<&Expr>): str {
+        var params: Vec<Type> = Vec::new();
+        var ret = Type::Void;
+        match callee.typ {
+            Type::Func(ps, r) => {
+                params = ps;
+                ret = r;
+            },
+            _ => {},
+        }
+        var object = self.expr(callee);
+        var code = self.load(Type::Str, object);
+        var arg_text = StringBuilder::new();
+        arg_text.append("ptr ");
+        arg_text.append(object);
+        var i = 0;
+        while i < args.len {
+            var arg = args.get(i);
+            var v = self.coerce(self.expr(arg), arg.typ, params.get(i));
+            arg_text.append(", ");
+            arg_text.append(self.llvm_type(params.get(i)));
+            arg_text.append(" ");
+            arg_text.append(v);
+            i += 1;
+        }
+        var text = concat3("call ", self.llvm_type(ret), concat3(" ", code, concat3("(", arg_text.to_str(), ")")));
+        if is_void(ret) || is_never(ret) {
+            self.emit(text);
+            if is_never(ret) {
+                self.terminate("unreachable");
+            }
             return "";
         }
         return self.value(text);

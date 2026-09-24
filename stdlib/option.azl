@@ -29,5 +29,13 @@ enum Option<T> {
             Option::None => { return default; },
         }
     }
+
+    // `f` applied to the value, if there is one
+    func map<U>(f: func(T): U): Option<U> {
+        return match self {
+            Option::Some(value) => Option::Some(f(value)),
+            Option::None => Option::None,
+        };
+    }
 }
 

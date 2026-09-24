@@ -1,0 +1,104 @@
+// Function values and closures, which capture variables by reference.
+
+func double(x: int): int {
+    return x * 2;
+}
+
+func apply(f: func(int): int, x: int): int {
+    return f(x);
+}
+
+func twice<T>(f: func(T): T, x: T): T {
+    return f(f(x));
+}
+
+func compose<A, B, C>(f: func(A): B, g: func(B): C): func(A): C {
+    return func(x) => g(f(x));
+}
+
+// Each counter has its own count, which outlives the call that created it
+func make_counter(step: int): func(): int {
+    var count = 0;
+    return func() {
+        count += step;
+        return count;
+    };
+}
+
+func max<T>(a: T, b: T): T {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+struct Button {
+    label: str;
+    on_click: func(str): str;
+}
+
+func main() {
+    // Named functions and closures as values
+    printf("%d %d\n", apply(double, 5), apply(func(x) => x + 100, 5));
+    printf("%d\n", twice(double, 3));
+    printf("%s\n", twice(func(s: str): str => s + "!", "hey"));
+    var biggest = max::<int>;
+    printf("%d\n", biggest(3, 9));
+
+    // Capture by reference: changes on either side are shared
+    var offset = 7;
+    var add = func(x: int): int => x + offset;
+    offset = 10;
+    printf("%d\n", add(1));
+    var total = 0;
+    var bump = func(n: int) { total += n; };
+    bump(3);
+    bump(4);
+    printf("total %d\n", total);
+
+    var a = make_counter(1);
+    var b = make_counter(10);
+    a();
+    a();
+    b();
+    printf("%d %d\n", a(), b());
+
+    // Each loop iteration has its own variable
+    var fns: Vec<func(): int> = Vec::new();
+    for i in 0..3 {
+        fns.push(func() => i * 10);
+    }
+    for f in fns {
+        printf("%d ", f());
+    }
+    printf("\n");
+
+    // Nested closures
+    var base = 1;
+    var adder = func(x: int): func(int): int => func(y) => x + y + base;
+    base = 100;
+    printf("%d\n", adder(2)(3));
+
+    // Closures stored in fields
+    var button = Button { label: "ok", on_click: func(l) => "clicked ${l}" };
+    printf("%s\n", button.on_click(button.label));
+
+    // Composition, with types inferred from the closures
+    var describe = compose(func(x: int) => x + 1, func(y: int) => "<${y}>");
+    printf("%s\n", describe(41));
+
+    // Vec and Option helpers that take functions
+    var numbers: Vec<int> = Vec::new();
+    for n in 1..=6 {
+        numbers.push(n);
+    }
+    var evens = numbers.filter(func(n) => n % 2 == 0);
+    var squares = evens.map(func(n) => n * n);
+    squares.each(func(n) { printf("%d ", n); });
+    printf("\n");
+    var sum = numbers.fold(0, func(acc, n) => acc + n);
+    var labels = numbers.map(func(n) => "#${n}");
+    printf("sum %d, first %s, any > 5: %d, all > 0: %d\n", sum, labels.get(0), numbers.any(func(n) => n > 5), numbers.all(func(n) => n > 0));
+    var maybe: Option<int> = Option::Some(20);
+    printf("%d\n", maybe.map(func(n) => n + 1).unwrap_or(0));
+}

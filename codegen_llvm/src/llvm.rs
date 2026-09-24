@@ -563,6 +563,44 @@ impl<'a> LLVMCodegen<'a> {
                     locals.store(dest, result.unwrap_basic().as_basic_value_enum());
                 }
             }
+            Instruction::FunctionAddress(name, dest) => {
+                let function = self
+                    .module
+                    .get_function(&name)
+                    .unwrap_or_else(|| panic!("Unknown function {}", name));
+                locals.store(dest, function.as_global_value().as_pointer_value().as_basic_value_enum());
+            }
+            Instruction::IndirectCall(callee, args, dest, params, returns) => {
+                let pointer = locals.load(value_to_local(callee)).into_pointer_value();
+                let param_types: Vec<BasicMetadataTypeEnum> =
+                    params.iter().map(|t| self.azula_type_to_llvm_basic_type(t.clone()).into()).collect();
+                let fn_type = self.azula_type_to_function_llvm_type(returns, &param_types);
+                let converted_args: Vec<BasicMetadataValueEnum> = args
+                    .iter()
+                    .zip(params.iter())
+                    .map(|(arg, param)| {
+                        let value = match arg {
+                            Value::Global(i) => (*self.strings.get(i).unwrap()).as_basic_value_enum(),
+                            Value::Local(..) => locals.load(value_to_local(arg.clone())),
+                            Value::LiteralInteger(n) => {
+                                self.context.i64_type().const_int(*n as u64, false).as_basic_value_enum()
+                            }
+                            Value::LiteralBoolean(b) => {
+                                self.context.bool_type().const_int(*b as u64, false).as_basic_value_enum()
+                            }
+                        };
+                        self.coerce_int_width(value, self.azula_type_to_llvm_basic_type(param.clone())).into()
+                    })
+                    .collect();
+                let result = self
+                    .builder
+                    .build_indirect_call(fn_type, pointer, &converted_args, "call")
+                    .unwrap()
+                    .try_as_basic_value();
+                if result.is_basic() {
+                    locals.store(dest, result.unwrap_basic().as_basic_value_enum());
+                }
+            }
             Instruction::Jcond(cond, true_block_name, end_block_name) => {
                 let local = locals.load(value_to_local(cond)).into_int_value();
 
@@ -1328,6 +1366,8 @@ impl<'a> LLVMCodegen<'a> {
                 unreachable!("generic and tuple types are instantiated by the typechecker")
             }
             AzulaType::Never => unreachable!("values of type ! don't exist"),
+            // Function values are pointers to closure objects
+            AzulaType::Function(..) => self.context.ptr_type(AddressSpace::default()).as_basic_type_enum(),
             AzulaType::Array(_, _) => {
                 // Arrays are heap-allocated; represented as opaque pointers in LLVM 18
                 self.context

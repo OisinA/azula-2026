@@ -1,0 +1,8 @@
+// error: expected func(int):int, found func(str):int
+func apply(f: func(int): int): int {
+    return f(1);
+}
+
+func main() {
+    printf("%d\n", apply(func(s: str): int => 0));
+}

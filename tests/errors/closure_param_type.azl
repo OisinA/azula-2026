@@ -1,0 +1,5 @@
+// error: can't infer the type of parameter `x`
+func main() {
+    var f = func(x) => x + 1;
+    printf("%d\n", f(1));
+}

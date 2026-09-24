@@ -20,6 +20,10 @@ pub fn subst_type<'a>(typ: &AzulaType<'a>, map: &Substitution<'a>) -> AzulaType<
             AzulaType::Generic(name.clone(), args.iter().map(|a| subst_type(a, map)).collect())
         }
         AzulaType::Tuple(items) => AzulaType::Tuple(items.iter().map(|a| subst_type(a, map)).collect()),
+        AzulaType::Function(params, returns) => AzulaType::Function(
+            params.iter().map(|a| subst_type(a, map)).collect(),
+            Rc::new(subst_type(returns, map)),
+        ),
         _ => typ.clone(),
     }
 }
@@ -117,6 +121,11 @@ pub fn subst_expr<'a>(expr: &ExpressionNode<'a>, map: &Substitution<'a>) -> Expr
         Expression::Deref(e) => Expression::Deref(sub(e)),
         Expression::Array(items) => Expression::Array(items.iter().map(|a| subst_expr(a, map)).collect()),
         Expression::Tuple(items) => Expression::Tuple(items.iter().map(|a| subst_expr(a, map)).collect()),
+        Expression::Closure(params, returns, body) => Expression::Closure(
+            params.iter().map(|(t, n)| (t.as_ref().map(|t| subst_type(t, map)), n.clone())).collect(),
+            returns.as_ref().map(|t| subst_type(t, map)),
+            subst_body(body, map),
+        ),
         Expression::Interpolation(parts) => {
             Expression::Interpolation(parts.iter().map(|a| subst_expr(a, map)).collect())
         }
@@ -164,6 +173,12 @@ pub fn unify<'a>(
         }
         (AzulaType::Pointer(p), AzulaType::Pointer(c)) => unify(p, c, params, instances, bindings),
         (AzulaType::Array(p, _), AzulaType::Array(c, _)) => unify(p, c, params, instances, bindings),
+        (AzulaType::Function(pparams, preturn), AzulaType::Function(cparams, creturn)) => {
+            for (p, c) in pparams.iter().zip(cparams) {
+                unify(p, c, params, instances, bindings);
+            }
+            unify(preturn, creturn, params, instances, bindings);
+        }
         (AzulaType::Tuple(pargs), AzulaType::Named(instance)) => {
             if let Some((generic, cargs)) = instances.get(instance) {
                 if generic == TUPLE && pargs.len() == cargs.len() {

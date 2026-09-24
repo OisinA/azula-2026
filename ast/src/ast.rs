@@ -97,6 +97,19 @@ pub enum Expression<'a> {
     Array(Vec<ExpressionNode<'a>>),
     /// `(a, b)`
     Tuple(Vec<ExpressionNode<'a>>),
+    /// `func(a: A, b) : R { body }` or `func(a) => value`: parameters (whose
+    /// types may be left to inference), return type if given, and body
+    Closure(Vec<(Option<AzulaType<'a>>, String)>, Option<AzulaType<'a>>, Vec<Statement<'a>>),
+    /// A closure object for the lifted function, holding the given captured
+    /// variable cells (produced by the typechecker)
+    MakeClosure(String, Vec<ExpressionNode<'a>>),
+    /// Cell `n` of the current closure's environment (produced by the typechecker)
+    EnvCell(usize),
+    /// A new heap cell holding a value: variables captured by closures live
+    /// in these (produced by the typechecker)
+    NewCell(Rc<ExpressionNode<'a>>),
+    /// Call of a function value (produced by the typechecker)
+    CallClosure(Rc<ExpressionNode<'a>>, Vec<ExpressionNode<'a>>),
     ArrayAccess(Rc<ExpressionNode<'a>>, Rc<ExpressionNode<'a>>),
     StructInitialisation(Rc<ExpressionNode<'a>>, Vec<(&'a str, ExpressionNode<'a>)>),
     StructAccess(Rc<ExpressionNode<'a>>, Rc<ExpressionNode<'a>>),

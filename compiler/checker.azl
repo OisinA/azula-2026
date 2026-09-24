@@ -9,6 +9,9 @@ struct VarInfo {
     typ: Type;
     mutable: bool;
     ir: str;
+    // Whether the variable lives in a heap cell (because closures capture
+    // it): its slot then holds a pointer to the cell
+    boxed: bool;
 }
 
 struct StructInfo {
@@ -73,6 +76,11 @@ struct Checker {
     var_counter: int;
     current_return: Type;
     loop_depth: int;
+    // Names closures in the function may capture: mutable variables with
+    // these names live in heap cells
+    captured: Map<bool>;
+    // For naming the functions closures are lifted into
+    closure_count: int;
     // Whether the program includes the garbage collector (stdlib/gc.azl)
     has_gc: bool;
 
@@ -471,6 +479,15 @@ struct Checker {
                 }
                 self.instantiate_tuple(resolved)
             },
+            Type::Func(params, ret) => {
+                var resolved: Vec<Type> = Vec::new();
+                var i = 0;
+                while i < params.len {
+                    resolved.push(self.resolve_type(params.get(i), pos));
+                    i += 1;
+                }
+                Type::Func(resolved, self.resolve_type(ret, pos))
+            },
             Type::Infer => t,
             _ => t,
         };
@@ -747,6 +764,19 @@ struct Checker {
                     _ => {},
                 }
             },
+            Type::Func(pparams, pret) => {
+                match concrete {
+                    Type::Func(cparams, cret) => {
+                        var i = 0;
+                        while i < pparams.len && i < cparams.len {
+                            self.unify(pparams.get(i), cparams.get(i), params, bindings);
+                            i += 1;
+                        }
+                        self.unify(pret, cret, params, bindings);
+                    },
+                    _ => {},
+                }
+            },
             Type::Tuple(pargs) => {
                 match self.tuple_items(concrete) {
                     Option::Some(items) => {
@@ -790,6 +820,7 @@ struct Checker {
             Option::None => {},
         }
         var bindings = self.bind_params(params, patterns, args);
+        self.bind_from_closures(params, patterns, args, &bindings);
         var result: Vec<Type> = Vec::new();
         var i = 0;
         while i < params.len {
@@ -802,6 +833,65 @@ struct Checker {
             i += 1;
         }
         return result;
+    }
+
+    // Closures whose parameter types aren't given can't be typed on their own.
+    // Once the type parameters their parameters use are bound, check a copy of
+    // each to learn its return type, and bind what that tells us.
+    func bind_from_closures(params: Vec<str>, patterns: Vec<Type>, args: Vec<&Expr>, bindings: &Map<Type>) {
+        var i = 0;
+        while i < patterns.len && i < args.len {
+            var arg = args.get(i);
+            // Closures whose type isn't known from their annotations alone
+            var cparams: Vec<Param> = Vec::new();
+            var untyped = match arg.kind {
+                ExprKind::Closure(ps, _, _) => {
+                    cparams = ps;
+                    is_infer(self.peek_type(arg))
+                },
+                _ => false,
+            };
+            if untyped {
+                match patterns.get(i) {
+                    Type::Func(ps, _) => {
+                        var bound_params: Vec<str> = Vec::new();
+                        var bound_args: Vec<Type> = Vec::new();
+                        var j = 0;
+                        while j < params.len {
+                            match bindings.get(params.get(j)) {
+                                Option::Some(t) => {
+                                    bound_params.push(params.get(j));
+                                    bound_args.push(t);
+                                },
+                                Option::None => {},
+                            }
+                            j += 1;
+                        }
+                        var closure_params: Vec<Type> = Vec::new();
+                        var known = true;
+                        j = 0;
+                        while j < ps.len {
+                            var t = subst_type(ps.get(j), bound_params, bound_args);
+                            if j < cparams.len && !is_infer(cparams.get(j).typ) {
+                                t = self.resolve_type(cparams.get(j).typ, arg.pos);
+                            }
+                            if mentions_params(t, params) {
+                                known = false;
+                            }
+                            closure_params.push(t);
+                            j += 1;
+                        }
+                        if known {
+                            var copier = Copier { params: Vec::new(), args: Vec::new() };
+                            var t = self.check_expr(copier.expr(arg), Type::Func(closure_params, Type::Infer));
+                            self.unify(patterns.get(i), t, params, bindings);
+                        }
+                    },
+                    _ => {},
+                }
+            }
+            i += 1;
+        }
     }
 
     // Bind type parameters by matching `patterns` against the types of `args`
@@ -882,6 +972,21 @@ struct Checker {
                 _ => Type::Infer,
             },
             ExprKind::Cast(_, t) => self.resolve_type(t, e.pos),
+            ExprKind::Closure(params, ret, _) => {
+                if is_infer(ret) {
+                    return Type::Infer;
+                }
+                var types: Vec<Type> = Vec::new();
+                var i = 0;
+                while i < params.len {
+                    if is_infer(params.get(i).typ) {
+                        return Type::Infer;
+                    }
+                    types.push(self.resolve_type(params.get(i).typ, e.pos));
+                    i += 1;
+                }
+                Type::Func(types, self.resolve_type(ret, e.pos))
+            },
             ExprKind::SizeOf(_) => Type::Int,
             ExprKind::StructLit(name, _) => match name.kind {
                 ExprKind::Ident(n) => {
@@ -1035,7 +1140,14 @@ struct Checker {
     func declare_var(name: str, typ: Type, mutable: bool): str {
         self.var_counter += 1;
         var ir = concat3(name, ".", int_to_str(self.var_counter));
-        self.scopes.data[self.scopes.len - 1].insert(name, VarInfo { typ: typ, mutable: mutable, ir: ir });
+        self.scopes.data[self.scopes.len - 1].insert(name, VarInfo { typ: typ, mutable: mutable, ir: ir, boxed: false });
+        return ir;
+    }
+
+    // Declare a variable kept in a heap cell holding a `typ`
+    func declare_boxed(name: str, typ: Type, mutable: bool): str {
+        var ir = self.declare_var(name, typ, mutable);
+        self.scopes.data[self.scopes.len - 1].insert(name, VarInfo { typ: typ, mutable: mutable, ir: ir, boxed: true });
         return ir;
     }
 
@@ -1063,10 +1175,11 @@ struct Checker {
         f.params = self.resolve_params(f.params, f.pos);
         f.ret = self.resolve_type(f.ret, f.pos);
         self.current_return = f.ret;
+        self.captured = captured_names(f.body);
         var i = 0;
         while i < f.params.len {
             var p = f.params.get(i);
-            self.scopes.data[self.scopes.len - 1].insert(p.name, VarInfo { typ: p.typ, mutable: false, ir: concat("p.", p.name) });
+            self.scopes.data[self.scopes.len - 1].insert(p.name, VarInfo { typ: p.typ, mutable: false, ir: concat("p.", p.name), boxed: false });
             i += 1;
         }
         self.check_block(f.body);
@@ -1101,8 +1214,18 @@ struct Checker {
                     self.expect_assignable(declared, t, value);
                     t = declared;
                 }
-                s.typ = t;
-                s.ir_name = self.declare_var(name, t, mutable);
+                if mutable && self.captured.contains(name) {
+                    // A closure may capture this variable, so it lives in a heap cell
+                    var cell = new_expr(ExprKind::NewCell(value), value.pos);
+                    cell.typ = Type::Ptr(t);
+                    value.typ = t;
+                    s.kind = StmtKind::VarDecl(name, mutable, annotation, cell);
+                    s.typ = Type::Ptr(t);
+                    s.ir_name = self.declare_boxed(name, t, mutable);
+                } else {
+                    s.typ = t;
+                    s.ir_name = self.declare_var(name, t, mutable);
+                }
             },
             StmtKind::Assign(target, value) => {
                 match target.kind {
@@ -1131,6 +1254,20 @@ struct Checker {
             },
             StmtKind::ExprStmt(e) => { self.check_expr(e, Type::Infer); },
             StmtKind::Return(value) => {
+                if is_infer(self.current_return) {
+                    // A closure without a declared return type returns what its first `return` does
+                    match value {
+                        Option::None => { self.current_return = Type::Void; },
+                        Option::Some(v) => {
+                            var t = self.check_expr(v, Type::Infer);
+                            if is_void(t) {
+                                self.fail(v.pos, "this expression has no value to return");
+                            }
+                            self.current_return = t;
+                        },
+                    }
+                    return;
+                }
                 if is_never(self.current_return) {
                     self.fail(s.pos, "a function returning `!` can't return");
                 }
@@ -1383,6 +1520,13 @@ struct Checker {
             ExprKind::Ident(name) => {
                 match self.lookup_var(name) {
                     Option::Some(v) => {
+                        if v.boxed {
+                            // Read through the variable's cell
+                            var cell = new_expr(ExprKind::Local(v.ir), e.pos);
+                            cell.typ = Type::Ptr(v.typ);
+                            e.kind = ExprKind::Deref(cell);
+                            return v.typ;
+                        }
                         e.kind = ExprKind::Local(v.ir);
                         return v.typ;
                     },
@@ -1392,6 +1536,14 @@ struct Checker {
                     Option::Some(t) => {
                         e.kind = ExprKind::Global(name);
                         return t;
+                    },
+                    Option::None => {},
+                }
+                match self.funcs.get(name) {
+                    Option::Some(sig) => {
+                        if !sig.is_varargs && !is_intrinsic(name) {
+                            return self.function_value(e, sig);
+                        }
                     },
                     Option::None => {},
                 }
@@ -1485,10 +1637,22 @@ struct Checker {
                 e.kind = ExprKind::EnumValue(type_name, tag, Vec::new());
                 return Type::Named(type_name);
             },
-            ExprKind::Turbofish(_, _) => {
+            ExprKind::Turbofish(name, targs) => {
+                if self.generic_funcs.contains(name) {
+                    // A generic function instance used as a value: `max::<int>`
+                    var resolved: Vec<Type> = Vec::new();
+                    var i = 0;
+                    while i < targs.len {
+                        resolved.push(self.resolve_type(targs.get(i), e.pos));
+                        i += 1;
+                    }
+                    var symbol = self.instantiate_function(name, resolved, e.pos);
+                    return self.function_value(e, self.funcs.get(symbol).unwrap());
+                }
                 self.fail(e.pos, "type arguments must be followed by a call, `::` or `{`");
                 return Type::Infer;
             },
+            ExprKind::Closure(params, ret, body) => { return self.check_closure(e, params, ret, body, expected); },
             ExprKind::StructLit(name, fields) => { return self.check_struct_lit(e, name, fields, expected); },
             ExprKind::ArrayLit(items) => {
                 if items.len == 0 {
@@ -1775,6 +1939,10 @@ struct Checker {
     func check_call(e: &Expr, callee: &Expr, args: Vec<&Expr>, expected: Type): Type {
         match callee.kind {
             ExprKind::Ident(name) => {
+                if self.lookup_var(name).is_some() {
+                    // A variable holding a function
+                    return self.check_closure_call(e, callee, args);
+                }
                 var symbol = name;
                 if self.generic_funcs.contains(name) && self.lookup_var(name).is_none() {
                     var decl = self.generic_funcs.get(name).unwrap();
@@ -1839,10 +2007,8 @@ struct Checker {
             },
             ExprKind::Field(obj, method) => { return self.check_method_call(e, callee, obj, method, Vec::new(), false, args); },
             ExprKind::MethodTurbofish(obj, method, targs) => { return self.check_method_call(e, callee, obj, method, targs, true, args); },
-            _ => {
-                self.fail(callee.pos, "this can't be called");
-                return Type::Infer;
-            },
+            // Any other expression must give a function value
+            _ => { return self.check_closure_call(e, callee, args); },
         }
     }
 
@@ -1860,6 +2026,10 @@ struct Checker {
         }
         self.instantiate_method(type_name, method);
         var symbol = concat3(type_name, ".", method);
+        if !explicit && !self.funcs.contains(symbol) && self.has_func_field(t, method) {
+            // A field holding a function
+            return self.check_closure_call(e, new_expr(ExprKind::Field(obj, method), callee.pos), args);
+        }
         var generic_symbol = self.generic_method(type_name, method, targs, explicit, true, args, callee.pos);
         if generic_symbol != "" {
             symbol = generic_symbol;
@@ -1891,6 +2061,241 @@ struct Checker {
         }
         e.kind = ExprKind::CallFn(symbol, all_args);
         return sig.ret;
+    }
+
+    // Is `name` a field of `t`'s struct holding a function?
+    func has_func_field(t: Type, name: str): bool {
+        var info = self.struct_of(t);
+        if info == null {
+            return false;
+        }
+        var i = 0;
+        while i < info.fields.len {
+            if info.fields.get(i).name == name {
+                return match info.fields.get(i).typ {
+                    Type::Func(_, _) => true,
+                    _ => false,
+                };
+            }
+            i += 1;
+        }
+        return false;
+    }
+
+    // A call of the function value `callee`
+    func check_closure_call(e: &Expr, callee: &Expr, args: Vec<&Expr>): Type {
+        var t = self.check_expr(callee, Type::Infer);
+        return match t {
+            Type::Func(params, ret) => {
+                if params.len != args.len {
+                    self.fail(e.pos, concat3("this function takes ", int_to_str(params.len), concat(" arguments, got ", int_to_str(args.len))));
+                }
+                var i = 0;
+                while i < args.len {
+                    var at = self.check_expr(args.get(i), params.get(i));
+                    self.expect_assignable(params.get(i), at, args.get(i));
+                    i += 1;
+                }
+                e.kind = ExprKind::CallClosure(callee, args);
+                ret
+            },
+            _ => {
+                self.fail(callee.pos, concat3("a value of type ", mangle(t), " can't be called"));
+                Type::Infer
+            },
+        };
+    }
+
+    // A closure: its body becomes a function taking the closure object
+    // (`$env`) first, and its value is a closure object holding the cells of
+    // the variables it captures
+    func check_closure(e: &Expr, params: Vec<Param>, ret: Type, body: Vec<&Stmt>, expected: Type): Type {
+        var expected_params: Vec<Type> = Vec::new();
+        var expected_ret = Type::Infer;
+        var has_expected = false;
+        match expected {
+            Type::Func(ps, r) => {
+                if ps.len == params.len {
+                    expected_params = ps;
+                    expected_ret = r;
+                    has_expected = true;
+                }
+            },
+            _ => {},
+        }
+        var resolved: Vec<Param> = Vec::new();
+        var types: Vec<Type> = Vec::new();
+        var i = 0;
+        while i < params.len {
+            var p = params.get(i);
+            var t = p.typ;
+            if !is_infer(t) {
+                t = self.resolve_type(t, e.pos);
+            } else if has_expected && !is_infer(expected_params.get(i)) {
+                t = expected_params.get(i);
+            } else {
+                self.fail(e.pos, concat3("can't infer the type of parameter `", p.name, concat3("`; give it a type like `", p.name, ": int`")));
+            }
+            resolved.push(Param { name: p.name, typ: t });
+            types.push(t);
+            i += 1;
+        }
+        var declared_ret = expected_ret;
+        if !is_infer(ret) {
+            declared_ret = self.resolve_type(ret, e.pos);
+        }
+
+        // Cells for the variables it captures
+        var names = closure_free_names(params, body);
+        var captures: Vec<&Expr> = Vec::new();
+        var captured_vars: Vec<VarInfo> = Vec::new();
+        var captured_names_list: Vec<str> = Vec::new();
+        i = 0;
+        while i < names.len {
+            match self.lookup_var(names.get(i)) {
+                Option::Some(v) => {
+                    var variable = new_expr(ExprKind::Local(v.ir), e.pos);
+                    if v.boxed {
+                        // Share the variable's cell
+                        variable.typ = Type::Ptr(v.typ);
+                        captures.push(variable);
+                    } else {
+                        // Immutable variables can't change, so a copy is as good as the original
+                        variable.typ = v.typ;
+                        var cell = new_expr(ExprKind::NewCell(variable), e.pos);
+                        cell.typ = Type::Ptr(v.typ);
+                        captures.push(cell);
+                    }
+                    captured_vars.push(v);
+                    captured_names_list.push(names.get(i));
+                },
+                Option::None => {},
+            }
+            i += 1;
+        }
+
+        // Check the body as a function of its own
+        var saved_scopes = self.scopes;
+        var saved_counter = self.var_counter;
+        var saved_return = self.current_return;
+        var saved_depth = self.loop_depth;
+        var saved_captured = self.captured;
+        self.scopes = Vec::new();
+        self.push_scope();
+        self.var_counter = 0;
+        self.loop_depth = 0;
+        self.current_return = declared_ret;
+        self.captured = captured_names(body);
+        self.scopes.data[0].insert("$env", VarInfo { typ: Type::Str, mutable: false, ir: "p.$env", boxed: false });
+        i = 0;
+        while i < resolved.len {
+            var p = resolved.get(i);
+            self.scopes.data[0].insert(p.name, VarInfo { typ: p.typ, mutable: false, ir: concat("p.", p.name), boxed: false });
+            i += 1;
+        }
+        var full_body: Vec<&Stmt> = Vec::new();
+        i = 0;
+        while i < captured_vars.len {
+            var v = captured_vars.get(i);
+            var cell = new_expr(ExprKind::EnvCell(i), e.pos);
+            cell.typ = Type::Ptr(v.typ);
+            var decl = new_stmt(StmtKind::VarDecl(captured_names_list.get(i), v.mutable, Type::Infer, cell), e.pos);
+            decl.typ = Type::Ptr(v.typ);
+            decl.ir_name = self.declare_boxed(captured_names_list.get(i), v.typ, v.mutable);
+            full_body.push(decl);
+            i += 1;
+        }
+        self.check_block(body);
+        var result = self.current_return;
+        if is_infer(result) {
+            result = Type::Void;
+        }
+        if !is_void(result) && !always_returns(body) {
+            self.fail(e.pos, "this closure might not return a value");
+        }
+        self.scopes = saved_scopes;
+        self.var_counter = saved_counter;
+        self.current_return = saved_return;
+        self.loop_depth = saved_depth;
+        self.captured = saved_captured;
+
+        i = 0;
+        while i < body.len {
+            full_body.push(body.get(i));
+            i += 1;
+        }
+        var symbol = concat("closure.", int_to_str(self.closure_count));
+        self.closure_count += 1;
+        var all_params: Vec<Param> = Vec::new();
+        all_params.push(Param { name: "$env", typ: Type::Str });
+        i = 0;
+        while i < resolved.len {
+            all_params.push(resolved.get(i));
+            i += 1;
+        }
+        self.out_funcs.push(new FuncDecl {
+            name: symbol,
+            type_params: Vec::new(),
+            params: all_params,
+            ret: result,
+            body: full_body,
+            pos: e.pos,
+            is_extern: false,
+            is_varargs: false,
+            symbol: symbol,
+        });
+        e.kind = ExprKind::MakeClosure(symbol, captures);
+        return Type::Func(types, result);
+    }
+
+    // The function `sig` used as a value: a closure object for a wrapper that
+    // takes the (unused) environment and calls it
+    func function_value(e: &Expr, sig: &FuncSig): Type {
+        var wrapper = concat("fn.", sig.symbol);
+        if !self.instantiated.contains(wrapper) {
+            self.instantiated.insert(wrapper, true);
+            var params: Vec<Param> = Vec::new();
+            params.push(Param { name: "$env", typ: Type::Str });
+            var args: Vec<&Expr> = Vec::new();
+            var i = 0;
+            while i < sig.params.len {
+                var name = concat("a", int_to_str(i));
+                params.push(Param { name: name, typ: sig.params.get(i) });
+                args.push(new_expr(ExprKind::Ident(name), e.pos));
+                i += 1;
+            }
+            var call = new_expr(ExprKind::Call(new_expr(ExprKind::Ident(sig.symbol), e.pos), args), e.pos);
+            var body: Vec<&Stmt> = Vec::new();
+            if is_void(sig.ret) || is_never(sig.ret) {
+                body.push(new_stmt(StmtKind::ExprStmt(call), e.pos));
+            } else {
+                body.push(new_stmt(StmtKind::Return(Option::Some(call)), e.pos));
+            }
+            var decl = new FuncDecl {
+                name: wrapper,
+                type_params: Vec::new(),
+                params: params,
+                ret: sig.ret,
+                body: body,
+                pos: e.pos,
+                is_extern: false,
+                is_varargs: false,
+                symbol: wrapper,
+            };
+            var saved_scopes = self.scopes;
+            var saved_counter = self.var_counter;
+            var saved_return = self.current_return;
+            var saved_depth = self.loop_depth;
+            var saved_captured = self.captured;
+            self.check_function(decl);
+            self.scopes = saved_scopes;
+            self.var_counter = saved_counter;
+            self.current_return = saved_return;
+            self.loop_depth = saved_depth;
+            self.captured = saved_captured;
+        }
+        e.kind = ExprKind::MakeClosure(wrapper, Vec::new());
+        return Type::Func(sig.params, sig.ret);
     }
 
     func check_struct_lit(e: &Expr, name_expr: &Expr, fields: Vec<FieldInit>, expected: Type): Type {
@@ -2353,6 +2758,8 @@ func new_checker(src: &Source): &Checker {
         var_counter: 0,
         current_return: Type::Void,
         loop_depth: 0,
+        captured: Map::new(),
+        closure_count: 0,
         has_gc: false,
     };
     c.add_builtins();
@@ -2416,8 +2823,259 @@ func subst_type(t: Type, params: Vec<str>, args: Vec<Type>): Type {
             }
             Type::Tuple(out)
         },
+        Type::Func(ps, ret) => {
+            var out: Vec<Type> = Vec::new();
+            var i = 0;
+            while i < ps.len {
+                out.push(subst_type(ps.get(i), params, args));
+                i += 1;
+            }
+            Type::Func(out, subst_type(ret, params, args))
+        },
         _ => t,
     };
+}
+
+// Does `t` refer to any of the type parameters `params`?
+func mentions_params(t: Type, params: Vec<str>): bool {
+    return match t {
+        Type::Named(name) => contains_str(params, name),
+        Type::Ptr(inner) => mentions_params(inner, params),
+        Type::Array(inner, _) => mentions_params(inner, params),
+        Type::Generic(_, args) => any_mentions_params(args, params),
+        Type::Tuple(items) => any_mentions_params(items, params),
+        Type::Func(ps, ret) => any_mentions_params(ps, params) || mentions_params(ret, params),
+        _ => false,
+    };
+}
+
+func any_mentions_params(types: Vec<Type>, params: Vec<str>): bool {
+    var i = 0;
+    while i < types.len {
+        if mentions_params(types.get(i), params) {
+            return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Which variables closures use from their surroundings. Closures capture
+// variables by reference, so mutable variables a closure uses live in heap
+// cells.
+// ---------------------------------------------------------------------------
+
+struct NameWalk {
+    // Identifiers used, in order of first use
+    used: Vec<str>;
+    used_set: Map<bool>;
+    // Names declared (variables, loop variables, pattern bindings, parameters)
+    declared: Map<bool>;
+    // Names closures use without declaring them
+    closure_free: Map<bool>;
+
+    func use_name(name: str) {
+        if !self.used_set.contains(name) {
+            self.used_set.insert(name, true);
+            self.used.push(name);
+        }
+    }
+
+    func declare(name: str) {
+        self.declared.insert(name, true);
+    }
+
+    func stmts(list: Vec<&Stmt>) {
+        var i = 0;
+        while i < list.len {
+            self.stmt(list.get(i));
+            i += 1;
+        }
+    }
+
+    func exprs(list: Vec<&Expr>) {
+        var i = 0;
+        while i < list.len {
+            self.expr(list.get(i));
+            i += 1;
+        }
+    }
+
+    func opt_expr(e: Option<&Expr>) {
+        match e {
+            Option::Some(x) => { self.expr(x); },
+            Option::None => {},
+        }
+    }
+
+    func stmt(s: &Stmt) {
+        match s.kind {
+            StmtKind::VarDecl(name, _, _, value) => {
+                self.declare(name);
+                self.expr(value);
+            },
+            StmtKind::Assign(target, value) => {
+                self.expr(target);
+                self.expr(value);
+            },
+            StmtKind::ExprStmt(e) => { self.expr(e); },
+            StmtKind::Return(value) => { self.opt_expr(value); },
+            StmtKind::If(cond, then_body, else_body) => {
+                self.expr(cond);
+                self.stmts(then_body);
+                self.stmts(else_body);
+            },
+            StmtKind::Loop(cond, body) => {
+                self.opt_expr(cond);
+                self.stmts(body);
+            },
+            StmtKind::ForIn(name, iterable, end, _, body) => {
+                self.declare(name);
+                self.expr(iterable);
+                self.opt_expr(end);
+                self.stmts(body);
+            },
+            StmtKind::CompoundAssign(_, target, value) => {
+                self.expr(target);
+                self.expr(value);
+            },
+            StmtKind::Destructure(names, _, value) => {
+                var i = 0;
+                while i < names.len {
+                    self.declare(names.get(i));
+                    i += 1;
+                }
+                self.expr(value);
+            },
+            StmtKind::Group(list) => { self.stmts(list); },
+            _ => {},
+        }
+    }
+
+    func pattern(p: Pattern) {
+        match p {
+            Pattern::Variant(_, _, bindings) => {
+                var i = 0;
+                while i < bindings.len {
+                    self.declare(bindings.get(i));
+                    i += 1;
+                }
+            },
+            Pattern::Binding(name) => { self.declare(name); },
+            Pattern::Tuple(items) => {
+                var i = 0;
+                while i < items.len {
+                    self.pattern(items.get(i));
+                    i += 1;
+                }
+            },
+            _ => {},
+        }
+    }
+
+    func expr(e: &Expr) {
+        match e.kind {
+            ExprKind::Ident(name) => { self.use_name(name); },
+            ExprKind::Binary(_, l, r) => {
+                self.expr(l);
+                self.expr(r);
+            },
+            ExprKind::Unary(_, x) => { self.expr(x); },
+            ExprKind::AddrOf(x) => { self.expr(x); },
+            ExprKind::Deref(x) => { self.expr(x); },
+            ExprKind::Call(f, args) => {
+                self.expr(f);
+                self.exprs(args);
+            },
+            ExprKind::Index(a, i) => {
+                self.expr(a);
+                self.expr(i);
+            },
+            // The member is a field or method name, not a variable
+            ExprKind::Field(x, _) => { self.expr(x); },
+            ExprKind::MethodTurbofish(x, _, _) => { self.expr(x); },
+            ExprKind::StructLit(_, fields) => {
+                var i = 0;
+                while i < fields.len {
+                    self.expr(fields.get(i).value);
+                    i += 1;
+                }
+            },
+            ExprKind::ArrayLit(items) => { self.exprs(items); },
+            ExprKind::Tuple(items) => { self.exprs(items); },
+            ExprKind::Interpolate(parts) => { self.exprs(parts); },
+            ExprKind::Cast(x, _) => { self.expr(x); },
+            ExprKind::Alloc(x) => { self.expr(x); },
+            ExprKind::AllocIn(x, arena) => {
+                self.expr(x);
+                self.expr(arena);
+            },
+            ExprKind::Match(scrutinee, arms) => {
+                self.expr(scrutinee);
+                var i = 0;
+                while i < arms.len {
+                    self.pattern(arms.get(i).pattern);
+                    self.expr(arms.get(i).body);
+                    i += 1;
+                }
+            },
+            ExprKind::Block(list, value) => {
+                self.stmts(list);
+                self.opt_expr(value);
+            },
+            ExprKind::Closure(params, _, body) => {
+                var free = closure_free_names(params, body);
+                var i = 0;
+                while i < free.len {
+                    self.use_name(free.get(i));
+                    self.closure_free.insert(free.get(i), true);
+                    i += 1;
+                }
+                // Names nested closures capture
+                var nested = captured_names(body);
+                var keys = nested.key_list();
+                i = 0;
+                while i < keys.len {
+                    self.closure_free.insert(keys.get(i), true);
+                    i += 1;
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
+func new_name_walk(): NameWalk {
+    return NameWalk { used: Vec::new(), used_set: Map::new(), declared: Map::new(), closure_free: Map::new() };
+}
+
+// Names the body of a closure with `params` uses without declaring, in order of first use
+func closure_free_names(params: Vec<Param>, body: Vec<&Stmt>): Vec<str> {
+    var walk = new_name_walk();
+    var i = 0;
+    while i < params.len {
+        walk.declare(params.get(i).name);
+        i += 1;
+    }
+    walk.stmts(body);
+    var out: Vec<str> = Vec::new();
+    i = 0;
+    while i < walk.used.len {
+        if !walk.declared.contains(walk.used.get(i)) {
+            out.push(walk.used.get(i));
+        }
+        i += 1;
+    }
+    return out;
+}
+
+// Names the closures in `body` use from outside them: variables with these
+// names may be captured
+func captured_names(body: Vec<&Stmt>): Map<bool> {
+    var walk = new_name_walk();
+    walk.stmts(body);
+    return walk.closure_free;
 }
 
 // `path` followed by `index`
@@ -2538,6 +3196,15 @@ struct Copier {
             ExprKind::Block(stmts, value) => ExprKind::Block(self.stmts(stmts), self.opt_expr(value)),
             ExprKind::Interpolate(parts) => ExprKind::Interpolate(self.exprs(parts)),
             ExprKind::Tuple(items) => ExprKind::Tuple(self.exprs(items)),
+            ExprKind::Closure(params, ret, body) => {
+                var out: Vec<Param> = Vec::new();
+                var i = 0;
+                while i < params.len {
+                    out.push(Param { name: params.get(i).name, typ: self.typ(params.get(i).typ) });
+                    i += 1;
+                }
+                ExprKind::Closure(out, self.typ(ret), self.stmts(body))
+            },
             ExprKind::MethodTurbofish(x, name, targs) => {
                 var out: Vec<Type> = Vec::new();
                 var i = 0;
