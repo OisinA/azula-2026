@@ -1815,14 +1815,15 @@ impl<'a> Typechecker<'a> {
         let name = match struc.expression.clone() {
             Expression::Identifier(name) if self.generic_structs.contains_key(&name) => {
                 let (params, attrs) = self.generic_structs[&name].clone();
-                let mut patterns = vec![];
-                let mut concrete = vec![];
+                let mut field_patterns = vec![];
+                let mut values = vec![];
                 for (field, value) in &fields {
                     if let Some((typ, _)) = attrs.iter().find(|(_, n)| n == field) {
-                        patterns.push(typ.clone());
-                        concrete.push(self.typecheck_expression(value.clone(), env)?.1);
+                        field_patterns.push(typ.clone());
+                        values.push(value.clone());
                     }
                 }
+                let (patterns, concrete) = self.types_for_inference(&field_patterns, &values, env);
                 let args = self
                     .infer_type_args(&name, &params, &expected, &patterns, &concrete, &span)
                     .ok_or("cannot infer")?;

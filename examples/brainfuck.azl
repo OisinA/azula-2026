@@ -1,0 +1,53 @@
+// An interpreter for the Brainfuck language, running a program that
+// prints "Hello World!".
+
+func run(program: str) {
+    var tape: str = calloc(30000, 1);
+    var pointer = 0;
+    var pc = 0;
+    while program[pc] != 0 {
+        match program[pc] {
+            '>' => { pointer = pointer + 1; },
+            '<' => { pointer = pointer - 1; },
+            '+' => { tape[pointer] = tape[pointer] + 1; },
+            '-' => { tape[pointer] = tape[pointer] - 1; },
+            '.' => { putchar(tape[pointer] as i32); },
+            '[' => {
+                if tape[pointer] == 0 {
+                    pc = matching_bracket(program, pc, 1);
+                }
+            },
+            ']' => {
+                if tape[pointer] != 0 {
+                    pc = matching_bracket(program, pc, -1);
+                }
+            },
+            _ => {},
+        }
+        pc = pc + 1;
+    }
+    free(tape);
+}
+
+// Find the bracket matching the one at `pc`, searching in `direction`
+func matching_bracket(program: str, pc: int, direction: int): int {
+    var depth = 0;
+    var i = pc;
+    while true {
+        if program[i] == '[' {
+            depth = depth + direction;
+        } else if program[i] == ']' {
+            depth = depth - direction;
+        }
+        if depth == 0 {
+            return i;
+        }
+        i = i + direction;
+    }
+    return i;
+}
+
+func main {
+    run("++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.");
+    printf("\n");
+}

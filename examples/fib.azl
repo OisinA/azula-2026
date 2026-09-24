@@ -6,5 +6,5 @@ func fib(n: int): int {
 }
 
 func main {
-    printf("%d\n", fib(46));
+    printf("%d\n", fib(35));
 }

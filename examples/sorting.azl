@@ -1,0 +1,71 @@
+// Sorting with a generic quicksort, working on anything comparable with <.
+
+func swap_items<T>(v: &Vec<T>, i: int, j: int) {
+    var tmp = v.get(i);
+    v.set(i, v.get(j));
+    v.set(j, tmp);
+}
+
+func quicksort<T>(v: &Vec<T>, low: int, high: int) {
+    if low >= high {
+        return;
+    }
+    var pivot = v.get(high);
+    var i = low;
+    var j = low;
+    while j < high {
+        if v.get(j) < pivot {
+            swap_items(v, i, j);
+            i = i + 1;
+        }
+        j = j + 1;
+    }
+    swap_items(v, i, high);
+    quicksort(v, low, i - 1);
+    quicksort(v, i + 1, high);
+}
+
+func sort<T>(v: &Vec<T>) {
+    quicksort(v, 0, v.length() - 1);
+}
+
+func print_ints(v: Vec<int>) {
+    var i = 0;
+    while i < v.length() {
+        printf("%d ", v.get(i));
+        i = i + 1;
+    }
+    printf("\n");
+}
+
+func main {
+    // A simple pseudo-random sequence
+    var numbers: Vec<int> = Vec::new();
+    var seed = 12345;
+    var i = 0;
+    while i < 15 {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        numbers.push(seed % 100);
+        i = i + 1;
+    }
+    printf("before: ");
+    print_ints(numbers);
+    sort(&numbers);
+    printf("after:  ");
+    print_ints(numbers);
+
+    var letters: Vec<i8> = Vec::new();
+    var word = "azulacompiler";
+    i = 0;
+    while word[i] != 0 {
+        letters.push(word[i]);
+        i = i + 1;
+    }
+    sort(&letters);
+    i = 0;
+    while i < letters.length() {
+        printf("%c", letters.get(i));
+        i = i + 1;
+    }
+    printf("\n");
+}

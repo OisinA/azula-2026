@@ -1,0 +1,13 @@
+// A program split across several files. `import` paths are relative to
+// the importing file, and each file is only included once.
+
+import "geometry.azl"
+import "report.azl"
+
+func main {
+    var shapes: Vec<Rect> = Vec::new();
+    shapes.push(Rect { width: 3, height: 4 });
+    shapes.push(Rect { width: 10, height: 2 });
+    shapes.push(square(5));
+    report(shapes);
+}

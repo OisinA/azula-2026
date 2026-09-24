@@ -67,6 +67,9 @@ directory holding the compiler.
 
 ## A tour of the language
 
+More complete programs are in [`examples/`](examples).
+
+
 ```
 // Structs, with methods in impl blocks
 struct Point {

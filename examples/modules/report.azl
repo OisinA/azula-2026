@@ -1,0 +1,14 @@
+// This file uses Rect too; importing geometry.azl again is harmless.
+import "geometry.azl"
+
+func report(shapes: Vec<Rect>) {
+    var total = 0;
+    var i = 0;
+    while i < shapes.length() {
+        var r = shapes.get(i);
+        printf("%dx%d: area %d, perimeter %d\n", r.width, r.height, r.area(), r.perimeter());
+        total = total + r.area();
+        i = i + 1;
+    }
+    printf("total area %d\n", total);
+}

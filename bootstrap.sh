@@ -53,4 +53,6 @@ if [ "$run_tests" = "1" ]; then
     done
     echo "error tests with build/azula:"
     tests/run_errors.sh build/azula
+    echo "examples with both compilers:"
+    tests/run_examples.sh "$stage0" build/azula
 fi

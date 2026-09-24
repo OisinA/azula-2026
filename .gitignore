@@ -16,5 +16,6 @@
 
 !*/*.azl
 !tests/**/*.azl
+!examples/**/*.azl
 !compiler/**/*.azl
 .DS_STORE/build/

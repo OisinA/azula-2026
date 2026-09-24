@@ -1,0 +1,176 @@
+// A small calculator: tokenises and parses arithmetic into a syntax tree,
+// then evaluates it. Try: azula build calculator.azl && ./calculator "2 * (3 + 4) - 10 / 5"
+
+enum Token {
+    Number(int),
+    Op(int),
+    LParen,
+    RParen,
+    End,
+}
+
+enum Expr {
+    Num(int),
+    Neg(Expr),
+    Binary(int, Expr, Expr),
+}
+
+struct Parser {
+    tokens: Vec<Token>,
+    index: int,
+}
+
+func tokenize(text: str): Vec<Token> {
+    var tokens: Vec<Token> = Vec::new();
+    var i = 0;
+    while text[i] != 0 {
+        var c: int = text[i];
+        if c >= '0' && c <= '9' {
+            var value = 0;
+            while text[i] >= '0' && text[i] <= '9' {
+                value = value * 10 + (text[i] as int - '0');
+                i = i + 1;
+            }
+            tokens.push(Token::Number(value));
+            continue;
+        }
+        if c == '+' || c == '-' || c == '*' || c == '/' {
+            tokens.push(Token::Op(c));
+        } else if c == '(' {
+            tokens.push(Token::LParen);
+        } else if c == ')' {
+            tokens.push(Token::RParen);
+        } else if c != ' ' {
+            printf("unexpected character '%c'\n", c);
+            exit(1);
+        }
+        i = i + 1;
+    }
+    tokens.push(Token::End);
+    return tokens;
+}
+
+impl Parser {
+    func peek(self: &Parser): Token {
+        return self.tokens.get(self.index);
+    }
+
+    func next(self: &Parser): Token {
+        var tok = self.peek();
+        self.index = self.index + 1;
+        return tok;
+    }
+
+    // The operator at the current position, if it's one of `a` or `b`
+    func operator(self: &Parser, a: int, b: int): int {
+        return match self.peek() {
+            Token::Op(op) => {
+                if op == a || op == b {
+                    return op;
+                }
+                0
+            },
+            _ => 0,
+        };
+    }
+
+    // expr := term (('+' | '-') term)*
+    func expr(self: &Parser): Expr {
+        var left = self.term();
+        var op = self.operator('+', '-');
+        while op != 0 {
+            self.next();
+            left = Expr::Binary(op, left, self.term());
+            op = self.operator('+', '-');
+        }
+        return left;
+    }
+
+    // term := factor (('*' | '/') factor)*
+    func term(self: &Parser): Expr {
+        var left = self.factor();
+        var op = self.operator('*', '/');
+        while op != 0 {
+            self.next();
+            left = Expr::Binary(op, left, self.factor());
+            op = self.operator('*', '/');
+        }
+        return left;
+    }
+
+    // factor := number | '-' factor | '(' expr ')'
+    func factor(self: &Parser): Expr {
+        match self.next() {
+            Token::Number(n) => { return Expr::Num(n); },
+            Token::Op(op) => {
+                if op == '-' {
+                    return Expr::Neg(self.factor());
+                }
+            },
+            Token::LParen => {
+                var inner = self.expr();
+                match self.next() {
+                    Token::RParen => { return inner; },
+                    _ => {},
+                }
+                printf("expected ')'\n");
+                exit(1);
+            },
+            _ => {},
+        }
+        printf("expected a number\n");
+        exit(1);
+    }
+}
+
+func eval(e: Expr): int {
+    return match e {
+        Expr::Num(n) => n,
+        Expr::Neg(inner) => 0 - eval(inner),
+        Expr::Binary(op, l, r) => {
+            var a = eval(l);
+            var b = eval(r);
+            match op {
+                '+' => a + b,
+                '-' => a - b,
+                '*' => a * b,
+                _ => a / b,
+            }
+        },
+    };
+}
+
+func show(e: Expr) {
+    match e {
+        Expr::Num(n) => { printf("%d", n); },
+        Expr::Neg(inner) => {
+            printf("-");
+            show(inner);
+        },
+        Expr::Binary(op, l, r) => {
+            printf("(");
+            show(l);
+            printf(" %c ", op);
+            show(r);
+            printf(")");
+        },
+    }
+}
+
+func calculate(text: str) {
+    var parser = Parser { tokens: tokenize(text), index: 0 };
+    var tree = parser.expr();
+    show(tree);
+    printf(" = %d\n", eval(tree));
+}
+
+func main(argc: i32, argv: &str) {
+    if argc > 1 {
+        calculate(argv[1]);
+        return;
+    }
+    calculate("1 + 2 * 3");
+    calculate("(1 + 2) * 3");
+    calculate("2 * (3 + 4) - 10 / 5");
+    calculate("-(8 - 3) * -2");
+}

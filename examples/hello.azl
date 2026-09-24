@@ -1,0 +1,4 @@
+// The smallest Azula program.
+func main {
+    printf("Hello, world!\n");
+}

@@ -1,0 +1,95 @@
+// Generic functions and types. Type arguments are inferred where possible,
+// or given explicitly with a "turbofish" (Name::<Type>).
+
+func largest<T>(items: Vec<T>): T {
+    var best = items.get(0);
+    var i = 1;
+    while i < items.length() {
+        if items.get(i) > best {
+            best = items.get(i);
+        }
+        i = i + 1;
+    }
+    return best;
+}
+
+func swap<A, B>(p: Pair<A, B>): Pair<B, A> {
+    return Pair { first: p.second, second: p.first };
+}
+
+struct Pair<A, B> {
+    first: A,
+    second: B,
+}
+
+// A generic stack built on Vec
+struct Stack<T> {
+    items: Vec<T>,
+}
+
+impl Stack<T> {
+    func new(): Stack<T> {
+        return Stack { items: Vec::new() };
+    }
+
+    func push(self: &Stack<T>, item: T) {
+        self.items.push(item);
+    }
+
+    func pop(self: &Stack<T>): Option<T> {
+        if self.items.is_empty() {
+            return Option::None;
+        }
+        return Option::Some(self.items.pop());
+    }
+
+    func size(self: Stack<T>): int {
+        return self.items.length();
+    }
+}
+
+// A generic linked list; enums with payloads can refer to themselves
+enum List<T> {
+    Cons(T, List<T>),
+    Nil,
+}
+
+func list_length<T>(list: List<T>): int {
+    return match list {
+        List::Cons(_, rest) => 1 + list_length(rest),
+        List::Nil => 0,
+    };
+}
+
+func main {
+    var numbers: Vec<int> = Vec::new();
+    numbers.push(4);
+    numbers.push(17);
+    numbers.push(9);
+    printf("largest number: %d\n", largest(numbers));
+
+    var bytes: Vec<i8> = Vec::new();
+    bytes.push('x' as i8);
+    bytes.push('z' as i8);
+    bytes.push('a' as i8);
+    printf("largest letter: %c\n", largest(bytes));
+
+    var p = Pair { first: "one", second: 1 };
+    var q = swap(p);
+    printf("swapped: %d, %s\n", q.first, q.second);
+
+    var stack = Stack::<str>::new();
+    stack.push("bottom");
+    stack.push("middle");
+    stack.push("top");
+    printf("stack has %d items\n", stack.size());
+    for {
+        match stack.pop() {
+            Option::Some(item) => { printf("  popped %s\n", item); },
+            Option::None => { break; },
+        }
+    }
+
+    var list = List::Cons(1, List::Cons(2, List::Cons(3, List::Nil)));
+    printf("list length: %d\n", list_length(list));
+}

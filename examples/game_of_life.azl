@@ -1,0 +1,95 @@
+// Conway's Game of Life on a small wrapping grid.
+
+const WIDTH: int = 10;
+const HEIGHT: int = 8;
+
+struct Grid {
+    cells: &bool,
+}
+
+impl Grid {
+    func new(): Grid {
+        var cells: &bool = calloc(WIDTH * HEIGHT, sizeof(bool));
+        return Grid { cells: cells };
+    }
+
+    func get(self: Grid, x: int, y: int): bool {
+        // Wrap around the edges
+        var wx = (x + WIDTH) % WIDTH;
+        var wy = (y + HEIGHT) % HEIGHT;
+        return self.cells[wy * WIDTH + wx];
+    }
+
+    func set(self: Grid, x: int, y: int, alive: bool) {
+        self.cells[y * WIDTH + x] = alive;
+    }
+
+    func neighbours(self: Grid, x: int, y: int): int {
+        var count = 0;
+        var dy = -1;
+        while dy <= 1 {
+            var dx = -1;
+            while dx <= 1 {
+                if (dx != 0 || dy != 0) && self.get(x + dx, y + dy) {
+                    count = count + 1;
+                }
+                dx = dx + 1;
+            }
+            dy = dy + 1;
+        }
+        return count;
+    }
+
+    func step(self: Grid): Grid {
+        var next = Grid::new();
+        var y = 0;
+        while y < HEIGHT {
+            var x = 0;
+            while x < WIDTH {
+                var n = self.neighbours(x, y);
+                var alive = self.get(x, y);
+                next.set(x, y, n == 3 || (alive && n == 2));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        return next;
+    }
+
+    func show(self: Grid) {
+        var y = 0;
+        while y < HEIGHT {
+            var x = 0;
+            while x < WIDTH {
+                if self.get(x, y) {
+                    printf("#");
+                } else {
+                    printf(".");
+                }
+                x = x + 1;
+            }
+            printf("\n");
+            y = y + 1;
+        }
+    }
+}
+
+func main {
+    var grid = Grid::new();
+    // A glider
+    grid.set(1, 0, true);
+    grid.set(2, 1, true);
+    grid.set(0, 2, true);
+    grid.set(1, 2, true);
+    grid.set(2, 2, true);
+
+    var generation = 0;
+    while generation <= 4 {
+        if generation % 2 == 0 {
+            printf("generation %d:\n", generation);
+            grid.show();
+        }
+        grid = grid.step();
+        generation = generation + 1;
+    }
+}
