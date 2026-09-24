@@ -97,11 +97,22 @@ const STDLIB: &[(&str, &str)] = &[
     ("stdlib/io.azl", include_str!("../../stdlib/io.azl")),
     ("stdlib/iter.azl", include_str!("../../stdlib/iter.azl")),
     ("stdlib/math.azl", include_str!("../../stdlib/math.azl")),
+    #[cfg(target_os = "macos")]
+    ("stdlib/platform_macos.azl", include_str!("../../stdlib/platform_macos.azl")),
+    #[cfg(not(target_os = "macos"))]
+    ("stdlib/platform_linux.azl", include_str!("../../stdlib/platform_linux.azl")),
 ];
 
 /// Standard library modules that programs import on request, as
 /// `import "std/net.azl" as net`
-const STD_MODULES: &[(&str, &str)] = &[("net.azl", include_str!("../../stdlib/net.azl"))];
+const STD_MODULES: &[(&str, &str)] = &[
+    ("net.azl", include_str!("../../stdlib/net.azl")),
+    // What differs between operating systems, for the host's
+    #[cfg(target_os = "macos")]
+    ("os.azl", include_str!("../../stdlib/os_macos.azl")),
+    #[cfg(not(target_os = "macos"))]
+    ("os.azl", include_str!("../../stdlib/os_linux.azl")),
+];
 
 /// The combined program source, plus a record of which file and line every
 /// line of it came from (so errors can point at the original location).

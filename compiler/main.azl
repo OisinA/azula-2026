@@ -13,8 +13,23 @@ import "checker.azl"
 import "codegen.azl"
 import "modules.azl"
 
-extern func readlink(str, str, int): int;
 extern func mkdir(str, i32): i32;
+extern func uname(&u8): i32;
+
+// The host platform's name ("linux" or "macos"), which picks the standard
+// library's platform-specific files
+func host_platform(): str {
+    // struct utsname starts with sysname (the Linux and macOS ones fit)
+    var info: &u8 = malloc(4096);
+    memset(info, 0, 4096);
+    uname(info);
+    var platform = "linux";
+    if (info as str) == "Darwin" {
+        platform = "macos";
+    }
+    free(info);
+    return platform;
+}
 
 struct Options {
     command: str;
@@ -84,10 +99,8 @@ func find_stdlib(options: Options): str {
         return from_env;
     }
     // Next to the compiler: <dir of executable>/../stdlib
-    var exe: str = malloc(4096 * sizeof(u8));
-    var n = readlink("/proc/self/exe", exe, 4095);
-    if n > 0 {
-        exe[n] = 0;
+    var exe = platform_executable_path();
+    if exe != null {
         var candidate = join_path(dir_name(dir_name(exe)), "stdlib");
         if file_exists(join_path(candidate, "vec.azl")) {
             return candidate;
@@ -139,7 +152,11 @@ func add_module(src: &Source, path: str, file: str, alias: str, modules: &Map<st
                 var target_file = target;
                 // `std/...` names a module of the standard library
                 if imp.path.starts_with("std/") {
-                    target = join_path(stdlib, imp.path.slice(4, imp.path.len()));
+                    var std_name = imp.path.slice(4, imp.path.len());
+                    if std_name == "os.azl" {
+                        std_name = "os_${host_platform()}.azl";
+                    }
+                    target = join_path(stdlib, std_name);
                     target_file = imp.path;
                     if !file_exists(target) {
                         printf("error: %s:%ld: there's no standard library module `%s`\n", file, number + 1, imp.path);
@@ -179,7 +196,8 @@ func main(argc: i32, argv: &str) {
     var modules: Map<str, &ModuleInfo> = Map::new();
     // The standard library (modules such as std/net.azl are only loaded when
     // imported)
-    for name in "libc option string vec map interfaces result io iter math gc arena".split(" ") {
+    var prelude = "libc option string vec map interfaces result io iter math gc arena platform_${host_platform()}";
+    for name in prelude.split(" ") {
         var path = join_path(stdlib, "${name}.azl");
         add_module(src, path, path, "", &modules, stdlib);
     }

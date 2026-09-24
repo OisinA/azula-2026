@@ -1,13 +1,14 @@
-// TCP networking (Linux). This module isn't loaded automatically; import it
-// with
+// TCP networking (Linux and macOS). This module isn't loaded automatically;
+// import it with
 //
 //   import "std/net.azl" as net
 //
 // and use net::TcpListener and net::TcpStream. Data is sent and received as
 // strings, so it's meant for text protocols such as HTTP.
 
+import "std/os.azl" as os
+
 extern func socket(i32, i32, i32): i32;
-extern func setsockopt(i32, i32, i32, &i32, i32): i32;
 extern func bind(i32, &u8, i32): i32;
 extern func listen(i32, i32): i32;
 extern func accept(i32, &u8, &i32): i32;
@@ -20,21 +21,15 @@ extern func getaddrinfo(str, str, &u8, &&u8): i32;
 extern func freeaddrinfo(&u8);
 extern func gai_strerror(i32): str;
 extern func strerror(i32): str;
-extern func __errno_location(): &i32;
 
 const AF_INET: i32 = 2;
 const SOCK_STREAM: i32 = 1;
-const SOL_SOCKET: i32 = 1;
-const SO_REUSEADDR: i32 = 2;
-// Report a closed connection as an error instead of raising SIGPIPE
-const MSG_NOSIGNAL: i32 = 16384;
 const SOCKADDR_SIZE: int = 16;
 const CHUNK_SIZE: int = 4096;
 
 // "what: <description of errno>"
 func os_error(what: str): str {
-    var errno = __errno_location();
-    return "${what}: ${strerror(errno[0])}";
+    return "${what}: ${strerror(os::errno())}";
 }
 
 // A server socket accepting connections
@@ -48,14 +43,15 @@ pub struct TcpListener {
         if fd < 0 {
             return Result::Err(os_error("socket"));
         }
+        os::init_socket(fd);
         var one: i32 = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, 4);
+        setsockopt(fd, os::SOL_SOCKET, os::SO_REUSEADDR, &one, 4);
 
         // struct sockaddr_in: the family, the port (big-endian) and the
         // address 0.0.0.0
         var address: &u8 = malloc(SOCKADDR_SIZE);
         memset(address, 0, SOCKADDR_SIZE);
-        address[0] = AF_INET as u8;
+        os::set_sockaddr_family(address, AF_INET);
         address[2] = ((port >> 8) & 255) as u8;
         address[3] = (port & 255) as u8;
         var bound = bind(fd, address, SOCKADDR_SIZE as i32);
@@ -118,12 +114,13 @@ pub struct TcpStream {
         }
         // The first result's ai_addrlen and ai_addr
         var length = (found as &i32)[4];
-        var address = (ptr_add(found, 24) as &&u8)[0];
+        var address = (ptr_add(found, os::ADDRINFO_ADDR_OFFSET) as &&u8)[0];
         var fd = socket(AF_INET, SOCK_STREAM, 0);
         if fd < 0 {
             freeaddrinfo(found);
             return Result::Err(os_error("socket"));
         }
+        os::init_socket(fd);
         var connected = connect(fd, address, length);
         freeaddrinfo(found);
         if connected < 0 {
@@ -164,7 +161,7 @@ pub struct TcpStream {
         var total = strlen(text);
         var sent = 0;
         while sent < total {
-            var n = send(self.fd, ptr_add(text, sent), total - sent, MSG_NOSIGNAL);
+            var n = send(self.fd, ptr_add(text, sent), total - sent, os::SEND_FLAGS);
             if n < 0 {
                 return Result::Err(os_error("write"));
             }

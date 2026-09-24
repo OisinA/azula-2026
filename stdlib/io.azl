@@ -79,27 +79,9 @@ func read_line(): Option<str> {
 }
 
 // The program's command-line arguments, starting with the program's name
-// (read from /proc, so Linux only)
+// (see platform_args in platform_linux.azl and platform_macos.azl)
 func args(): Vec<str> {
-    var out: Vec<str> = Vec::new();
-    var f = fopen("/proc/self/cmdline", "rb");
-    if f == null {
-        return out;
-    }
-    // The arguments are each followed by a NUL byte
-    var buf: str = malloc(65536 * sizeof(u8));
-    var n = fread(buf, 1, 65535, f);
-    fclose(f);
-    var start = 0;
-    var i = 0;
-    while i < n {
-        if buf[i] == 0 {
-            out.push(ptr_add(buf, start));
-            start = i + 1;
-        }
-        i += 1;
-    }
-    return out;
+    return platform_args();
 }
 
 // The value of environment variable `name`, if it's set

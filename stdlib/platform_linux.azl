@@ -1,0 +1,40 @@
+// Prelude functions whose implementation differs between platforms (Linux).
+// The compilers load platform_linux.azl or platform_macos.azl to match the
+// host.
+
+extern func readlink(str, str, int): int;
+
+// The program's command-line arguments
+func platform_args(): Vec<str> {
+    var out: Vec<str> = Vec::new();
+    var f = fopen("/proc/self/cmdline", "rb");
+    if f == null {
+        return out;
+    }
+    // The arguments are each followed by a NUL byte
+    var buf: str = malloc(65536 * sizeof(u8));
+    var n = fread(buf, 1, 65535, f);
+    fclose(f);
+    var start = 0;
+    var i = 0;
+    while i < n {
+        if buf[i] == 0 {
+            out.push(ptr_add(buf, start));
+            start = i + 1;
+        }
+        i += 1;
+    }
+    return out;
+}
+
+// The path of the running executable, or null if it can't be found
+func platform_executable_path(): str {
+    var path: str = malloc(4096 * sizeof(u8));
+    var n = readlink("/proc/self/exe", path, 4095);
+    if n <= 0 {
+        free(path);
+        return null;
+    }
+    path[n] = 0;
+    return path;
+}

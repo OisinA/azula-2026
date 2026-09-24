@@ -1,0 +1,33 @@
+// Operating system details that differ between platforms (macOS). Imported
+// as "std/os.azl": the compilers pick os_linux.azl or os_macos.azl to match
+// the host.
+
+extern func setsockopt(i32, i32, i32, &i32, i32): i32;
+extern func __error(): &i32;
+
+pub const SOL_SOCKET: i32 = 65535;
+pub const SO_REUSEADDR: i32 = 4;
+const SO_NOSIGPIPE: i32 = 4130;
+// Flags for send() (macOS has no MSG_NOSIGNAL: see init_socket)
+pub const SEND_FLAGS: i32 = 0;
+// The offset of ai_addr in struct addrinfo (ai_canonname comes first)
+pub const ADDRINFO_ADDR_OFFSET: int = 32;
+
+// The calling thread's errno
+pub func errno(): i32 {
+    return __error()[0];
+}
+
+// Set up a new socket: report a closed connection as an error instead of
+// raising SIGPIPE
+pub func init_socket(fd: i32) {
+    var one: i32 = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, 4);
+}
+
+// Fill in the family of a struct sockaddr_in (sin_len, then an 8-bit
+// sin_family)
+pub func set_sockaddr_family(address: &u8, family: i32) {
+    address[0] = 16;
+    address[1] = family as u8;
+}

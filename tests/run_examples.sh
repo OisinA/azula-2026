@@ -9,6 +9,10 @@ STAGE0="$(realpath "${1:-$ROOT/target/debug/azula}")"
 SELF_HOSTED="$(realpath "${2:-$ROOT/build/azula}")"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+# macOS has no timeout(1): fall back to perl's alarm
+if ! command -v timeout > /dev/null; then
+    timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+fi
 cp -r "$ROOT/examples" "$WORK/examples"
 
 pass=0
