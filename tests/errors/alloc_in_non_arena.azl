@@ -1,0 +1,5 @@
+// error: expected an Arena, found int
+struct P { x: int, }
+func main {
+    var p = alloc(P { x: 1 }) in 5;
+}

@@ -692,6 +692,14 @@ impl Gen {
                 self.store(x.typ, v, ptr);
                 return ptr;
             },
+            ExprKind::AllocIn(x, arena) => {
+                var v = self.expr(x);
+                var a = self.expr(arena);
+                var size = self.size_of(self.llvm_type(x.typ));
+                var ptr = self.value(concat3("call ptr @\"Arena.allocate\"(ptr ", a, concat3(", i64 ", size, ")")));
+                self.store(x.typ, v, ptr);
+                return ptr;
+            },
             ExprKind::Match(scrutinee, arms) => { return self.match_expr(e, scrutinee, arms); },
             ExprKind::Block(stmts, value) => {
                 self.block(stmts);

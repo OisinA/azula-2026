@@ -157,7 +157,30 @@ Other things to know:
   blocks, and a `match` can be used as a statement or an expression.
 - `extern func name(types): type;` (optionally `extern varargs func`) declares C functions;
   `stdlib/libc.azl` declares the common ones.
-- Memory is manual: `alloc(Struct { ... })` and `malloc` allocate, nothing is garbage collected.
+- Memory: see below.
+
+## Memory management
+
+Programs built by the self-hosted compiler are garbage collected. `alloc(Struct { ... })`,
+enum values with payloads, array literals and `malloc`/`calloc`/`realloc` all allocate from
+a conservative, non-moving mark-and-sweep collector (`stdlib/gc.azl`, written in Azula).
+`free` still releases memory immediately, but is never required.
+
+For many short-lived objects with a shared lifetime, use an arena:
+
+```
+var arena = Arena::new();
+var node = alloc(Node { value: 1, next: null }) in arena;
+...
+arena.free_all();   // frees everything allocated in the arena at once
+```
+
+Arena memory isn't collected, but the collector scans it, so objects it points to stay alive.
+Using arena objects after `free_all` is an error.
+
+Set `AZULA_GC_VERBOSE=1` to see collections, or `AZULA_GC_STRESS=N` to collect every N
+allocations (useful for testing). The Rust compiler doesn't include the collector: programs
+it builds use `malloc` directly and never free memory implicitly.
 
 ## Requirements
 

@@ -10,8 +10,8 @@
 // allocation finds the next unused slot from a cursor.
 //
 // A collection marks everything reachable from the stack (callee-saved
-// registers are spilled onto it first), treating every word that looks like a
-// heap pointer as one. Objects are scanned the same way, except those
+// registers are spilled onto it first) and from registered root ranges (such
+// as arena memory), treating every word that looks like a heap pointer as one. Objects are scanned the same way, except those
 // allocated as pointer-free ("atomic"). Unmarked objects are then freed.
 //
 // A collection runs when the memory allocated since the last one exceeds the
@@ -82,6 +82,10 @@ struct GcState {
     allocations: int,
     stress: int,
     verbose: bool,
+    // Extra memory to scan for pointers: (start, end) address pairs
+    roots: &int,
+    root_len: int,
+    root_cap: int,
 }
 
 func gc(): &GcState {
@@ -489,6 +493,11 @@ func gc_collect() {
     var top = gc_stack_pointer() as int;
     s.mark_len = 0;
     gc_scan_range(s, top, s.stack_base);
+    var r = 0;
+    while r < s.root_len {
+        gc_scan_range(s, s.roots[r * 2], s.roots[r * 2 + 1]);
+        r = r + 1;
+    }
     while s.mark_len > 0 {
         s.mark_len = s.mark_len - 1;
         var object = s.mark_stack[s.mark_len];
@@ -555,6 +564,36 @@ func gc_sweep(s: &GcState) {
     s.threshold = live;
     if s.threshold < GC_MIN_THRESHOLD {
         s.threshold = GC_MIN_THRESHOLD;
+    }
+}
+
+// Treat memory in [start, end) (not on the GC heap) as holding pointers to
+// keep alive
+func gc_add_root(start: str, end: str) {
+    var s = gc();
+    if !s.initialised {
+        gc_init(null);
+    }
+    if s.root_len == s.root_cap {
+        s.root_cap = s.root_cap * 2 + 8;
+        s.roots = c_realloc(s.roots, s.root_cap * 2 * sizeof(int));
+    }
+    s.roots[s.root_len * 2] = start as int;
+    s.roots[s.root_len * 2 + 1] = end as int;
+    s.root_len = s.root_len + 1;
+}
+
+func gc_remove_root(start: str) {
+    var s = gc();
+    var i = 0;
+    while i < s.root_len {
+        if s.roots[i * 2] == start as int {
+            s.root_len = s.root_len - 1;
+            s.roots[i * 2] = s.roots[s.root_len * 2];
+            s.roots[i * 2 + 1] = s.roots[s.root_len * 2 + 1];
+            return;
+        }
+        i = i + 1;
     }
 }
 

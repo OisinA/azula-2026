@@ -611,6 +611,12 @@ impl Parser {
                 self.expect(Tok::LParen, "`(`");
                 var inner = self.parse_expr(PREC_LOWEST, true);
                 self.expect(Tok::RParen, "`)`");
+                // `alloc(value) in arena` (`in` is only special here)
+                if self.at(Tok::Ident) && str_eq(self.peek().text, "in") {
+                    self.advance();
+                    var arena = self.parse_expr(PREC_PREFIX, false);
+                    return new_expr(ExprKind::AllocIn(inner, arena), pos);
+                }
                 return new_expr(ExprKind::Alloc(inner), pos);
             },
             Tok::KwSizeof => {

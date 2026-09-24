@@ -230,6 +230,7 @@ impl Copier {
             ExprKind::Cast(x, t) => ExprKind::Cast(self.expr(x), self.typ(t)),
             ExprKind::SizeOf(t) => ExprKind::SizeOf(self.typ(t)),
             ExprKind::Alloc(x) => ExprKind::Alloc(self.expr(x)),
+            ExprKind::AllocIn(x, arena) => ExprKind::AllocIn(self.expr(x), self.expr(arena)),
             ExprKind::Match(scrutinee, arms) => {
                 var out: Vec<&MatchArm> = Vec::new();
                 var i = 0;
@@ -1454,6 +1455,33 @@ impl Checker {
                 if !is_struct_lit(x) {
                     self.fail(e.pos, "alloc needs a struct literal");
                 }
+                var inner_expected = match expected {
+                    Type::Ptr(inner) => inner,
+                    _ => Type::Infer,
+                };
+                return Type::Ptr(self.check_expr(x, inner_expected));
+            },
+            ExprKind::AllocIn(x, arena) => {
+                if !is_struct_lit(x) {
+                    self.fail(e.pos, "alloc needs a struct literal");
+                }
+                var arena_type = self.check_expr(arena, Type::Infer);
+                var is_arena = str_eq(named_of(arena_type), "Arena");
+                match arena_type {
+                    Type::Ptr(inner) => { is_arena = str_eq(named_of(inner), "Arena"); },
+                    _ => {
+                        // Pass the arena by pointer so allocation updates it
+                        if is_arena {
+                            var address = new_expr(ExprKind::AddrOf(arena), arena.pos);
+                            address.typ = Type::Ptr(arena_type);
+                            e.kind = ExprKind::AllocIn(x, address);
+                        }
+                    },
+                }
+                if !is_arena {
+                    self.fail(arena.pos, concat("expected an Arena, found ", mangle(arena_type)));
+                }
+                self.instantiate_method("Arena", "allocate");
                 var inner_expected = match expected {
                     Type::Ptr(inner) => inner,
                     _ => Type::Infer,

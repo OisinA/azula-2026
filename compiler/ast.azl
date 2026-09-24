@@ -60,6 +60,8 @@ enum ExprKind {
     Cast(&Expr, Type),
     SizeOf(Type),
     Alloc(&Expr),
+    // `alloc(value) in arena`
+    AllocIn(&Expr, &Expr),
     Match(&Expr, Vec<&MatchArm>),
     Block(Vec<&Stmt>, Option<&Expr>),
 

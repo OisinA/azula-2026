@@ -1,0 +1,73 @@
+// Arenas: allocate many objects quickly and free them all at once.
+//
+//   var arena = Arena::new();
+//   var node = alloc(Node { value: 1, next: null }) in arena;
+//   ...
+//   arena.free_all();
+//
+// Arena memory is never collected, but the garbage collector scans it, so
+// anything on the collected heap that arena objects point to stays alive.
+// Using an arena object after free_all is an error (like use after free).
+
+const ARENA_CHUNK_SIZE: int = 65536;
+
+struct ArenaChunk {
+    start: str,
+    size: int,
+    used: int,
+    next: &ArenaChunk,
+}
+
+struct Arena {
+    // The chunk being allocated from first; others follow
+    chunks: &ArenaChunk,
+    bytes: int,
+}
+
+impl Arena {
+    func new(): Arena {
+        return Arena { chunks: null, bytes: 0 };
+    }
+
+    // `size` bytes of zeroed memory, 16-byte aligned
+    func allocate(self: &Arena, size: int): str {
+        var n = (size + 15) / 16 * 16;
+        var chunk = self.chunks;
+        if chunk == null || chunk.used + n > chunk.size {
+            var chunk_size = ARENA_CHUNK_SIZE;
+            if n > chunk_size {
+                chunk_size = n;
+            }
+            chunk = c_calloc(1, sizeof(ArenaChunk));
+            chunk.start = c_calloc(chunk_size, 1);
+            chunk.size = chunk_size;
+            chunk.used = 0;
+            chunk.next = self.chunks;
+            self.chunks = chunk;
+            gc_add_root(chunk.start, ptr_add(chunk.start, chunk_size));
+        }
+        var memory = ptr_add(chunk.start, chunk.used);
+        chunk.used = chunk.used + n;
+        self.bytes = self.bytes + n;
+        return memory;
+    }
+
+    // Free everything allocated in the arena
+    func free_all(self: &Arena) {
+        var chunk = self.chunks;
+        while chunk != null {
+            var next = chunk.next;
+            gc_remove_root(chunk.start);
+            c_free(chunk.start);
+            c_free(chunk as str);
+            chunk = next;
+        }
+        self.chunks = null;
+        self.bytes = 0;
+    }
+
+    // Bytes allocated in the arena so far
+    func allocated(self: Arena): int {
+        return self.bytes;
+    }
+}
